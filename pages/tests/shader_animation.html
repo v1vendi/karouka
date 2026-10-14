@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-animated" content="#animated and #tiled draw their shader at each frame's uTime">
+<meta name="karouka-check-title" content="^ready$">
+<meta name="karouka-check-pixels" content="16,276=#191c21~2 32,276=#339eff~2 16,292=#339eff~2">
+<title>shader animation pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 16px sans-serif; }
+  .box { position: absolute; left: 10px; width: 300px; height: 120px; background-color: #222; }
+  #animated { top: 10px; background-image: shader(url(plasma.sksl), --speed 0.4, --scale 3.0, --tint #33aaff); }
+  #static { top: 140px; left: 10px; background-image: shader(url(checker.sksl)); }
+  #tiled { top: 270px; left: 330px; width: 240px; height: 120px; background-size: 48px 48px; background-image: shader(url(waves.sksl), --amp 0.8); }
+  #below { top: 2000px; background-image: shader(url(plasma.sksl), --speed 1.0, --scale 2.0, --tint #ff5533); }
+  #still { top: 270px; background-image: shader(url(checker.sksl)); }
+</style>
+</head>
+<body>
+<!-- Ported from css-shader-image's tests/m3-animation.html, with no script but the title: #animated declares uTime
+     (plasma.sksl), so it animates on the host clock (uTime is the document timeline's time in seconds) with no style,
+     layout or paint from LibWeb, damaging its own box each frame; #static (checker.sksl, no uTime) is painted once like
+     a gradient and never rasterized again (KR_DEBUG=1: each frame's damage is #animated's and #tiled's boxes). #tiled
+     repeats waves.sksl (uTime) in 48 px tiles, which the player never takes from its tile cache. #below animates far
+     below the fold. #still is checker.sksl again, where its pixels are pinned. -->
+<div class="box" id="animated"></div>
+<div class="box" id="static"></div>
+<div class="box" id="tiled"></div>
+<div class="box" id="below"></div>
+<div class="box" id="still"></div>
+<script>document.title = "ready";</script>
+</body>
+</html>

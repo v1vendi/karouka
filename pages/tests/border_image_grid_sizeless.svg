@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+  <!-- border_image_grid.svg with no natural size and no aspect ratio: every cell is placed in
+       percentages, so the grid fills whatever size the image is drawn at (the border image area). -->
+  <rect x="0" y="0" width="33.3334%" height="33.3334%" fill="#c00000"/>
+  <rect x="66.6666%" y="0" width="33.3334%" height="33.3334%" fill="#00a000"/>
+  <rect x="0" y="66.6666%" width="33.3334%" height="33.3334%" fill="#0000c0"/>
+  <rect x="66.6666%" y="66.6666%" width="33.3334%" height="33.3334%" fill="#c0c000"/>
+  <rect x="33.3333%" y="0" width="16.6667%" height="33.3334%" fill="#ff8000"/>
+  <rect x="50%" y="0" width="16.6667%" height="33.3334%" fill="#800080"/>
+  <rect x="33.3333%" y="66.6666%" width="16.6667%" height="33.3334%" fill="#008080"/>
+  <rect x="50%" y="66.6666%" width="16.6667%" height="33.3334%" fill="#ff00ff"/>
+  <rect x="0" y="33.3333%" width="33.3334%" height="16.6667%" fill="#804000"/>
+  <rect x="0" y="50%" width="33.3334%" height="16.6667%" fill="#00ffff"/>
+  <rect x="66.6666%" y="33.3333%" width="33.3334%" height="16.6667%" fill="#404040"/>
+  <rect x="66.6666%" y="50%" width="33.3334%" height="16.6667%" fill="#ffc0c0"/>
+  <rect x="33.3333%" y="33.3333%" width="16.6667%" height="16.6667%" fill="#000000"/>
+  <rect x="50%" y="33.3333%" width="16.6667%" height="16.6667%" fill="#80ff80"/>
+  <rect x="33.3333%" y="50%" width="16.6667%" height="16.6667%" fill="#8080ff"/>
+  <rect x="50%" y="50%" width="16.6667%" height="16.6667%" fill="#ffffff"/>
+</svg>

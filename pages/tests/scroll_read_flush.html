@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  @font-face { font-family: Inter; src: url(Inter-Regular.ttf); }
+  body { margin: 0; background: white; font-family: Inter; font-size: 14px; }
+  #s { width: 200px; height: 100px; overflow: auto; background: #ddd; }
+  .i { height: 50px; width: 400px; border-bottom: 1px solid #888; }
+  #result { padding: 8px; color: white; background: rgb(255, 0, 0); }
+</style>
+</head>
+<body>
+<div id="s"><div class="i">0</div><div class="i">1</div><div class="i">2</div>
+<div class="i">3</div><div class="i">4</div></div>
+<div id="result">waiting</div>
+<script>
+// Scroll reads in the same turn as a write. rAF runs before
+// the ordinary style and layout stage, so only a read-flush gives these values.
+requestAnimationFrame(function () {
+  var s = document.getElementById('s');
+  var log = [];
+  s.scrollTop = 120;  s.scrollLeft = 30;
+  log.push('top=' + s.scrollTop + ' left=' + s.scrollLeft);
+  s.firstElementChild.style.height = '150px';
+  log.push('sh=' + s.scrollHeight + ' ch=' + s.clientHeight + ' sw=' + s.scrollWidth);
+  var ok = s.scrollTop === 120 && s.scrollLeft === 30 && s.scrollHeight === 355 &&
+           s.clientHeight === 100 && s.scrollWidth === 400;
+  var r = document.getElementById('result');
+  r.textContent = (ok ? 'PASS ' : 'FAIL ') + log.join(' | ');
+  r.style.backgroundColor = ok ? 'rgb(0, 140, 0)' : 'rgb(255, 0, 0)';
+  console.log('scroll read flush ' + (ok ? 'PASS ' : 'FAIL ') + log.join(' | '));
+});
+</script>
+</body>
+</html>

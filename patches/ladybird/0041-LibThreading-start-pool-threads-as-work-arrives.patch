@@ -1,0 +1,103 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibThreading: start pool threads as work arrives
+
+The pool started all four of its threads, each with an 8 MiB stack, on
+its first the() call, so a page whose only off-thread job is one script
+compile paid for four threads. Start a thread from submit() only while
+more work is queued than threads are idle, up to the same four.
+
+---
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index f4dac8ebcefa37fad370fe2ad17bc4d6d47ad0f5..24c211ef6582d96c7ac2e5138981499822aa28b4 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -29,19 +29,26 @@ ThreadPool::ThreadPool()
+     // Published before the flag is read, and halt_if_started() sets the flag before it reads this: one of
+     // the two sees the other, so a pool constructed while it runs is still halted.
+     s_started_pool.store(this);
+-    if (s_halt_requested.load()) {
++    if (s_halt_requested.load())
+         m_halted = true;
++}
++
++// Called with m_mutex held, after work was queued. Threads start as work arrives, not all at once: each
++// has an 8 MiB stack, and a page that submits one job at a time needs one thread. A new thread starts
++// only while more work is queued than threads are idle, up to THREAD_COUNT.
++void ThreadPool::start_thread_if_needed()
++{
++    if (m_halted || m_threads.size() >= THREAD_COUNT || m_idle_threads >= m_work_queue.size())
+         return;
+-    }
+-    for (size_t i = 0; i < THREAD_COUNT; ++i) {
+-        auto name = ByteString::formatted("Pool/{}", i);
+-        auto thread = Thread::construct(name, [this]() -> intptr_t {
+-            return worker_thread_func();
+-        });
+-        thread->set_stack_size(THREAD_STACK_SIZE);
+-        thread->start();
+-        m_threads.append(move(thread));
+-    }
++    auto name = ByteString::formatted("Pool/{}", m_threads.size());
++    auto thread = Thread::construct(name, [this]() -> intptr_t {
++        return worker_thread_func();
++    });
++    thread->set_stack_size(THREAD_STACK_SIZE);
++    // Counted idle from here: it takes queued work as soon as it runs.
++    ++m_idle_threads;
++    thread->start();
++    m_threads.append(move(thread));
+ }
+ 
+ intptr_t ThreadPool::worker_thread_func()
+@@ -66,6 +73,7 @@ intptr_t ThreadPool::worker_thread_func()
+             if (!should_collect) {
+                 work = m_work_queue.dequeue();
+                 ++m_running;
++                --m_idle_threads;
+             }
+         }
+ 
+@@ -80,6 +88,7 @@ intptr_t ThreadPool::worker_thread_func()
+         work = {};
+ 
+         MutexLocker locker(m_mutex);
++        ++m_idle_threads;
+         if (--m_running == 0 && m_work_queue.is_empty())
+             m_idle.broadcast();
+     }
+@@ -104,6 +113,7 @@ void ThreadPool::submit(Function<void()> work)
+ {
+     MutexLocker locker(m_mutex);
+     m_work_queue.enqueue(move(work));
++    start_thread_if_needed();
+     m_condition.signal();
+ }
+ 
+diff --git a/Libraries/LibThreading/ThreadPool.h b/Libraries/LibThreading/ThreadPool.h
+index de494e37456faacc8c30d5f864ffd3fb3d900a3b..fa3203d66054c7fa723aed7ae9aa4606f51e89ea 100644
+--- a/Libraries/LibThreading/ThreadPool.h
++++ b/Libraries/LibThreading/ThreadPool.h
+@@ -30,19 +30,21 @@ public:
+     void halt();
+ 
+     // halt() for the pool if it was ever started (its first the() call). A pool that never started is not
+-    // started just to halt it: it would spawn its worker threads for nothing. A later the() then makes a
+-    // pool that starts no threads and runs no work, as halt() would have left it.
++    // made just to halt it. A later the() then makes a pool that starts no threads and runs no work, as
++    // halt() would have left it.
+     static void halt_if_started();
+ 
+ private:
+     ThreadPool();
+ 
+     intptr_t worker_thread_func();
++    void start_thread_if_needed();
+ 
+     Mutex m_mutex;
+     ConditionVariable m_condition { m_mutex };
+     ConditionVariable m_idle { m_mutex };
+     size_t m_running { 0 };
++    size_t m_idle_threads { 0 };
+     bool m_halted { false };
+     Queue<Function<void()>> m_work_queue;
+     Vector<NonnullRefPtr<Thread>> m_threads;

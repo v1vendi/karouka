@@ -1,0 +1,20 @@
+/build/
+/.toolchain/
+/bench/results/
+/bench/engines/.work/
+/bench/engines/apps/tauri/gen/
+.DS_Store
+build-logs/
+__pycache__/
+
+# local agent and task tooling, kept out of the public repo
+/tasks/
+/.taskq/
+/.claude/
+/.codex/
+/.agents/
+/CLAUDE.md
+/AGENTS.md
+/TASKS.md
+/.clangd
+.handoff.md

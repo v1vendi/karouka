@@ -1,0 +1,17 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 761f666067..bd610119fa 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -137,7 +137,11 @@ if (NOT (ENABLE_FUZZERS OR ENABLE_COMPILER_EXPLORER_BUILD OR ANDROID OR IOS))
+     endif()
+ endif()
+ 
+-if (ENABLE_GUI_TARGETS)
++# karouka: WebContent and WebWorker drive the Web API families LIBWEB_PRUNE_WEB_APIS leaves out of
++# LibWeb (WebDriver, Geolocation, IndexedDB, ...), and the browser UI needs those services. Neither
++# can build against a pruned LibWeb, so a pruned build leaves the browser out and LibWeb is the
++# product. Turn LIBWEB_PRUNE_WEB_APIS off to build the browser.
++if (ENABLE_GUI_TARGETS AND NOT LIBWEB_PRUNE_WEB_APIS)
+     add_subdirectory(Services)
+     add_subdirectory(UI)
+ endif()

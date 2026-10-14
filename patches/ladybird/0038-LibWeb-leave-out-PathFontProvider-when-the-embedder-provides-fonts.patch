@@ -1,0 +1,46 @@
+diff --git a/Libraries/LibWeb/Embedder/Prune/PathFontProvider.cmake b/Libraries/LibWeb/Embedder/Prune/PathFontProvider.cmake
+new file mode 100644
+index 0000000000..f763566177
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/PathFontProvider.cmake
+@@ -0,0 +1,6 @@
++# karouka: LibGfx's PathFontProvider, which FontPlugin installs and fills from the system's font
++# directories when the embedder passes no font provider. An embedder that builds with
++# LIBWEB_PRUNE_WEB_APIS passes its own, so FontPlugin requires one and the linker can drop
++# PathFontProvider. This is not a family: nothing is filtered from SOURCES, and the definition is on
++# FontPlugin.cpp alone, so turning it on recompiles one file.
++set_property(SOURCE Platform/FontPlugin.cpp APPEND PROPERTY COMPILE_DEFINITIONS LIBWEB_PRUNE_PATH_FONT_PROVIDER)
+diff --git a/Libraries/LibWeb/Platform/FontPlugin.cpp b/Libraries/LibWeb/Platform/FontPlugin.cpp
+index b63cd2ffdc..3749c593ed 100644
+--- a/Libraries/LibWeb/Platform/FontPlugin.cpp
++++ b/Libraries/LibWeb/Platform/FontPlugin.cpp
+@@ -12,7 +12,9 @@
+ #include <LibCore/StandardPaths.h>
+ #include <LibGfx/Font/Font.h>
+ #include <LibGfx/Font/FontDatabase.h>
+-#include <LibGfx/Font/PathFontProvider.h>
++#ifndef LIBWEB_PRUNE_PATH_FONT_PROVIDER
++#    include <LibGfx/Font/PathFontProvider.h>
++#endif
+ #include <LibGfx/Font/Typeface.h>
+ #include <LibGfx/Font/TypefaceSkia.h>
+ #include <LibWeb/Platform/FontPlugin.h>
+@@ -39,6 +41,10 @@ FontPlugin::FontPlugin(bool is_layout_test_mode, Gfx::SystemFontProvider* font_p
+     if (is_layout_test_mode)
+         Gfx::force_hinting_for_testing(Gfx::FontHintingStyle::Normal);
+ 
++#ifdef LIBWEB_PRUNE_PATH_FONT_PROVIDER
++    // karouka: the embedder installs its own system font provider (Embedder/Prune/PathFontProvider.cmake).
++    VERIFY(font_provider);
++#else
+     if (!font_provider)
+         font_provider = &static_cast<Gfx::PathFontProvider&>(Gfx::FontDatabase::the().install_system_font_provider(make<Gfx::PathFontProvider>()));
+     if (is<Gfx::PathFontProvider>(*font_provider)) {
+@@ -47,6 +53,7 @@ FontPlugin::FontPlugin(bool is_layout_test_mode, Gfx::SystemFontProvider* font_p
+         for (auto const& path : Gfx::FontDatabase::font_directories().release_value_but_fixme_should_propagate_errors())
+             path_font_provider.load_all_fonts_from_uri(MUST(String::formatted("file://{}", path)));
+     }
++#endif
+ 
+     update_generic_fonts();
+ 

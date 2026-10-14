@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^gc image reload first=12/12 collected=yes again=12/12 sizes=ok sync=4-11$">
+<title>gc image reload</title>
+<style>
+  body { margin: 16px; background: #1c2128; color: #e6edf3; font: 16px sans-serif; }
+  .row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .state { width: 16px; height: 32px; background: #555; }
+  .pass { background: #2ea043; }
+  .fail { background: #da3633; }
+  #images { display: none; }
+</style>
+</head>
+<body>
+<!-- Images dropped from the document's image caches by a garbage collection, then loaded again by
+     URL. The caches (the list of available images and the document's
+     shared resource requests) mark only the entries Document::prune_image_resource_caches would keep
+     once every image in use went away: the most recently used, at most 96 and 8 MiB of decoded
+     pixels (patch 0081, ListOfAvailableImages::visit_cached_images). An entry they don't mark dies
+     in the collection that finalizes its last <img>.
+     1. Load 12 PNG data: URLs in <img> elements, two a frame, and wait for each load. Image i is
+        512 x (480 + i) pixels, 960 KiB + 2 KiB * i decoded (4 bytes a pixel).
+     2. Remove the elements and drop every reference, then allocate until one of 16 WeakRefs to
+        objects made after that clears: a collection ran since. Not one WeakRef: LibGC also scans
+        conservatively, and a stale word there can keep a single object (or element) alive through
+        every collection.
+     3. Request every URL again in new elements, oldest first, in one task. One still in the list of
+        available images completes synchronously (`complete` and its natural size right after src
+        is set); the others load again.
+     The newest 8 (images 4-11) come to 7.6 MiB and the newest 9 to 8.6 MiB, so the marking keeps
+     4-11: the title (dev.sh check) wants both passes to load all 12 with their own natural size, the
+     collection to have run, and exactly 4-11 to complete synchronously. All 12 would mean the
+     collection dropped nothing (what the page reads with no collection, or with the elements kept
+     alive); none, that the cache no longer hits after a collection; others, that the marking keeps
+     the wrong entries; a wrong size, an entry left pointing at other data.
+     Why the size limit and not 140 SVGs past the count limit: LibWeb runs one task a pump
+     and karouka pumps at most 32 times a frame for the tasks queued between frames, for all of a
+     system's views (src/engine/Engine.cpp, max_pumps_for_leftover_tasks). 140 loads queue hundreds
+     of tasks, which held back data_url_image.html's loads (17 of 20) four views to a system beside
+     this page. Twelve loads, two a frame, leave the budget to the other views. -->
+<div class="row"><div id="first-state" class="state"></div><span id="first-text">first load: waiting</span></div>
+<div class="row"><div id="gc-state" class="state"></div><span id="gc-text">collection: waiting</span></div>
+<div class="row"><div id="again-state" class="state"></div><span id="again-text">load again: waiting</span></div>
+<div id="images"></div>
+<script>
+  const count = 12;
+  const per_frame = 2;
+  const container = document.getElementById("images");
+  const size = i => ({ width: 512, height: 480 + i });
+  const has_size = (image, i) => image.naturalWidth === size(i).width && image.naturalHeight === size(i).height;
+
+  // A 1-bit palette PNG of one green, its pixel data in a stored (uncompressed) deflate block.
+  const crc_table = Array.from({ length: 256 }, (_, n) => {
+    for (let k = 0; k < 8; ++k)
+      n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+    return n >>> 0;
+  });
+  const be32 = n => [n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  function chunk(type, data) {
+    const bytes = [...type].map(c => c.charCodeAt(0)).concat(data);
+    let crc = 0xffffffff;
+    for (const b of bytes)
+      crc = crc_table[(crc ^ b) & 255] ^ (crc >>> 8);
+    return be32(data.length).concat(bytes, be32((crc ^ 0xffffffff) >>> 0));
+  }
+  function png_url(width, height) {
+    const raw = new Array((1 + width / 8) * height).fill(0); // filter 0, palette index 0
+    let a = 1, b = 0;
+    for (const byte of raw) {
+      a = (a + byte) % 65521;
+      b = (b + a) % 65521;
+    }
+    const zlib = [0x78, 0x01, 0x01, raw.length & 255, raw.length >>> 8, ~raw.length & 255, (~raw.length >>> 8) & 255]
+      .concat(raw, be32(((b << 16) | a) >>> 0));
+    const bytes = [137, 80, 78, 71, 13, 10, 26, 10].concat(
+      chunk("IHDR", be32(width).concat(be32(height), [1, 3, 0, 0, 0])),
+      chunk("PLTE", [0x2e, 0xa0, 0x43]),
+      chunk("IDAT", zlib),
+      chunk("IEND", []));
+    let binary = "";
+    for (const byte of bytes)
+      binary += String.fromCharCode(byte);
+    return "data:image/png;base64," + btoa(binary);
+  }
+  const urls = Array.from({ length: count }, (_, i) => png_url(size(i).width, size(i).height));
+
+  const result = { first: 0, collected: "no", again: 0, sizes: "ok", sync: "none" };
+  function report() {
+    document.title = `gc image reload first=${result.first}/${count} collected=${result.collected} again=${result.again}/${count} sizes=${result.sizes} sync=${result.sync}`;
+  }
+  function show(id, pass, text) {
+    document.getElementById(`${id}-state`).className = "state " + (pass ? "pass" : "fail");
+    document.getElementById(`${id}-text`).textContent = text;
+  }
+
+  // Requests URL i in a new <img>; on_settled(loaded) once it fired load or error. Returns whether it
+  // completed synchronously from the list of available images.
+  function request(i, on_settled) {
+    const image = document.createElement("img");
+    image.onload = () => {
+      if (!has_size(image, i))
+        result.sizes = `wrong@${i}`;
+      on_settled(has_size(image, i));
+    };
+    image.onerror = () => on_settled(false);
+    container.append(image);
+    image.src = urls[i];
+    if (image.complete && image.naturalWidth && !has_size(image, i))
+      result.sizes = `wrong-sync@${i}`;
+    return image;
+  }
+
+  // A collection by allocation pressure (karouka exposes no gc()); a WeakRef can only clear in a
+  // later task, so each round is its own.
+  function collect(sentinels, rounds, done) {
+    let keep = null;
+    for (let i = 0; i < 250000; ++i)
+      keep = { i };
+    setTimeout(() => {
+      if (sentinels.some(sentinel => !sentinel.deref()))
+        return done(true);
+      if (rounds === 1)
+        return done(false);
+      collect(sentinels, rounds - 1, done);
+    }, 0);
+  }
+
+  function load_again() {
+    let settled = 0;
+    const synchronous = [];
+    for (let i = 0; i < count; ++i) {
+      const image = request(i, loaded => {
+        if (loaded)
+          ++result.again;
+        if (++settled < count)
+          return;
+        result.sync = synchronous.length ? `${synchronous[0]}-${synchronous[synchronous.length - 1]}` : "none";
+        if (synchronous.some((i, n) => n && i !== synchronous[n - 1] + 1))
+          result.sync = synchronous.join(",");
+        const pass = result.again === count && result.sizes === "ok" && result.sync === "4-11";
+        show("again", pass, `load again: ${result.again} of ${count} with their natural size, images ${result.sync} from the list of available images, sizes ${result.sizes}`);
+        report();
+      });
+      if (image.complete && has_size(image, i))
+        synchronous.push(i);
+    }
+  }
+
+  function first_load_done() {
+    show("first", result.first === count, `first load: ${result.first} of ${count} with their natural size`);
+    report();
+    setTimeout(() => {
+      container.replaceChildren();
+      collect(Array.from({ length: 16 }, () => new WeakRef({})), 10, collected => {
+        result.collected = collected ? "yes" : "no";
+        show("gc", collected, `collection: ${collected ? "a collection ran after the first load's elements went" : "no collection ran"}`);
+        report();
+        load_again();
+      });
+    }, 0);
+  }
+
+  report();
+  let next = 0;
+  let settled = 0;
+  (function load_some() {
+    for (let n = 0; n < per_frame && next < count; ++n, ++next) {
+      request(next, loaded => {
+        if (loaded)
+          ++result.first;
+        if (++settled === count)
+          first_load_done();
+      });
+    }
+    if (next < count)
+      requestAnimationFrame(load_some);
+  })();
+</script>
+</body>
+</html>

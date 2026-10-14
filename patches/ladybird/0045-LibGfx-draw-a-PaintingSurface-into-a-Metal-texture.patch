@@ -1,0 +1,53 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibGfx: draw a PaintingSurface into a Metal texture
+
+PaintingSurface could only draw into a Metal texture it made over an
+IOSurface (create_from_shared_image_buffer). An embedder that renders
+into its own MTLTexture (a game's render target, karouka's
+kr_view_set_output) then had to draw into an IOSurface and copy the
+frame across. create_from_metal_texture wraps any BGRA8Unorm render
+target texture of the context's device, and create_from_shared_image_buffer
+now goes through it.
+
+---
+diff --git a/Libraries/LibGfx/PaintingSurface.cpp b/Libraries/LibGfx/PaintingSurface.cpp
+index c4c70ebfdd..c67129a02d 100644
+--- a/Libraries/LibGfx/PaintingSurface.cpp
++++ b/Libraries/LibGfx/PaintingSurface.cpp
+@@ -168,12 +168,18 @@ NonnullRefPtr<PaintingSurface> PaintingSurface::create_from_shared_image_buffer(
+ {
+     auto const& iosurface_handle = shared_image_buffer.iosurface_handle();
+     auto metal_texture = context->metal_context().create_texture_from_iosurface(iosurface_handle, MetalTextureFormat::BGRA8, 0);
+-    IntSize const size { metal_texture->width(), metal_texture->height() };
+-    auto image_info = SkImageInfo::Make(size.width(), size.height(), kBGRA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
++    return create_from_metal_texture(*metal_texture, move(context), origin).release_nonnull();
++}
++
++RefPtr<PaintingSurface> PaintingSurface::create_from_metal_texture(MetalTexture const& metal_texture, NonnullRefPtr<SkiaBackendContext> context, Origin origin)
++{
++    IntSize const size { metal_texture.width(), metal_texture.height() };
+     GrMtlTextureInfo mtl_info;
+-    mtl_info.fTexture = sk_ret_cfp(metal_texture->texture());
+-    auto backend_render_target = GrBackendRenderTargets::MakeMtl(metal_texture->width(), metal_texture->height(), mtl_info);
++    mtl_info.fTexture = sk_ret_cfp(metal_texture.texture());
++    auto backend_render_target = GrBackendRenderTargets::MakeMtl(size.width(), size.height(), mtl_info);
+     auto surface = SkSurfaces::WrapBackendRenderTarget(context->sk_context(), backend_render_target, origin_to_sk_origin(origin), kBGRA_8888_SkColorType, SkColorSpace::MakeSRGB(), nullptr);
++    if (!surface)
++        return nullptr;
+     return adopt_ref(*new PaintingSurface(make<Impl>(context, size, surface, nullptr, true)));
+ }
+ #endif
+diff --git a/Libraries/LibGfx/PaintingSurface.h b/Libraries/LibGfx/PaintingSurface.h
+index 96fa13b992..bc59276932 100644
+--- a/Libraries/LibGfx/PaintingSurface.h
++++ b/Libraries/LibGfx/PaintingSurface.h
+@@ -57,6 +57,9 @@ public:
+ 
+ #ifdef AK_OS_MACOS
+     static NonnullRefPtr<PaintingSurface> create_from_shared_image_buffer(SharedImageBuffer&, NonnullRefPtr<SkiaBackendContext>, Origin = Origin::TopLeft);
++    // Draws into a BGRA8Unorm MTLTexture of the context's device that is a render target, such as one
++    // an embedder owns. Skia keeps the texture alive while the surface lives. Null if Skia can't wrap it.
++    static RefPtr<PaintingSurface> create_from_metal_texture(MetalTexture const&, NonnullRefPtr<SkiaBackendContext>, Origin = Origin::TopLeft);
+ #endif
+ 
+ #ifdef USE_VULKAN_DMABUF_IMAGES

@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* A smoke page for `karouka_viewer --headless`. Text-free,
+     like page.html, so the result does not depend on a font being found.
+
+     What the capture proves: the page loaded, the inline script ran and
+     built DOM (the swatch does not exist without it), a requestAnimationFrame
+     callback fired inside the headless frame loop and its style change
+     reached the offscreen texture (the swatch is red until it does), the
+     read-back is in RGBA order, and the center scrollport pixel reflects the
+     three frame-indexed wheel events. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #swatch {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 200px;
+    height: 200px;
+    background: rgb(255, 0, 0);
+  }
+  #scrollport {
+    position: absolute;
+    left: 380px;
+    top: 240px;
+    width: 200px;
+    height: 160px;
+    overflow: auto;
+  }
+  .scroll-band { height: 32px; }
+</style>
+</head>
+<body>
+<div id="scrollport">
+  <div class="scroll-band" style="background-color: rgb(255, 0, 0)"></div>
+  <div class="scroll-band" style="background-color: rgb(255, 192, 0)"></div>
+  <div class="scroll-band" style="background-color: rgb(0, 160, 0)"></div>
+  <div class="scroll-band" style="background-color: rgb(128, 128, 128)"></div>
+  <div class="scroll-band" style="background-color: rgb(192, 0, 160)"></div>
+  <div class="scroll-band" style="background-color: rgb(0, 192, 192)"></div>
+  <div class="scroll-band" style="background-color: rgb(32, 64, 192)"></div>
+  <div class="scroll-band" style="background-color: rgb(224, 96, 0)"></div>
+  <div class="scroll-band" style="background-color: rgb(96, 64, 32)"></div>
+  <div class="scroll-band" style="background-color: rgb(224, 224, 224)"></div>
+</div>
+<script>
+  const swatch = document.createElement('div');
+  swatch.id = 'swatch';
+  document.body.appendChild(swatch);
+  requestAnimationFrame(() => {
+    swatch.style.backgroundColor = 'rgb(0, 96, 224)';
+  });
+</script>
+</body>
+</html>

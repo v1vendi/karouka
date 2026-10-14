@@ -1,0 +1,961 @@
+diff --git a/Libraries/LibWeb/Compositor/CompositorHost.cpp b/Libraries/LibWeb/Compositor/CompositorHost.cpp
+index bbb7c60ef8..788418469b 100644
+--- a/Libraries/LibWeb/Compositor/CompositorHost.cpp
++++ b/Libraries/LibWeb/Compositor/CompositorHost.cpp
+@@ -16,7 +16,9 @@
+ #include <LibWeb/Compositor/CompositorHost.h>
+ #include <LibWeb/Compositor/NavigablePresenter.h>
+ #include <LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h>
++#ifndef LIBWEB_PRUNE_WEBGL
+ #include <LibWeb/WebGL/RemoteWebGLTransport.h>
++#endif
+ 
+ namespace Web::Compositor {
+ 
+@@ -128,6 +130,7 @@ void CompositorHost::discard_canvas_2d_stream()
+     (void)m_canvas_2d_stream->take_segments();
+ }
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+ class CompositorRemoteWebGLTransport final : public Web::WebGL::RemoteWebGLTransport {
+ public:
+     explicit CompositorRemoteWebGLTransport(NonnullRefPtr<CompositorConnection> connection)
+@@ -234,6 +237,7 @@ private:
+     NonnullRefPtr<CompositorConnection> m_connection;
+     Optional<Compositing::CanvasId> m_canvas_id;
+ };
++#endif
+ 
+ class CompositorRemoteCanvas2DTransport final : public Web::HTML::RemoteCanvas2DTransport {
+ public:
+@@ -292,12 +296,14 @@ private:
+     Optional<Compositing::CanvasId> m_canvas_id;
+ };
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+ RefPtr<Web::WebGL::RemoteWebGLTransport> CompositorHost::create_webgl_transport()
+ {
+     if (auto* connection = compositor_connection())
+         return adopt_ref(*new CompositorRemoteWebGLTransport(*connection));
+     return nullptr;
+ }
++#endif
+ 
+ RefPtr<Web::HTML::RemoteCanvas2DTransport> CompositorHost::create_canvas_2d_transport()
+ {
+diff --git a/Libraries/LibWeb/Compositor/CompositorHost.h b/Libraries/LibWeb/Compositor/CompositorHost.h
+index d696e7eabd..88b63027cc 100644
+--- a/Libraries/LibWeb/Compositor/CompositorHost.h
++++ b/Libraries/LibWeb/Compositor/CompositorHost.h
+@@ -92,7 +92,9 @@ public:
+     void flush_canvas_2d_stream();
+     void discard_canvas_2d_stream();
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+     RefPtr<WebGL::RemoteWebGLTransport> create_webgl_transport();
++#endif
+     RefPtr<HTML::RemoteCanvas2DTransport> create_canvas_2d_transport();
+ 
+     Optional<PlaceholderCanvasLink> allocate_placeholder_canvas();
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index cc6d98c5da..b47c406c48 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -255,7 +255,9 @@
+ #include <LibWeb/WebIDL/ExceptionOr.h>
+ #include <LibWeb/WebIDL/ObservableArray.h>
+ #include <LibWeb/WebIDL/Promise.h>
++#ifndef LIBWEB_PRUNE_XMLHTTPREQUEST
+ #include <LibWeb/XHR/XMLHttpRequest.h>
++#endif
+ #include <LibWeb/XPath/XPath.h>
+ #include <LibWebCommon/CSS/SystemColor.h>
+ #include <LibWebCommon/Infra/CharacterTypes.h>
+@@ -5732,7 +5734,9 @@ void Document::run_unloading_cleanup_steps()
+     //         opt not to follow the spec exactly in regards to this, instead letting the connection stay open until
+     //         GC collects it. However, we need to be proactive about this when navigating for the sake of test-web.
+     window.close_all_idb_connections();
++#ifndef LIBWEB_PRUNE_XMLHTTPREQUEST
+     XHR::XMLHttpRequest::release_activity_roots_for_relevant_global_object(window.this_impl());
++#endif
+ 
+     FileAPI::run_unloading_cleanup_steps(*this);
+     fully_exit_fullscreen();
+diff --git a/Libraries/LibWeb/Embedder/Prune/EncryptedMediaExtensions.cmake b/Libraries/LibWeb/Embedder/Prune/EncryptedMediaExtensions.cmake
+new file mode 100644
+index 0000000000..06659b7aa8
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/EncryptedMediaExtensions.cmake
+@@ -0,0 +1,3 @@
++# karouka: Encrypted Media Extensions. There is no CDM. `navigator.requestMediaKeySystemAccess` is not
++# exposed, and MediaCapabilities' key system configuration loses its EME members.
++list(APPEND LIBWEB_PRUNED_FAMILIES EncryptedMediaExtensions)
+diff --git a/Libraries/LibWeb/Embedder/Prune/Geolocation.cmake b/Libraries/LibWeb/Embedder/Prune/Geolocation.cmake
+new file mode 100644
+index 0000000000..043b325445
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/Geolocation.cmake
+@@ -0,0 +1,3 @@
++# karouka: Geolocation. A page rendered into a texture has no position source. `navigator.geolocation`
++# is not exposed, and Page keeps no emulated position or pending requests.
++list(APPEND LIBWEB_PRUNED_FAMILIES Geolocation)
+diff --git a/Libraries/LibWeb/Embedder/Prune/StorageManager.cmake b/Libraries/LibWeb/Embedder/Prune/StorageManager.cmake
+new file mode 100644
+index 0000000000..e39d692d6d
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/StorageManager.cmake
+@@ -0,0 +1,6 @@
++# karouka: the Storage API's StorageManager (`navigator.storage`). StorageKey, StorageShelf and
++# StorageBottle back localStorage, BroadcastChannel and blob URLs, so only NavigatorStorage and
++# StorageManager go. StorageManager is not a directory, so this only defines LIBWEB_PRUNE_STORAGEMANAGER.
++list(APPEND LIBWEB_PRUNED_FAMILIES StorageManager)
++list(FILTER SOURCES EXCLUDE REGEX "^StorageAPI/(NavigatorStorage|StorageManager)\\.cpp$")
++list(APPEND LIBWEB_PRUNED_IDL StorageAPI/NavigatorStorage StorageAPI/StorageManager)
+diff --git a/Libraries/LibWeb/Embedder/Prune/WebGL.cmake b/Libraries/LibWeb/Embedder/Prune/WebGL.cmake
+new file mode 100644
+index 0000000000..c9a24fcf2e
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/WebGL.cmake
+@@ -0,0 +1,6 @@
++# karouka: WebGL. Canvases render into the page's display list; there is no compositor process to
++# run GL commands in. getContext("webgl"/"webgl2") returns null, as in a browser without WebGL, and
++# the canvas context Variants keep only their 2D alternative. WebGL/WebGLContextProxy.cpp is a
++# generated source, so it is excluded here rather than by the SOURCES filter.
++list(APPEND LIBWEB_PRUNED_FAMILIES WebGL)
++set_source_files_properties(WebGL/WebGLContextProxy.cpp PROPERTIES HEADER_FILE_ONLY ON)
+diff --git a/Libraries/LibWeb/Embedder/Prune/XMLHttpRequest.cmake b/Libraries/LibWeb/Embedder/Prune/XMLHttpRequest.cmake
+new file mode 100644
+index 0000000000..3d7953e2d6
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/XMLHttpRequest.cmake
+@@ -0,0 +1,6 @@
++# karouka: XMLHttpRequest. There is no network; pages use fetch, which rejects. FormData and
++# ProgressEvent stay in XHR/ because forms, Fetch and FileReader use them. XMLHttpRequest is not a
++# directory, so this only defines LIBWEB_PRUNE_XMLHTTPREQUEST.
++list(APPEND LIBWEB_PRUNED_FAMILIES XMLHttpRequest)
++list(FILTER SOURCES EXCLUDE REGEX "^XHR/XMLHttpRequest(EventTarget|Upload)?\\.cpp$")
++list(APPEND LIBWEB_PRUNED_IDL XHR/XMLHttpRequest XHR/XMLHttpRequestEventTarget XHR/XMLHttpRequestUpload)
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp b/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp
+index 9323b4b15e..8e8ce8a28a 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp
+@@ -10,8 +10,10 @@
+ #include <LibGfx/Rect.h>
+ #include <LibWeb/HTML/Canvas/Canvas2DContextBase.h>
+ #include <LibWeb/HTML/Canvas/CanvasHost.h>
++#ifndef LIBWEB_PRUNE_WEBGL
+ #include <LibWeb/WebGL/WebGLContextProxy.h>
+ #include <LibWeb/WebGL/WebGLRenderingContextBase.h>
++#endif
+ 
+ namespace Web::HTML {
+ 
+@@ -50,8 +52,10 @@ RefPtr<Gfx::Bitmap> CanvasHost::get_bitmap_from_surface()
+     if (size.is_empty())
+         return nullptr;
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+     if (auto* webgl_context = canvas_webgl_context())
+         return webgl_context->context().read_back_drawing_buffer({ {}, size });
++#endif
+ 
+     if (auto* context = canvas_2d_context()) {
+         context->ensure_backing_storage();
+diff --git a/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp b/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
+index a068040d8a..9b5653f8b7 100644
+--- a/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
+@@ -40,9 +40,11 @@
+ #include <LibWeb/Painting/PaintFacts.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/Platform/FontPlugin.h>
++#ifndef LIBWEB_PRUNE_WEBGL
+ #include <LibWeb/WebGL/WebGL2RenderingContext.h>
+ #include <LibWeb/WebGL/WebGLContextProxy.h>
+ #include <LibWeb/WebGL/WebGLRenderingContext.h>
++#endif
+ #include <LibWeb/WebIDL/AbstractOperations.h>
+ #include <LibWeb/WebIDL/DOMException.h>
+ #include <LibWeb/WebIDL/ExceptionOrUtils.h>
+@@ -163,12 +165,14 @@ void HTMLCanvasElement::reset_context_to_default_state()
+         [](GC::Ref<CanvasRenderingContext2D>& context) {
+             context->reset_to_default_state();
+         },
++#ifndef LIBWEB_PRUNE_WEBGL
+         [](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+             context->reset_to_default_state();
+         },
+         [](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+             context->reset_to_default_state();
+         },
++#endif
+         [](Empty) {
+             // Do nothing.
+         });
+@@ -181,10 +185,14 @@ Canvas2DContextBase* HTMLCanvasElement::canvas_2d_context() const
+ 
+ WebGL::WebGLRenderingContextBase* HTMLCanvasElement::canvas_webgl_context() const
+ {
++#ifdef LIBWEB_PRUNE_WEBGL
++    return nullptr;
++#else
+     return m_context.visit(
+         [](GC::Ref<WebGL::WebGLRenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+         [](GC::Ref<WebGL::WebGL2RenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+         [](auto const&) -> WebGL::WebGLRenderingContextBase* { return nullptr; });
++#endif
+ }
+ 
+ Page& HTMLCanvasElement::canvas_page()
+@@ -279,12 +287,14 @@ void HTMLCanvasElement::notify_context_about_canvas_size_change()
+         [&](GC::Ref<CanvasRenderingContext2D>& context) {
+             context->set_size(bitmap_size_for_canvas());
+         },
++#ifndef LIBWEB_PRUNE_WEBGL
+         [&](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+             context->set_size(bitmap_size_for_canvas());
+         },
+         [&](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+             context->set_size(bitmap_size_for_canvas());
+         },
++#endif
+         [](Empty) {
+             // Do nothing.
+         });
+@@ -344,6 +354,7 @@ HTMLCanvasElement::HasOrCreatedContext HTMLCanvasElement::create_2d_context(Canv
+     return HasOrCreatedContext::Yes;
+ }
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+ template<typename ContextType>
+ JS::ThrowCompletionOr<HTMLCanvasElement::HasOrCreatedContext> HTMLCanvasElement::create_webgl_context(JS::Value options)
+ {
+@@ -357,6 +368,7 @@ JS::ThrowCompletionOr<HTMLCanvasElement::HasOrCreatedContext> HTMLCanvasElement:
+     m_context = GC::Ref<ContextType>(*maybe_context);
+     return HasOrCreatedContext::Yes;
+ }
++#endif
+ 
+ // https://html.spec.whatwg.org/multipage/canvas.html#dom-canvas-getcontext
+ JS::ThrowCompletionOr<HTMLCanvasElement::RenderingContext> HTMLCanvasElement::get_context(Utf16View type, JS::Value options)
+@@ -378,6 +390,7 @@ JS::ThrowCompletionOr<HTMLCanvasElement::RenderingContext> HTMLCanvasElement::ge
+         return Empty {};
+     }
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+     // NOTE: The WebGL spec says "experimental-webgl" is also acceptable and must be equivalent to "webgl". Other engines accept this, so we do too.
+     if (type.is_one_of(u"webgl"sv, u"experimental-webgl"sv)) {
+         if (TRY(create_webgl_context<WebGL::WebGLRenderingContext>(options)) == HasOrCreatedContext::Yes)
+@@ -393,6 +406,7 @@ JS::ThrowCompletionOr<HTMLCanvasElement::RenderingContext> HTMLCanvasElement::ge
+         return Empty {};
+     }
+ 
++#endif
+     return Empty {};
+ }
+ 
+@@ -487,15 +501,19 @@ Optional<Compositing::CanvasId> HTMLCanvasElement::canvas_id() const
+         return m_placeholder_canvas_id;
+     if (auto context = canvas_rendering_context_2d())
+         return context->canvas_id();
++#ifndef LIBWEB_PRUNE_WEBGL
+     if (auto* webgl_context = canvas_webgl_context(); webgl_context && !webgl_context->is_context_lost())
+         return webgl_context->context().canvas_id();
++#endif
+     return {};
+ }
+ 
+ void HTMLCanvasElement::notify_compositor_connection_lost()
+ {
++#ifndef LIBWEB_PRUNE_WEBGL
+     if (auto* webgl_context = canvas_webgl_context())
+         webgl_context->lose_context_from_compositor_loss();
++#endif
+ }
+ 
+ void HTMLCanvasElement::set_canvas_content_dirty()
+@@ -517,12 +535,14 @@ void HTMLCanvasElement::prepare_for_compositing()
+             [](GC::Ref<CanvasRenderingContext2D>& context) {
+                 context->prepare_for_compositing();
+             },
++#ifndef LIBWEB_PRUNE_WEBGL
+             [](GC::Ref<WebGL::WebGLRenderingContext>& context) {
+                 context->prepare_for_compositing();
+             },
+             [](GC::Ref<WebGL::WebGL2RenderingContext>& context) {
+                 context->prepare_for_compositing();
+             },
++#endif
+             [](Empty) {
+                 // Do nothing.
+             });
+@@ -532,10 +552,12 @@ void HTMLCanvasElement::prepare_for_compositing()
+ 
+ void HTMLCanvasElement::notify_compositor_backing_storage_lost()
+ {
++#ifndef LIBWEB_PRUNE_WEBGL
+     if (auto* webgl_context = canvas_webgl_context()) {
+         webgl_context->restore_context_after_compositor_reconnect();
+         return;
+     }
++#endif
+     if (auto context_2d = canvas_rendering_context_2d())
+         context_2d->notify_backing_storage_lost();
+ }
+diff --git a/Libraries/LibWeb/HTML/HTMLCanvasElement.h b/Libraries/LibWeb/HTML/HTMLCanvasElement.h
+index 842fed4d38..cc549ce0d0 100644
+--- a/Libraries/LibWeb/HTML/HTMLCanvasElement.h
++++ b/Libraries/LibWeb/HTML/HTMLCanvasElement.h
+@@ -13,7 +13,9 @@
+ #include <LibWeb/HTML/Canvas/CanvasHost.h>
+ #include <LibWeb/HTML/Canvas/CanvasSettings.h>
+ #include <LibWeb/HTML/HTMLElement.h>
++#ifndef LIBWEB_PRUNE_WEBGL
+ #include <LibWeb/WebGL/WebGLContextAttributes.h>
++#endif
+ #include <LibWebCommon/WebIDL/Types.h>
+ 
+ namespace Web::HTML {
+@@ -25,7 +27,11 @@ class HTMLCanvasElement final
+     GC_DECLARE_ALLOCATOR(HTMLCanvasElement);
+ 
+ public:
++#ifdef LIBWEB_PRUNE_WEBGL
++    using RenderingContext = Variant<GC::Ref<CanvasRenderingContext2D>, Empty>;
++#else
+     using RenderingContext = Variant<GC::Ref<CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty>;
++#endif
+ 
+     virtual ~HTMLCanvasElement() override;
+ 
+@@ -52,8 +58,10 @@ public:
+         Yes,
+     };
+     HasOrCreatedContext create_2d_context(CanvasRenderingContext2DSettings);
++#ifndef LIBWEB_PRUNE_WEBGL
+     HasOrCreatedContext create_webgl_context(WebGL::WebGLContextAttributes);
+     HasOrCreatedContext create_webgl2_context(WebGL::WebGLContextAttributes);
++#endif
+     RenderingContext const& context() const { return m_context; }
+ 
+     WebIDL::UnsignedLong width() const;
+@@ -111,7 +119,7 @@ private:
+     void notify_context_about_canvas_size_change();
+     void did_commit_placeholder_frame(Gfx::IntSize, bool origin_clean);
+ 
+-    Variant<GC::Ref<HTML::CanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
++    RenderingContext m_context;
+     bool m_canvas_content_dirty { false };
+     u64 m_content_generation { 0 };
+ 
+diff --git a/Libraries/LibWeb/HTML/LocalTraversableNavigable.cpp b/Libraries/LibWeb/HTML/LocalTraversableNavigable.cpp
+index 1437fb348d..34dac0c845 100644
+--- a/Libraries/LibWeb/HTML/LocalTraversableNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalTraversableNavigable.cpp
+@@ -10,7 +10,9 @@
+ #include <LibGC/RootVector.h>
+ #include <LibWeb/Bindings/MainThreadVM.h>
+ #include <LibWeb/DOM/Document.h>
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+ #include <LibWeb/Geolocation/GeolocationCoordinates.h>
++#endif
+ #include <LibWeb/HTML/BrowsingContext.h>
+ #include <LibWeb/HTML/DocumentState.h>
+ #include <LibWeb/HTML/History.h>
+diff --git a/Libraries/LibWeb/HTML/Navigator.cpp b/Libraries/LibWeb/HTML/Navigator.cpp
+index a8869f24d9..c5e4a25df5 100644
+--- a/Libraries/LibWeb/HTML/Navigator.cpp
++++ b/Libraries/LibWeb/HTML/Navigator.cpp
+@@ -15,10 +15,14 @@
+ #    include <LibWeb/CredentialManagement/CredentialsContainer.h>
+ #endif
+ #include <LibWeb/DOM/Document.h>
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+ #include <LibWeb/EncryptedMediaExtensions/Algorithms.h>
+ #include <LibWeb/EncryptedMediaExtensions/EncryptedMediaExtensions.h>
+ #include <LibWeb/EncryptedMediaExtensions/MediaKeySystemAccess.h>
++#endif
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+ #include <LibWeb/Geolocation/Geolocation.h>
++#endif
+ #include <LibWeb/HTML/Navigator.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+@@ -58,10 +62,12 @@ URL::URL Navigator::navigator_id_url() const
+     return m_window->associated_document().url();
+ }
+ 
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ EnvironmentSettingsObject& Navigator::navigator_storage_settings_object() const
+ {
+     return relevant_settings_object(*m_window);
+ }
++#endif
+ 
+ // https://html.spec.whatwg.org/multipage/system-state.html#dom-navigator-pdfviewerenabled
+ bool Navigator::pdf_viewer_enabled() const
+@@ -89,7 +95,9 @@ void Navigator::visit_edges(GC::Cell::Visitor& visitor)
+     visitor.visit(m_mime_type_array);
+     visitor.visit(m_plugin_array);
+     visitor.visit(m_clipboard);
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     visitor.visit(m_geolocation);
++#endif
+ #ifndef LIBWEB_PRUNE_SERIAL
+     visitor.visit(m_serial);
+ #endif
+@@ -127,6 +135,7 @@ GC::Ref<Clipboard::Clipboard> Navigator::clipboard()
+     return *m_clipboard;
+ }
+ 
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+ GC::Ref<Geolocation::Geolocation> Navigator::geolocation()
+ {
+     if (!m_geolocation)
+@@ -134,6 +143,7 @@ GC::Ref<Geolocation::Geolocation> Navigator::geolocation()
+     return *m_geolocation;
+ }
+ 
++#endif
+ #ifndef LIBWEB_PRUNE_SERIAL
+ GC::Ref<Serial::Serial> Navigator::serial()
+ {
+@@ -237,6 +247,7 @@ GC::Ref<PermissionsAPI::Permissions> Navigator::permissions()
+     return *m_permissions;
+ }
+ 
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+ void Navigator::request_media_key_system_access(Utf16String key_system, Vector<EncryptedMediaExtensions::MediaKeySystemConfiguration> supported_configurations, GC::Ref<WebIDL::Promise> promise)
+ {
+     // 1. If this's relevant global object's associated Document is not allowed to use the encrypted-media feature, then throw a "SecurityError" DOMException and abort these steps.
+@@ -301,5 +312,6 @@ void Navigator::request_media_key_system_access(Utf16String key_system, Vector<E
+         WebIDL::reject_promise(promise, WebIDL::NotSupportedError::create("No supported configurations found for the requested key system"_utf16));
+     }));
+ }
++#endif
+ 
+ }
+diff --git a/Libraries/LibWeb/HTML/Navigator.h b/Libraries/LibWeb/HTML/Navigator.h
+index d3c9721ac9..02cc2f18a1 100644
+--- a/Libraries/LibWeb/HTML/Navigator.h
++++ b/Libraries/LibWeb/HTML/Navigator.h
+@@ -7,7 +7,9 @@
+ #pragma once
+ 
+ #include <LibWeb/Bindings/Wrappable.h>
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+ #include <LibWeb/EncryptedMediaExtensions/NavigatorEncryptedMediaExtensionsPartial.h>
++#endif
+ #include <LibWeb/Forward.h>
+ #include <LibWeb/GPC/GlobalPrivacyControl.h>
+ #include <LibWeb/Gamepad/NavigatorGamepad.h>
+@@ -25,7 +27,9 @@
+ #ifndef LIBWEB_PRUNE_SERIAL
+ #    include <LibWeb/Serial/Serial.h>
+ #endif
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ #include <LibWeb/StorageAPI/NavigatorStorage.h>
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+ #    include <LibWeb/WebLocks/NavigatorLocks.h>
+ #endif
+@@ -39,11 +43,15 @@ class Navigator
+     , public NavigatorDeviceMemoryMixin
+     , public Gamepad::NavigatorGamepadPartial
+     , public GlobalPrivacyControl::GlobalPrivacyControlMixin
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+     , public EncryptedMediaExtensions::NavigatorEncryptedMediaExtensionsPartial
++#endif
+     , public NavigatorIDMixin
+     , public NavigatorLanguageMixin
+     , public NavigatorOnLineMixin
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     , public StorageAPI::NavigatorStorage
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+     , public WebLocks::NavigatorLocks
+ #endif
+@@ -74,7 +82,9 @@ public:
+     [[nodiscard]] GC::Ref<MimeTypeArray> mime_types();
+     [[nodiscard]] GC::Ref<PluginArray> plugins();
+     [[nodiscard]] GC::Ref<Clipboard::Clipboard> clipboard();
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     [[nodiscard]] GC::Ref<Geolocation::Geolocation> geolocation();
++#endif
+ #ifndef LIBWEB_PRUNE_SERIAL
+     [[nodiscard]] GC::Ref<Serial::Serial> serial();
+ #endif
+@@ -88,7 +98,9 @@ public:
+     [[nodiscard]] GC::Ref<WebXR::XRSystem> xr();
+ #endif
+     [[nodiscard]] GC::Ref<PermissionsAPI::Permissions> permissions();
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+     void request_media_key_system_access(Utf16String key_system, Vector<EncryptedMediaExtensions::MediaKeySystemConfiguration> supported_configurations, GC::Ref<WebIDL::Promise>);
++#endif
+ 
+     GC::Ref<ServiceWorker::ServiceWorkerContainer> service_worker();
+ 
+@@ -107,8 +119,10 @@ private:
+ 
+     virtual URL::URL navigator_id_url() const override;
+ 
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     // ^StorageAPI::NavigatorStorage
+     virtual EnvironmentSettingsObject& navigator_storage_settings_object() const override;
++#endif
+ 
+     GC::Ref<Window> m_window;
+ 
+@@ -124,8 +138,10 @@ private:
+     // https://w3c.github.io/clipboard-apis/#dom-navigator-clipboard
+     GC::Ptr<Clipboard::Clipboard> m_clipboard;
+ 
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     // https://w3c.github.io/geolocation/#navigator_interface
+     GC::Ptr<Geolocation::Geolocation> m_geolocation;
++#endif
+ 
+ #ifndef LIBWEB_PRUNE_SERIAL
+     // https://wicg.github.io/serial/#extensions-to-the-navigator-interface
+diff --git a/Libraries/LibWeb/HTML/OffscreenCanvas.cpp b/Libraries/LibWeb/HTML/OffscreenCanvas.cpp
+index 7a3d39ef5f..01846a0c23 100644
+--- a/Libraries/LibWeb/HTML/OffscreenCanvas.cpp
++++ b/Libraries/LibWeb/HTML/OffscreenCanvas.cpp
+@@ -32,9 +32,11 @@
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/Platform/FontPlugin.h>
++#ifndef LIBWEB_PRUNE_WEBGL
+ #include <LibWeb/WebGL/WebGL2RenderingContext.h>
+ #include <LibWeb/WebGL/WebGLContextProxy.h>
+ #include <LibWeb/WebGL/WebGLRenderingContext.h>
++#endif
+ #include <LibWeb/WebIDL/DOMException.h>
+ #include <LibWeb/WebIDL/ExceptionOrUtils.h>
+ #include <LibWeb/WebIDL/Promise.h>
+@@ -224,8 +226,10 @@ WebIDL::ExceptionOr<GC::Ref<ImageBitmap>> OffscreenCanvas::transfer_to_image_bit
+     // 4. Set this OffscreenCanvas object's bitmap to reference a newly created bitmap of the same dimensions and color space as the previous bitmap, and with its pixels initialized to transparent black, or opaque black if the rendering context' s alpha is false.
+     if (auto* context = m_context.get_pointer<GC::Ref<OffscreenCanvasRenderingContext2D>>())
+         (*context)->replace_bitmap_with_cleared_bitmap();
++#ifndef LIBWEB_PRUNE_WEBGL
+     else if (auto* webgl_context = canvas_webgl_context())
+         webgl_context->context().clear_drawing_buffer();
++#endif
+ 
+     // 5. Return image.
+     return image;
+@@ -253,10 +257,14 @@ GC::Ptr<WebIDL::CallbackType> OffscreenCanvas::oncontextrestored()
+ 
+ WebGL::WebGLRenderingContextBase* OffscreenCanvas::canvas_webgl_context() const
+ {
++#ifdef LIBWEB_PRUNE_WEBGL
++    return nullptr;
++#else
+     return m_context.visit(
+         [](GC::Ref<WebGL::WebGLRenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+         [](GC::Ref<WebGL::WebGL2RenderingContext> const& context) -> WebGL::WebGLRenderingContextBase* { return context.ptr(); },
+         [](auto const&) -> WebGL::WebGLRenderingContextBase* { return nullptr; });
++#endif
+ }
+ 
+ Page& OffscreenCanvas::canvas_page()
+@@ -349,12 +357,14 @@ void OffscreenCanvas::commit_to_placeholder()
+             page.compositor_host().flush_canvas_2d_stream();
+             source_canvas_id = context->canvas_id();
+         },
++#ifndef LIBWEB_PRUNE_WEBGL
+         [&](OneOf<GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>> auto& context) {
+             if (context->is_context_lost())
+                 return;
+             context->prepare_for_compositing();
+             source_canvas_id = context->context().canvas_id();
+         },
++#endif
+         [](Empty) {
+             // Do nothing.
+         });
+@@ -381,6 +391,7 @@ OffscreenCanvas::HasOrCreatedContext OffscreenCanvas::create_2d_context(CanvasRe
+     return HasOrCreatedContext::Yes;
+ }
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+ template<typename ContextType>
+ JS::ThrowCompletionOr<OffscreenCanvas::HasOrCreatedContext> OffscreenCanvas::create_webgl_context(JS::Value options)
+ {
+@@ -395,6 +406,7 @@ JS::ThrowCompletionOr<OffscreenCanvas::HasOrCreatedContext> OffscreenCanvas::cre
+     m_context = GC::Ref<ContextType>(*maybe_context);
+     return HasOrCreatedContext::Yes;
+ }
++#endif
+ 
+ }
+ 
+@@ -493,6 +505,7 @@ JS::ThrowCompletionOr<HTML::OffscreenRenderingContext> get_context(JS::Realm& re
+         return Empty {};
+     }
+ 
++#ifndef LIBWEB_PRUNE_WEBGL
+     if (context_id == OffscreenRenderingContextId::Webgl) {
+         if (TRY(offscreen_canvas.create_webgl_context<WebGL::WebGLRenderingContext>(options)) == HTML::OffscreenCanvas::HasOrCreatedContext::Yes)
+             return offscreen_canvas.context().get<GC::Ref<WebGL::WebGLRenderingContext>>();
+@@ -507,6 +520,7 @@ JS::ThrowCompletionOr<HTML::OffscreenRenderingContext> get_context(JS::Realm& re
+         return Empty {};
+     }
+ 
++#endif
+     return Empty {};
+ }
+ 
+diff --git a/Libraries/LibWeb/HTML/OffscreenCanvas.h b/Libraries/LibWeb/HTML/OffscreenCanvas.h
+index 6caa2b059b..15b34085a6 100644
+--- a/Libraries/LibWeb/HTML/OffscreenCanvas.h
++++ b/Libraries/LibWeb/HTML/OffscreenCanvas.h
+@@ -22,7 +22,11 @@ class WindowOrWorkerGlobalScopeMixin;
+ 
+ // https://html.spec.whatwg.org/multipage/canvas.html#offscreenrenderingcontext
+ // NOTE: This is the Variant created by the IDL wrapper generator, and needs to be updated accordingly.
++#ifdef LIBWEB_PRUNE_WEBGL
++using OffscreenRenderingContext = Variant<GC::Ref<OffscreenCanvasRenderingContext2D>, Empty>;
++#else
+ using OffscreenRenderingContext = Variant<GC::Ref<OffscreenCanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty>;
++#endif
+ 
+ // https://html.spec.whatwg.org/multipage/canvas.html#offscreencanvas
+ class OffscreenCanvas : public DOM::EventTarget
+@@ -94,7 +98,7 @@ private:
+ 
+     void replace_bitmap();
+ 
+-    Variant<GC::Ref<HTML::OffscreenCanvasRenderingContext2D>, GC::Ref<WebGL::WebGLRenderingContext>, GC::Ref<WebGL::WebGL2RenderingContext>, Empty> m_context;
++    OffscreenRenderingContext m_context;
+ 
+     WebIDL::UnsignedLongLong m_width { 0 };
+     WebIDL::UnsignedLongLong m_height { 0 };
+diff --git a/Libraries/LibWeb/HTML/Scripting/Environments.cpp b/Libraries/LibWeb/HTML/Scripting/Environments.cpp
+index 53ca7dd158..d094613e7d 100644
+--- a/Libraries/LibWeb/HTML/Scripting/Environments.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/Environments.cpp
+@@ -32,7 +32,9 @@
+ #include <LibWeb/SecureContexts/AbstractOperations.h>
+ #include <LibWeb/ServiceWorker/ServiceWorker.h>
+ #include <LibWeb/ServiceWorker/ServiceWorkerRegistration.h>
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ #include <LibWeb/StorageAPI/StorageManager.h>
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+ #    include <LibWeb/WebLocks/LockManager.h>
+ #endif
+@@ -76,7 +78,9 @@ void EnvironmentSettingsObject::visit_edges(Cell::Visitor& visitor)
+     visitor.visit(m_responsible_event_loop);
+     visitor.visit(m_module_map);
+     m_realm_execution_context->visit_edges(visitor);
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     visitor.visit(m_storage_manager);
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+     visitor.visit(m_lock_manager);
+ #endif
+@@ -717,6 +721,7 @@ SerializedEnvironmentSettingsObject EnvironmentSettingsObject::serialize()
+     };
+ }
+ 
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ GC::Ref<StorageAPI::StorageManager> EnvironmentSettingsObject::storage_manager()
+ {
+     if (!m_storage_manager)
+@@ -724,6 +729,7 @@ GC::Ref<StorageAPI::StorageManager> EnvironmentSettingsObject::storage_manager()
+     return *m_storage_manager;
+ }
+ 
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+ GC::Ref<WebLocks::LockManager> EnvironmentSettingsObject::lock_manager()
+ {
+diff --git a/Libraries/LibWeb/HTML/Scripting/Environments.h b/Libraries/LibWeb/HTML/Scripting/Environments.h
+index c37b3cfe69..fa88029b2f 100644
+--- a/Libraries/LibWeb/HTML/Scripting/Environments.h
++++ b/Libraries/LibWeb/HTML/Scripting/Environments.h
+@@ -139,7 +139,9 @@ public:
+ 
+     SerializedEnvironmentSettingsObject serialize();
+ 
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     GC::Ref<StorageAPI::StorageManager> storage_manager();
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+     GC::Ref<WebLocks::LockManager> lock_manager();
+ #endif
+@@ -193,8 +195,10 @@ private:
+     Fetch::Infrastructure::FetchRecord::List m_fetch_group;
+ 
+     // https://storage.spec.whatwg.org/#api
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     // Each environment settings object has an associated StorageManager object.
+     GC::Ptr<StorageAPI::StorageManager> m_storage_manager;
++#endif
+ 
+     // https://w3c.github.io/web-locks/#navigator-mixins
+     // Each environment settings object has a LockManager object.
+diff --git a/Libraries/LibWeb/HTML/WorkerNavigator.cpp b/Libraries/LibWeb/HTML/WorkerNavigator.cpp
+index d4a16bd1a0..068b8cc889 100644
+--- a/Libraries/LibWeb/HTML/WorkerNavigator.cpp
++++ b/Libraries/LibWeb/HTML/WorkerNavigator.cpp
+@@ -44,10 +44,12 @@ void WorkerNavigator::visit_edges(GC::Cell::Visitor& visitor)
+     visitor.visit(m_permissions);
+ }
+ 
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ EnvironmentSettingsObject& WorkerNavigator::navigator_storage_settings_object() const
+ {
+     return relevant_settings_object(*m_global_scope);
+ }
++#endif
+ 
+ GC::Ref<MediaCapabilitiesAPI::MediaCapabilities> WorkerNavigator::media_capabilities()
+ {
+diff --git a/Libraries/LibWeb/HTML/WorkerNavigator.h b/Libraries/LibWeb/HTML/WorkerNavigator.h
+index 2f49021085..1d963c711d 100644
+--- a/Libraries/LibWeb/HTML/WorkerNavigator.h
++++ b/Libraries/LibWeb/HTML/WorkerNavigator.h
+@@ -19,7 +19,9 @@
+ #    include <LibWeb/Serial/Serial.h>
+ #endif
+ #include <LibWeb/ServiceWorker/ServiceWorkerContainer.h>
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ #include <LibWeb/StorageAPI/NavigatorStorage.h>
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+ #    include <LibWeb/WebLocks/NavigatorLocks.h>
+ #endif
+@@ -34,7 +36,9 @@ class WorkerNavigator
+     , public NavigatorIDMixin
+     , public NavigatorLanguageMixin
+     , public NavigatorOnLineMixin
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     , public StorageAPI::NavigatorStorage
++#endif
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+     , public WebLocks::NavigatorLocks
+ #endif
+@@ -64,8 +68,10 @@ private:
+ 
+     virtual void visit_edges(GC::Cell::Visitor&) override;
+ 
++#ifndef LIBWEB_PRUNE_STORAGEMANAGER
+     // ^StorageAPI::NavigatorStorage
+     virtual EnvironmentSettingsObject& navigator_storage_settings_object() const override;
++#endif
+ 
+     GC::Ref<WorkerGlobalScope> m_global_scope;
+ 
+diff --git a/Libraries/LibWeb/Internals/Internals.cpp b/Libraries/LibWeb/Internals/Internals.cpp
+index 9fa7a3ab90..aad0ba52cc 100644
+--- a/Libraries/LibWeb/Internals/Internals.cpp
++++ b/Libraries/LibWeb/Internals/Internals.cpp
+@@ -59,7 +59,9 @@
+ #include <LibWeb/Dump.h>
+ #include <LibWeb/Fetch/Fetching/Fetching.h>
+ #include <LibWeb/Fetch/Infrastructure/NetworkPartitionKey.h>
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+ #include <LibWeb/Geolocation/Geolocation.h>
++#endif
+ #include <LibWeb/Geometry/DOMRect.h>
+ #include <LibWeb/HTML/AnimatedBitmapDecodedImageData.h>
+ #include <LibWeb/HTML/AutoplaySettings.h>
+@@ -104,7 +106,9 @@
+ #ifndef LIBWEB_PRUNE_WEBSOCKETS
+ #    include <LibWeb/WebSockets/WebSocket.h>
+ #endif
++#ifndef LIBWEB_PRUNE_XMLHTTPREQUEST
+ #include <LibWeb/XHR/XMLHttpRequest.h>
++#endif
+ #include <LibWebCommon/CSS/PreferredColorScheme.h>
+ #include <LibWebCommon/Clipboard/SystemClipboard.h>
+ #include <LibWebCommon/Page/DragEvent.h>
+@@ -445,8 +449,10 @@ bool Internals::wrapper_is_preserved(JS::Object& object)
+ 
+ bool Internals::has_activity_root(JS::Object& object)
+ {
++#ifndef LIBWEB_PRUNE_XMLHTTPREQUEST
+     if (auto* xhr = Bindings::impl_from<XHR::XMLHttpRequest>(&object))
+         return xhr->has_activity_root();
++#endif
+     if (auto* resize_observer = Bindings::impl_from<ResizeObserver::ResizeObserver>(&object))
+         return resize_observer->has_activity_root();
+ #ifndef LIBWEB_PRUNE_WEBSOCKETS
+@@ -476,12 +482,14 @@ bool Internals::message_ports_are_directly_entangled(HTML::MessagePort& first, H
+     return first.entangled_port().ptr() == &second && second.entangled_port().ptr() == &first;
+ }
+ 
++#ifndef LIBWEB_PRUNE_XMLHTTPREQUEST
+ GC::Ref<XHR::XMLHttpRequest> Internals::create_xml_http_request_for_document(DOM::Document& document)
+ {
+     VERIFY(document.window());
+     return XHR::XMLHttpRequest::create(*document.window());
+ }
+ 
++#endif
+ Optional<Painting::HitTestResult> Internals::hit_test(double x, double y)
+ {
+     auto& active_document = window().associated_document();
+@@ -1555,11 +1563,17 @@ void Internals::set_environments_top_level_url(Utf16String const& url)
+ 
+ void Internals::set_geolocation_emulated_position(double latitude, double longitude, double accuracy)
+ {
++#ifdef LIBWEB_PRUNE_GEOLOCATION
++    (void)latitude;
++    (void)longitude;
++    (void)accuracy;
++#else
+     page().set_emulated_position_data(Geolocation::CoordinatesData {
+         .accuracy = accuracy,
+         .latitude = latitude,
+         .longitude = longitude,
+     });
++#endif
+ }
+ 
+ u64 Internals::parser_non_append_insertions()
+diff --git a/Libraries/LibWeb/Internals/Internals.h b/Libraries/LibWeb/Internals/Internals.h
+index 7aede52d44..5856bd49a6 100644
+--- a/Libraries/LibWeb/Internals/Internals.h
++++ b/Libraries/LibWeb/Internals/Internals.h
+@@ -77,7 +77,9 @@ public:
+     WebIDL::UnsignedLongLong html_collection_cache_generation(DOM::HTMLCollection&);
+     void fail_next_message_port_transfer(HTML::MessagePort&);
+     bool message_ports_are_directly_entangled(HTML::MessagePort&, HTML::MessagePort&);
++#ifndef LIBWEB_PRUNE_XMLHTTPREQUEST
+     GC::Ref<XHR::XMLHttpRequest> create_xml_http_request_for_document(DOM::Document&);
++#endif
+     Optional<Painting::HitTestResult> hit_test(double x, double y);
+     GC::Ptr<JS::Object> hit_test_result(double x, double y);
+     GC::Ptr<JS::Object> take_context_menu_request();
+diff --git a/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h b/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h
+index ba8522d37e..e8cee2481b 100644
+--- a/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h
++++ b/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h
+@@ -15,7 +15,9 @@
+ #include <LibMedia/DecoderCapabilities.h>
+ #include <LibWeb/Bindings/MediaCapabilities.h>
+ #include <LibWeb/Bindings/Wrappable.h>
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+ #include <LibWeb/EncryptedMediaExtensions/EncryptedMediaExtensions.h>
++#endif
+ #include <LibWebCommon/WebIDL/Types.h>
+ 
+ namespace Web::MediaCapabilitiesAPI {
+@@ -28,7 +30,9 @@ using MediaCapabilitiesKeySystemConfiguration = Bindings::MediaCapabilitiesKeySy
+ using MediaCapabilitiesDecodingInfo = Bindings::MediaCapabilitiesDecodingInfo;
+ using MediaDecodingConfiguration = Bindings::MediaDecodingConfiguration;
+ using MediaDecodingType = Bindings::MediaDecodingType;
++#ifndef LIBWEB_PRUNE_ENCRYPTEDMEDIAEXTENSIONS
+ using MediaKeysRequirement = Bindings::MediaKeysRequirement;
++#endif
+ using TransferFunction = Bindings::TransferFunction;
+ using VideoConfiguration = Bindings::VideoConfiguration;
+ 
+diff --git a/Libraries/LibWeb/Page/Page.cpp b/Libraries/LibWeb/Page/Page.cpp
+index b1e7f6d73a..0efae9a3f3 100644
+--- a/Libraries/LibWeb/Page/Page.cpp
++++ b/Libraries/LibWeb/Page/Page.cpp
+@@ -132,11 +132,15 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_window_rect_observer);
+     visitor.visit(m_on_pending_dialog_closed);
+     visitor.visit(m_pending_clipboard_requests);
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     visitor.visit(m_emulated_position_data);
+     visitor.visit(m_emulated_position_data_observers);
++#endif
+     visitor.visit(m_offscreen_canvases_pending_placeholder_commit);
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     for (auto const& request : m_pending_geolocation_requests)
+         visitor.visit(request.value.callback);
++#endif
+     m_pending_fullscreen_operations.for_each([&](auto const& operation) {
+         operation.visit([&](PendingFullscreenEnter const& enter_operation) {
+                 visitor.visit(enter_operation.element);
+@@ -1263,6 +1267,7 @@ void Page::retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemC
+         (*request)->function()(move(items));
+ }
+ 
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+ // https://w3c.github.io/geolocation/#dfn-emulated-position-data
+ void Page::set_emulated_position_data(Geolocation::EmulatedPositionData data)
+ {
+@@ -1371,6 +1376,7 @@ void Page::receive_geolocation_position(u64 request_id, GeolocationPositionResul
+     for (auto const& callback : callbacks)
+         callback->function()(result);
+ }
++#endif
+ 
+ void Page::register_media_element(Badge<HTML::HTMLMediaElement>, UniqueNodeID media_id)
+ {
+diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
+index 6a0aa1a0d7..a94a95b791 100644
+--- a/Libraries/LibWeb/Page/Page.h
++++ b/Libraries/LibWeb/Page/Page.h
+@@ -41,9 +41,11 @@
+ #include <LibWeb/DOM/RequestFullscreenError.h>
+ #include <LibWeb/Export.h>
+ #include <LibWeb/Forward.h>
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+ #include <LibWeb/Geolocation/Geolocation.h>
+ #include <LibWeb/Geolocation/GeolocationCoordinates.h>
+ #include <LibWeb/Geolocation/GeolocationPositionError.h>
++#endif
+ #include <LibWeb/HTML/Focus.h>
+ #include <LibWeb/HTML/NavigationSourceSnapshot.h>
+ #include <LibWeb/HTML/PreparedNavigationDescriptor.h>
+@@ -297,6 +299,7 @@ public:
+     void request_clipboard_entries(ClipboardRequest);
+     void retrieved_clipboard_entries(u64 request_id, Vector<Clipboard::SystemClipboardItem>);
+ 
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     using GeolocationPositionResult = Variant<Geolocation::CoordinatesData, Geolocation::GeolocationPositionError::ErrorCode>;
+     using GeolocationPositionCallback = GC::Ref<GC::Function<void(GeolocationPositionResult)>>;
+     enum class GeolocationRequestType : u8 {
+@@ -314,6 +317,7 @@ public:
+     void set_emulated_position_data(Geolocation::CoordinatesData);
+     u64 register_emulated_position_data_observer(GC::Ref<GC::Function<void()>>);
+     void unregister_emulated_position_data_observer(u64 observer_id);
++#endif
+ 
+     enum class PendingNonBlockingDialog {
+         None,
+@@ -493,6 +497,7 @@ private:
+     HashMap<u64, ClipboardRequest> m_pending_clipboard_requests;
+     u64 m_next_clipboard_request_id { 0 };
+ 
++#ifndef LIBWEB_PRUNE_GEOLOCATION
+     struct PendingGeolocationRequest {
+         GeolocationPositionCallback callback;
+         GeolocationRequestType type;
+@@ -506,6 +511,7 @@ private:
+     Geolocation::EmulatedPositionData m_emulated_position_data { Geolocation::GeolocationPositionError::ErrorCode::PermissionDenied };
+     HashMap<u64, GC::Ref<GC::Function<void()>>> m_emulated_position_data_observers;
+     u64 m_next_emulated_position_data_observer_id { 0 };
++#endif
+ 
+     Vector<UniqueNodeID> m_media_elements;
+     Vector<UniqueNodeID> m_canvas_elements;
+diff --git a/Libraries/LibWeb/WebGL/BindingsGlue.h b/Libraries/LibWeb/WebGL/BindingsGlue.h
+index a406b0b1a4..20eef72e3e 100644
+--- a/Libraries/LibWeb/WebGL/BindingsGlue.h
++++ b/Libraries/LibWeb/WebGL/BindingsGlue.h
+@@ -6,6 +6,10 @@
+ 
+ #pragma once
+ 
++// karouka: WrapperFactory.cpp always includes this header; with WebGL left out, the bindings it
++// names (WebGLContextAttributes, ...) are not generated.
++#ifndef LIBWEB_PRUNE_WEBGL
++
+ #include <AK/Optional.h>
+ #include <AK/String.h>
+ #include <AK/Types.h>
+@@ -71,3 +75,5 @@ JS::Value webgl_wrappable(JS::Realm& realm, GC::Ptr<T> wrappable)
+ }
+ 
+ }
++
++#endif

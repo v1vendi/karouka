@@ -1,0 +1,91 @@
+diff --git a/Libraries/LibJS/Runtime/Temporal/Now.cpp b/Libraries/LibJS/Runtime/Temporal/Now.cpp
+index 89802eb9cc..5f2ae02fe2 100644
+--- a/Libraries/LibJS/Runtime/Temporal/Now.cpp
++++ b/Libraries/LibJS/Runtime/Temporal/Now.cpp
+@@ -5,6 +5,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <AK/Atomic.h>
+ #include <AK/Time.h>
+ #include <LibJS/Runtime/Date.h>
+ #include <LibJS/Runtime/Temporal/Instant.h>
+@@ -19,6 +20,20 @@ namespace JS::Temporal {
+ 
+ GC_DEFINE_ALLOCATOR(Now);
+ 
++static Atomic<HostWallClock> s_host_wall_clock { nullptr };
++
++void set_host_wall_clock(HostWallClock clock)
++{
++    s_host_wall_clock.store(clock);
++}
++
++i64 host_wall_clock_nanoseconds()
++{
++    if (auto clock = s_host_wall_clock.load(AK::MemoryOrder::memory_order_relaxed))
++        return clock();
++    return AK::UnixDateTime::now().nanoseconds_since_epoch();
++}
++
+ // 2 The Temporal.Now Object, https://tc39.es/proposal-temporal/#sec-temporal-now-object
+ Now::Now(Realm& realm)
+     : Object(ConstructWithPrototypeTag::Tag, realm.intrinsics().object_prototype())
+@@ -128,7 +143,7 @@ double system_utc_epoch_milliseconds()
+     // 2. Let nowNs be HostSystemUTCEpochNanoseconds(global).
+     // AD-HOC: Every caller of SystemUTCEpochMilliseconds is via Date.now and the Date constructor, which do not need
+     //         nanosecond precision. We can avoid unnecessary bigint math by returning milliseconds directly.
+-    auto now_ns = AK::UnixDateTime::now().nanoseconds_since_epoch();
++    auto now_ns = host_wall_clock_nanoseconds();
+ 
+     // 3. Return 𝔽(floor(nowNs / 10**6)).
+     return floor(now_ns / 1'000'000);
+diff --git a/Libraries/LibJS/Runtime/Temporal/Now.h b/Libraries/LibJS/Runtime/Temporal/Now.h
+index f4e96460a2..e4dd026594 100644
+--- a/Libraries/LibJS/Runtime/Temporal/Now.h
++++ b/Libraries/LibJS/Runtime/Temporal/Now.h
+@@ -8,6 +8,7 @@
+ #pragma once
+ 
+ #include <LibCrypto/BigInt/SignedBigInteger.h>
++#include <LibJS/Export.h>
+ #include <LibJS/Runtime/Completion.h>
+ #include <LibJS/Runtime/Object.h>
+ 
+@@ -36,4 +37,14 @@ double system_utc_epoch_milliseconds();
+ Crypto::SignedBigInteger system_utc_epoch_nanoseconds(VM&);
+ ThrowCompletionOr<ISODateTime> system_date_time(VM&, Value temporal_time_zone_like);
+ 
++// AD-HOC: An embedder that drives time itself can give Date (Date.now(), new Date(), Date()) and the default
++//         HostSystemUTCEpochNanoseconds (Temporal.Now) its own clock in place of the wall clock. The function returns
++//         nanoseconds since the Unix epoch, and is called on whichever thread reads the time. Null restores the wall
++//         clock.
++using HostWallClock = i64 (*)();
++JS_API void set_host_wall_clock(HostWallClock);
++
++// The current time in nanoseconds since the Unix epoch: the embedder's wall clock if it set one, else the system's.
++i64 host_wall_clock_nanoseconds();
++
+ }
+diff --git a/Libraries/LibJS/Runtime/VM.cpp b/Libraries/LibJS/Runtime/VM.cpp
+index b86714e9c3..e0ffe35a11 100644
+--- a/Libraries/LibJS/Runtime/VM.cpp
++++ b/Libraries/LibJS/Runtime/VM.cpp
+@@ -37,6 +37,7 @@
+ #include <LibJS/Runtime/Reference.h>
+ #include <LibJS/Runtime/Symbol.h>
+ #include <LibJS/Runtime/Temporal/Instant.h>
++#include <LibJS/Runtime/Temporal/Now.h>
+ #include <LibJS/Runtime/VM.h>
+ #include <LibJS/SourceCode.h>
+ #include <LibJS/SourceTextModule.h>
+@@ -232,7 +233,8 @@ VM::VM(ErrorMessages error_messages)
+     // 2.3.1 HostSystemUTCEpochNanoseconds ( global ), https://tc39.es/proposal-temporal/#sec-hostsystemutcepochnanoseconds
+     host_system_utc_epoch_nanoseconds = [](Object const&) {
+         // 1. Let ns be the approximate current UTC date and time, in nanoseconds since the epoch.
+-        Crypto::SignedBigInteger nanoseconds { AK::UnixDateTime::now().nanoseconds_since_epoch() };
++        // AD-HOC: An embedder's wall clock (Temporal::set_host_wall_clock), if it set one.
++        Crypto::SignedBigInteger nanoseconds { Temporal::host_wall_clock_nanoseconds() };
+ 
+         // 2. Return the result of clamping ns between nsMinInstant and nsMaxInstant.
+         if (nanoseconds < Temporal::NANOSECONDS_MIN_INSTANT)

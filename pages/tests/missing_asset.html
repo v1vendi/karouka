@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* The error path for a missing asset -- do not "fix" this page, it exists
+     to be broken.
+
+     @font-face references a font file that does not exist on disk, so the
+     view's dependency report (kr_view_dependencies) lists that dependency
+     with a non-OK status every frame. The viewer reports such a failure
+     ("1 asset(s) failed to load, most recently \"does-not-exist.ttf\"")
+     and exits 1. */
+  @font-face {
+    font-family: "Missing";
+    src: url(does-not-exist.ttf);
+  }
+  body {
+    background: rgb(20, 20, 24);
+    color: rgb(232, 234, 240);
+    font-family: "Missing";
+    font-size: 24px;
+  }
+</style>
+</head>
+<body>This page references a font file that is not checked in. The error
+banner, not this text, is the point.</body>
+</html>

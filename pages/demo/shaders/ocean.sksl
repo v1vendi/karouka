@@ -1,0 +1,49 @@
+// Heightfield ocean at sunset: summed directional waves, raymarched, with Fresnel sky reflection.
+uniform float2 uSize;
+uniform float uTime;
+
+float waves(float2 p) {
+    float h = 0.0, amp = 0.5, fr = 0.35;
+    float2 d = float2(1.0, 0.3);
+    for (int i = 0; i < 4; i++) {
+        float x = dot(d, p) * fr + uTime * (0.8 + 0.25 * float(i));
+        h += amp * (1.0 - abs(sin(x))) * (1.0 - abs(sin(x))) - amp * 0.4;
+        d = float2(d.x * 0.8 - d.y * 0.6, d.x * 0.6 + d.y * 0.8);
+        amp *= 0.55; fr *= 1.9;
+    }
+    return h;
+}
+
+float3 sky(float3 rd, float3 sun) {
+    float s = max(dot(rd, sun), 0.0);
+    float3 c = mix(float3(1.0, 0.55, 0.3), float3(0.15, 0.2, 0.45), pow(max(rd.y, 0.0), 0.4));
+    return c + float3(1.0, 0.7, 0.4) * pow(s, 400.0) * 4.0 + float3(1.0, 0.5, 0.2) * pow(s, 8.0) * 0.4;
+}
+
+half4 main(float2 coord) {
+    float2 uv = (coord - 0.5 * uSize) / uSize.y * float2(1, -1);
+    float3 sun = normalize(float3(0.0, 0.12, 1.0));
+    float3 ro = float3(0, 2.2, uTime * 2.0);
+    float3 rd = normalize(float3(uv.x, uv.y - 0.15, 1.2));
+    float3 col = sky(rd, sun);
+    if (rd.y < 0.0) {
+        float t = 0.0;
+        for (int i = 0; i < 70; i++) {
+            float3 p = ro + rd * t;
+            float d = p.y - waves(p.xz);
+            if (d < 0.01 * t) break;
+            t += max(d * 0.7, 0.02);
+            if (t > 120.0) break;
+        }
+        float3 p = ro + rd * t;
+        float e = 0.02 + 0.002 * t;
+        float3 n = normalize(float3(waves(p.xz - float2(e, 0)) - waves(p.xz + float2(e, 0)), 2.0 * e,
+                                    waves(p.xz - float2(0, e)) - waves(p.xz + float2(0, e))));
+        n = normalize(mix(n, float3(0, 1, 0), clamp(t / 50.0, 0.0, 0.85)));
+        float fres = pow(1.0 - max(dot(n, -rd), 0.0), 4.0);
+        float3 water = float3(0.02, 0.08, 0.12) + float3(0.1, 0.25, 0.2) * max(p.y + 0.3, 0.0);
+        float3 wc = mix(water, sky(reflect(rd, n), sun), clamp(0.15 + fres, 0.0, 1.0));
+        col = mix(wc, sky(rd, sun), 1.0 - exp(-0.0004 * t * t));
+    }
+    return half4(half3(pow(col, float3(0.85))), 1);
+}

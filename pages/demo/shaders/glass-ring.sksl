@@ -1,0 +1,352 @@
+// A progress ring of seven nested acrylic bands lying on a pale wooden table, after "glass rainbow stacker" by aladiN
+// (shadertoy.com/view/sXdSz7): its glass, room and palettes, without the buffers. Each band is a ring sector, a
+// cylinder shell cut by the slab of its thickness and by the two half planes of its sweep, met in closed form. The
+// filled part is coloured glass from 12 o'clock clockwise to the progress, the rest is a clear track, a slit apart.
+// One light path per pixel: Fresnel at every face, refraction in and out, total reflection, Beer-Lambert colour by
+// the way inside, the last direction fanned per colour channel (dispersion); rounded edges by the normal alone, and
+// edges and end faces glow with the light they pipe. The key light behind the ring throws coloured shadows forward.
+uniform float2 uSize;
+uniform float progress;   // percent of the full turn
+uniform float tilt;       // the camera above the table, degrees
+uniform float turn;       // the camera round the ring, degrees
+uniform float fan;        // percent: how far each band lags the one inside it
+uniform float palette;    // 0 the toy's colours, 1 Michel-Levy interference colours, 2 temper colours of steel; between: a blend
+
+const float TAU = 6.28318531;
+const float PI = 3.14159265;
+const float R0 = 0.62;          // inner radius of the innermost band
+const float BAND = 0.11;        // radial width of one band
+const float GAP = 0.004;        // radial air between two bands
+const float DEPTH = 0.16;       // thickness
+const float LIFT = 0.002;       // air under the ring
+const float SLIT = 0.05;        // rad between the coloured glass and the clear track
+const float BEVEL = 0.014;
+const float IOR = 1.49;         // acrylic
+const float DISP = 0.03;        // index blue minus index red
+const float EDGE_GLOW = 0.35;
+const float END_GLOW = 0.45;
+const float EXPOSURE = 1.1;
+const float BIG = 1e9;
+const float GEPS = 6e-4;
+const float3 L_KEY = float3(-0.4705, 0.6194, -0.6285);   // a window behind the ring, up left
+const float3 ROOM_C = float3(0.0, 1.2, 0.0);
+const float ROOM_R = 30.0;
+const float3 CLEAR_ABSORB = float3(0.55, 0.22, 0.30);   // the clear track: acrylic's faint green-blue
+
+// ---------- palettes (linear) over s = 0 (innermost) .. 1 (outermost) ----------
+float3 palToy(float s) {
+    float x = clamp(s, 0.0, 1.0) * 6.0;
+    float3 c = mix(float3(0.42, 0.20, 0.70), float3(0.12, 0.40, 0.88), clamp(x, 0.0, 1.0));
+    c = mix(c, float3(0.00, 0.58, 0.52), clamp(x - 1.0, 0.0, 1.0));
+    c = mix(c, float3(0.25, 0.72, 0.22), clamp(x - 2.0, 0.0, 1.0));
+    c = mix(c, float3(0.98, 0.86, 0.12), clamp(x - 3.0, 0.0, 1.0));
+    c = mix(c, float3(0.98, 0.50, 0.06), clamp(x - 4.0, 0.0, 1.0));
+    return mix(c, float3(0.85, 0.08, 0.06), clamp(x - 5.0, 0.0, 1.0));
+}
+float3 sq(float3 x) { return x * x; }
+float3 michelLevy(float G) {
+    float3 s = float3(1.3422106, 1.0327015, 0.9839079)
+        * exp(-sq(float3(0.00032968296, 0.00046530846, 0.00044420435) * G))
+        * cos(float3(0.010350838, 0.011566456, 0.013638826) * G + float3(0.0085625776, -0.030608755, -0.053441567));
+    s += float3(-0.23045873, 0.23005589, -0.11602458)
+        * exp(-sq(float3(0.00026096898, 0.00086735882, 0.00028046249) * G))
+        * cos(float3(0.011823295, 0.012047861, 0.013076458) * G + float3(0.33229346, -0.12030187, -0.10952623));
+    s += float3(0.14368709, -0.14827981, 0.28716649)
+        * exp(-sq(float3(0.00091766688, 0.0002354578, 0.00028712465) * G))
+        * cos(float3(0.013836791, 0.010212785, 0.014471888) * G + float3(-0.93214957, -0.24214471, 0.13864633));
+    s += float3(-0.28652024, -0.11870041, -0.15074448)
+        * exp(-sq(float3(0.0004614467, 0.00040564723, 0.00047191365) * G))
+        * cos(float3(0.012973603, 0.01422106, 0.011341871) * G + float3(-0.76154333, -0.1551831, -0.05073151));
+    float3 c = 0.5 - 0.5 * s;
+    float Y = dot(c, float3(0.2126, 0.7152, 0.0722));
+    float m = min(c.r, min(c.g, c.b));
+    if (m >= 0.0 || Y <= 0.0) return max(c, 0.0);
+    return max(Y + (c - Y) * (Y / (Y - m)), 0.0);
+}
+float3 temperSteel(float s) {
+    float x = clamp(s, 0.0, 1.0) * 6.0;
+    float d = mix(15.0, 27.5, clamp(x, 0.0, 1.0));
+    d = mix(d, 46.0, clamp(x - 1.0, 0.0, 1.0));
+    d = mix(d, 52.5, clamp(x - 2.0, 0.0, 1.0));
+    d = mix(d, 90.0, clamp((x - 3.0) / 3.0, 0.0, 1.0));
+    float3 c = float3(0.38766399, 0.40015299, 0.33354619)
+        + float3(-0.0011326468, -0.0014265370, -0.00031795588) * d
+        + float3(0.35622352, 0.34442031, 0.26960419) * exp(-float3(0.0040779287, 0.0037527418, 0.00059283949) * d)
+          * cos(float3(0.041099872, 0.047644785, 0.064954697) * d
+                + float3(0.000011557158, 0.000021661235, 0.000013523994) * d * d + float3(0.99498622, 1.0885264, 1.0661919))
+        + float3(0.081510225, -0.092571982, 0.078111808) * exp(-float3(0.0099688741, 0.013504760, 0.0096915752) * d)
+          * cos(float3(0.10313882, 0.11927949, 0.13344158) * d + float3(-2.2675498, 0.96246613, -1.2229744));
+    return max(c, 0.0);
+}
+float3 paletteAt(float k, float s) {
+    if (k < 0.5) return pow(max(palToy(s), 0.0), float3(2.2));
+    if (k < 1.5) return michelLevy(1800.0 * mix(0.6435, 0.8402, s));
+    return temperSteel(s);
+}
+// what one thickness of band i lets through, brightest channel 1, as an absorption per unit length
+float3 bandAbsorb(int i) {
+    float s = float(i) / 6.0;
+    float k = clamp(palette, 0.0, 2.0), k0 = floor(k);
+    float3 c = mix(paletteAt(k0, s), paletteAt(min(k0 + 1.0, 2.0), s), k - k0);
+    c /= max(max(c.r, c.g), max(c.b, 1e-3));
+    return -1.6 * log(max(c, 0.015)) / DEPTH;   // a little deeper than one thickness: the bands are thin
+}
+
+// ---------- the bands ----------
+float2 radii(int i) {
+    float r = R0 + float(i) * BAND;
+    return float2(r + 0.5 * GAP, r + BAND - 0.5 * GAP);
+}
+// the coloured sweep of band i (rad): the inner bands lead by fan
+float sweep(int i) {
+    float f = 0.0005 * clamp(fan, 0.0, 100.0);
+    return TAU * clamp(0.01 * progress * (1.0 + 6.0 * f) - f * float(i), 0.0, 1.0);
+}
+// clockwise from 12 o'clock seen from above (-z is 12, +x is 3)
+float angleOf(float2 xz) {
+    float a = atan(xz.x, -xz.y);
+    return a < 0.0 ? a + TAU : a;
+}
+float2 dirOf(float a) { return float2(sin(a), -cos(a)); }
+float2 perpOf(float a) { return float2(cos(a), sin(a)); }   // towards growing angle
+bool full(float b) { return b >= TAU - 1e-4; }
+bool hasTrack(float b) { return !full(b) && b + SLIT < TAU - SLIT - 1e-3; }
+// is an angle inside the coloured sweep or the track
+bool inSweep(float th, float b) {
+    if (full(b)) return true;
+    if (b > 1e-4 && th <= b) return true;
+    return hasTrack(b) && th >= b + SLIT && th <= TAU - SLIT;
+}
+
+void cylinderCand(float3 o, float3 d, float r, float tmin, float b, float y0, float y1, float code,
+                  inout float best, inout float face) {
+    float a = max(dot(d.xz, d.xz), 1e-10), bb = dot(o.xz, d.xz), c = dot(o.xz, o.xz) - r * r;
+    float h = bb * bb - a * c;
+    if (h < 0.0) return;
+    h = sqrt(h);
+    for (int k = 0; k < 2; k++) {
+        float t = (-bb + (k == 0 ? -h : h)) / a;
+        if (t > tmin && t < best) {
+            float3 p = o + d * t;
+            if (p.y >= y0 && p.y <= y1 && inSweep(angleOf(p.xz), b)) { best = t; face = code; }
+        }
+    }
+}
+void capCand(float3 o, float3 d, float y, float2 r, float tmin, float b, inout float best, inout float face) {
+    if (abs(d.y) < 1e-7) return;
+    float t = (y - o.y) / d.y;
+    if (t > tmin && t < best) {
+        float3 p = o + d * t;
+        float rho = length(p.xz);
+        if (rho >= r.x && rho <= r.y && inSweep(angleOf(p.xz), b)) { best = t; face = 2.0; }
+    }
+}
+void endCand(float3 o, float3 d, float a, float2 r, float tmin, float y0, float y1, inout float best, inout float face) {
+    float2 n = perpOf(a);
+    float dn = dot(d.xz, n);
+    if (abs(dn) < 1e-7) return;
+    float t = -dot(o.xz, n) / dn;
+    if (t > tmin && t < best) {
+        float3 p = o + d * t;
+        float s = dot(p.xz, dirOf(a));
+        if (s >= r.x && s <= r.y && p.y >= y0 && p.y <= y1) { best = t; face = 3.0; }
+    }
+}
+// the nearest surface of band i along the ray: 0 outer, 1 inner, 2 top or bottom, 3 end face
+float bandHit(float3 o, float3 d, int i, out float face) {
+    float2 r = radii(i);
+    float b = sweep(i), y0 = LIFT, y1 = LIFT + DEPTH, best = BIG, tmin = 1e-5;
+    face = -1.0;
+    cylinderCand(o, d, r.y, tmin, b, y0, y1, 0.0, best, face);
+    cylinderCand(o, d, r.x, tmin, b, y0, y1, 1.0, best, face);
+    capCand(o, d, y0, r, tmin, b, best, face);
+    capCand(o, d, y1, r, tmin, b, best, face);
+    if (!full(b)) {
+        if (b > 1e-4) {
+            endCand(o, d, 0.0, r, tmin, y0, y1, best, face);
+            endCand(o, d, b, r, tmin, y0, y1, best, face);
+        }
+        if (hasTrack(b)) {
+            endCand(o, d, b + SLIT, r, tmin, y0, y1, best, face);
+            endCand(o, d, TAU - SLIT, r, tmin, y0, y1, best, face);
+        }
+    }
+    return best;
+}
+// nearest surface: inside a band only its own exit is looked for (bands never touch). id 99 = the table
+float scene(float3 o, float3 d, int inside, out int id, out float face) {
+    float best = BIG;
+    id = -1;
+    face = -1.0;
+    if (inside < 0 && d.y < 0.0) { best = max(-o.y / d.y, 0.0); id = 99; }
+    // the ring's bounding cylinder: a ray whose nearest point to the axis lies outside it skips the bands
+    float R = R0 + 7.0 * BAND;
+    float3 pc = o + d * max(-dot(o.xz, d.xz) / max(dot(d.xz, d.xz), 1e-10), 0.0);
+    if (inside < 0 && dot(pc.xz, pc.xz) > R * R) return best;
+    for (int i = 0; i < 7; i++) {
+        if (inside >= 0 && inside != i) continue;
+        float f;
+        float t = bandHit(o, d, i, f);
+        if (t < best) { best = t; id = i; face = f; }
+    }
+    return best;
+}
+// the outward normal, its edges rounded within BEVEL; edge: 0 on a face, up to 1 in the middle of an edge
+float3 bandNormal(float3 p, int i, out float edge) {
+    float2 r = radii(i);
+    float b = sweep(i), rho = max(length(p.xz), 1e-6), yc = LIFT + 0.5 * DEPTH, hz = 0.5 * DEPTH;
+    float kr = max(rho - r.y + BEVEL, 0.0) - max(r.x + BEVEL - rho, 0.0);
+    float kz = max(abs(p.y - yc) - hz + BEVEL, 0.0) * sign(p.y - yc);
+    float ks = 0.0, ke = 0.0, a0 = 0.0, a1 = 0.0;
+    if (!full(b)) {
+        float th = angleOf(p.xz);
+        bool coloured = th <= b + 0.5 * SLIT || th >= TAU - 0.5 * SLIT;
+        a0 = coloured ? 0.0 : b + SLIT;
+        a1 = coloured ? b : TAU - SLIT;
+        if (coloured && th >= TAU - 0.5 * SLIT) th -= TAU;
+        ks = max(BEVEL - rho * sin(clamp(th - a0, 0.0, 1.5)), 0.0);
+        ke = max(BEVEL - rho * sin(clamp(a1 - th, 0.0, 1.5)), 0.0);
+    }
+    float2 er = p.xz / rho, n0 = -perpOf(a0), n1 = perpOf(a1);
+    float3 k = float3(kr * er.x, kz, kr * er.y) + ks * float3(n0.x, 0.0, n0.y) + ke * float3(n1.x, 0.0, n1.y);
+    float l2 = max(dot(k, k), 1e-12);
+    edge = clamp(2.0 * (1.0 - max(max(kr * kr, kz * kz), max(ks * ks, ke * ke)) / l2), 0.0, 1.0);
+    return k / sqrt(l2);
+}
+// the glass at a point of band i: the palette's colour in the sweep, the clear track past it
+float3 absorbAt(int i, float3 p) {
+    float b = sweep(i), th = angleOf(p.xz);
+    bool coloured = full(b) || th <= b + 0.5 * SLIT || th >= TAU - 0.5 * SLIT;
+    return coloured ? bandAbsorb(i) : CLEAR_ABSORB;
+}
+
+// ---------- the room ----------
+float3 roomDir(float3 ro, float3 rd) {
+    float3 oc = ro - ROOM_C;
+    float b = dot(oc, rd);
+    return normalize(oc + rd * (-b + sqrt(max(b * b - dot(oc, oc) + ROOM_R * ROOM_R, 0.0))));
+}
+// a warm grey studio, paler above, the soft window the key comes through, a cool bounce from the right
+float3 walls(float3 ro, float3 rd) {
+    float3 w = roomDir(ro, rd);
+    float3 col = mix(float3(0.62, 0.58, 0.52), float3(0.92, 0.94, 0.98), smoothstep(-0.05, 0.7, w.y));
+    col = mix(col, float3(0.62, 0.45, 0.27), 0.2);
+    col += float3(1.5, 1.35, 1.1) * exp(4.0 * (dot(w, L_KEY) - 1.0));
+    col += float3(0.20, 0.26, 0.34) * exp(3.0 * (dot(w, float3(0.8, 0.3, 0.52)) - 1.0));
+    return 1.2 * col;
+}
+// soft boxes that exist only for reflections
+float3 lamps(float3 rd) {
+    float3 col = float3(15.0, 14.0, 12.0) * exp(50.0 * (dot(rd, L_KEY) - 1.0));
+    col += float3(2.4, 2.6, 3.0) * exp(30.0 * (dot(rd, float3(0.7071, 0.5, 0.5)) - 1.0));
+    col += float3(2.6) * exp(12.0 * (rd.y - 1.0));
+    return col * smoothstep(0.0, 0.14, rd.y);
+}
+// What the key light keeps at a table point: where its way up crosses the ring's middle plane, the band there
+// (Beer-Lambert over the slanted thickness and a Fresnel loss), softened at the band's edges.
+float3 keyLight(float3 p) {
+    float3 q = p + L_KEY * ((LIFT + 0.5 * DEPTH - p.y) / L_KEY.y);
+    float rho = length(q.xz), x = (rho - R0) / BAND;
+    if (x < 0.0 || x >= 7.0) return float3(1.0);
+    float3 lit = float3(1.0);
+    for (int i = 0; i < 7; i++) {
+        float2 r = radii(i);
+        if (rho >= r.x && rho <= r.y) {
+            float b = sweep(i), th = angleOf(q.xz), da = 1.0;
+            if (!inSweep(th, b)) return float3(1.0);
+            if (!full(b)) {
+                bool coloured = b > 1e-4 && th <= b;
+                float a0 = coloured ? 0.0 : b + SLIT, a1 = coloured ? b : TAU - SLIT;
+                da = rho * min(th - a0, a1 - th);
+            }
+            float e = min(min(rho - r.x, r.y - rho), da);
+            float3 ab = (full(b) || (b > 1e-4 && th <= b)) ? bandAbsorb(i) : CLEAR_ABSORB;
+            lit = mix(float3(1.0), 0.86 * exp(-ab * DEPTH / L_KEY.y), smoothstep(0.0, 0.012, e));
+        }
+    }
+    return lit;
+}
+// the pale wooden table: a satin finish, a faint grain, lit by the key through the glass
+float3 floorShade(float3 p, float3 rd) {
+    float3 mir = float3(rd.x, -rd.y, rd.z);
+    float g = sin(13.0 * p.z + 2.0 * sin(1.3 * p.x + 3.0 * p.z) + 1.5 * sin(5.0 * p.z));
+    float3 alb = float3(0.612, 0.468, 0.306) * (0.96 + 0.04 * g);
+    float3 E = float3(4.0, 3.73, 3.28) * L_KEY.y * keyLight(p) + float3(0.40, 0.41, 0.44);
+    float F = 0.02 + 0.2 * pow(1.0 - clamp(-rd.y, 0.0, 1.0), 5.0);
+    float3 sk = walls(p, mir);
+    return mix(alb / PI * E * (1.0 - F) + F * sk, sk, smoothstep(8.0, 26.0, length(p.xz)));
+}
+float3 background(float3 ro, float3 rd, float lampW) {
+    if (rd.y < 0.0) {
+        float3 p = ro + rd * max(-ro.y / rd.y, 0.0);
+        if (dot(p.xz, p.xz) < 870.0) return floorShade(p, rd);
+    }
+    return walls(ro, rd) + lampW * lamps(rd);
+}
+
+// ---------- glass ----------
+// Fresnel reflectance, eta = n(from)/n(to); ct = the refracted cosine, 0 on total reflection
+float fresnel(float ci, float eta, out float ct) {
+    float s2 = eta * eta * (1.0 - ci * ci);
+    ct = 0.0;
+    if (s2 >= 1.0) return 1.0;
+    ct = sqrt(1.0 - s2);
+    float rs = (eta * ci - ct) / (eta * ci + ct);
+    float rp = (eta * ct - ci) / (eta * ct + ci);
+    return 0.5 * (rs * rs + rp * rp);
+}
+float3 tracePath(float3 ro, float3 rd) {
+    float3 col = float3(0.0), thr = float3(1.0), bend = float3(0.0), ab = float3(0.0);
+    int inside = -1;
+    for (int k = 0; k < 10; k++) {
+        int id;
+        float face;
+        float t = scene(ro, rd, inside, id, face);
+        if (inside < 0 && (id < 0 || id == 99)) break;
+        if (id < 0) { inside = -1; continue; }   // a lost exit (grazing): back to air
+        float3 p = ro + rd * t;
+        float edge;
+        float3 n = bandNormal(p, id, edge);
+        bool entering = inside < 0;
+        if (entering) ab = absorbAt(id, p);
+        // light caught inside leaves through the edges and the end faces: they glow in the glass's colour
+        col += thr * exp(-ab * DEPTH) * (EDGE_GLOW * edge + (face == 3.0 ? END_GLOW : 0.0));
+        float3 nI = entering ? n : -n;
+        float eta = entering ? 1.0 / IOR : IOR;
+        float ci = clamp(-dot(nI, rd), 0.0, 1.0), ct;
+        float F = fresnel(ci, eta, ct);
+        if (!entering) thr *= exp(-ab * t);
+        if (F >= 1.0) { rd = reflect(rd, nI); ro = p + nI * GEPS; continue; }
+        col += thr * F * background(p + nI * GEPS, reflect(rd, nI), entering ? 1.0 : 0.0);
+        thr *= 1.0 - F;
+        float3 rt = normalize(eta * rd + (eta * ci - ct) * nI);
+        bend += rt - rd;
+        rd = rt;
+        ro = p - nI * GEPS;
+        inside = entering ? id : -1;
+    }
+    // blue bends more than red: each channel's last direction moves along the path's total bend
+    if (dot(bend, bend) < 1e-8) return col + thr * background(ro, rd, 0.0);
+    float kd = 0.5 * DISP / (IOR - 1.0);
+    col += thr * float3(1.0, 0.0, 0.0) * background(ro, normalize(rd - kd * bend), 0.0);
+    col += thr * float3(0.0, 1.0, 0.0) * background(ro, rd, 0.0);
+    col += thr * float3(0.0, 0.0, 1.0) * background(ro, normalize(rd + kd * bend), 0.0);
+    return col;
+}
+
+half4 main(float2 c) {
+    float pitch = clamp(radians(tilt), 0.1, 1.45), yaw = radians(turn);
+    float3 ta = float3(0.0, 0.06, 0.0);
+    float3 ro = ta + 5.6 * float3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch));
+    float3 fw = normalize(ta - ro);
+    float3 rt = normalize(cross(fw, float3(0.0, 1.0, 0.0)));
+    float3 up = cross(rt, fw);
+    float2 uv = (2.0 * c - uSize) / uSize.y;
+    float3 col = tracePath(ro, normalize(fw + 0.24 * (uv.x * rt - uv.y * up)));
+    // tone map on the luminance: the colours are saturated, a per-channel curve bleaches them
+    col *= EXPOSURE;
+    float l = dot(col, float3(0.2126, 0.7152, 0.0722));
+    col /= 1.0 + l;
+    col = mix(col, float3(l / (1.0 + l)), 0.6 * clamp(max(col.r, max(col.g, col.b)) - 1.0, 0.0, 1.0));
+    return half4(half3(pow(max(col, 0.0), float3(0.4545))), 1.0);
+}

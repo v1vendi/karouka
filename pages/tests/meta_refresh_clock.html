@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^(waiting|refreshed@1000)$">
+<meta http-equiv="refresh" content="1; url=#refreshed">
+<title>waiting</title>
+<style>
+  /* <meta http-equiv=refresh> comes due 1 s (the content's whole
+     seconds: "0.2" means 0) after the document has completely loaded. Its
+     timer is a Platform::Timer since patch 0043, so it runs on the host
+     clock: a headless run that steps the clock 16.67 ms per frame navigates
+     to #refreshed 1000 ms of host time after load, between frames 60 and 70,
+     however fast the frames run, and the title says so. On the wall clock (a
+     Core::Timer without patch 0043; --real-time still) 200 headless frames take a
+     few hundred milliseconds, so the refresh came due after a number of
+     frames that depended on the machine, at a host time that wasn't 1000.
+     check's --frames 30 is 500 ms of host time: the title must still be
+     "waiting" there; it can only read "refreshed@1000" at --frames 70 or
+     more. Text-free, so the capture does not depend on a font. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #bar { position: absolute; left: 0; top: 0; width: 0; height: 40px; background: rgb(0, 96, 192); }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<script>
+  let loadedAt = null;
+  addEventListener("load", () => { loadedAt = performance.now(); });
+  addEventListener("hashchange", () => {
+    if (location.hash !== "#refreshed" || loadedAt === null)
+      return;
+    document.title = "refreshed@" + Math.round(performance.now() - loadedAt);
+    document.getElementById("bar").style.width = "100px";
+  });
+</script>
+</body>
+</html>

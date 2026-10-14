@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* A regression page for two text-loading defects. Do not "fix" this page.
+
+     1. The @font-face URL below is UNQUOTED on purpose: it was the page's
+        original form, kept so the unquoted url() path stays covered (the
+        quoted and unquoted forms must issue the identical load).
+
+     2. The font loads off disk and the page's text must render with it: the
+        text reaches paint, so the face has to be installed and used. Quoting
+        the url() would only test point 1 again. */
+  @font-face { font-family: "Noto"; src: url(../fonts/NotoSans-Regular.ttf); }
+  body {
+    background: rgb(24, 24, 28);
+    color: rgb(232, 234, 240);
+    font-family: "Noto";
+    font-size: 24px;
+  }
+</style>
+</head>
+<body>Text through the public ABI. If you can read this in the window, the
+last-resort-face defect has been fixed.</body>
+</html>

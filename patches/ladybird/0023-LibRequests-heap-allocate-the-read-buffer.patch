@@ -1,0 +1,29 @@
+diff --git a/Libraries/LibRequests/Request.cpp b/Libraries/LibRequests/Request.cpp
+index 540a2b9343..b05d90fe31 100644
+--- a/Libraries/LibRequests/Request.cpp
++++ b/Libraries/LibRequests/Request.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <AK/Checked.h>
+ #include <AK/ScopeGuard.h>
++#include <AK/kmalloc.h>
+ #include <LibCore/EventLoop.h>
+ #include <LibCore/File.h>
+ #include <LibCore/System.h>
+@@ -353,7 +354,15 @@ void Request::set_up_internal_stream_data(DataReceived on_data_available)
+ 
+     m_internal_stream_data->read_notifier->on_activation = [this]() {
+         static constexpr size_t buffer_size = 256 * KiB;
+-        static thread_local char buffer[buffer_size];
++        // Allocated on first use rather than a thread_local array: where LibRequests is linked statically into a
++        // larger image, an array would be part of that image's thread-local template, which dyld instantiates
++        // (256 KiB of malloc) for every thread that touches any of the image's thread-locals.
++        // It is never freed: the threads that read requests (event loop threads) live as long as the process.
++        static thread_local u8* buffer = nullptr;
++        if (!buffer) {
++            buffer = static_cast<u8*>(kmalloc(buffer_size));
++            VERIFY(buffer);
++        }
+ 
+         // If the request was stopped while this IPC was in-flight, just bail.
+         if (!m_internal_stream_data || !m_internal_stream_data->read_stream)

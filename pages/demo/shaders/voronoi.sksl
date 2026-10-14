@@ -1,0 +1,36 @@
+// Animated Voronoi cells with distance-to-border edges.
+uniform float2 uSize;
+uniform float uTime;
+
+float2 hash2(float2 p) {
+    p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
+    return fract(sin(p) * 43758.5453);
+}
+
+half4 main(float2 coord) {
+    float2 x = coord / uSize.y * 6.0;
+    float2 n = floor(x), f = fract(x);
+    float2 mg = float2(0), mr = float2(0);
+    float md = 8.0;
+    for (int j = -1; j <= 1; j++)
+    for (int i = -1; i <= 1; i++) {
+        float2 g = float2(float(i), float(j));
+        float2 o = 0.5 + 0.5 * sin(uTime + 6.2831 * hash2(n + g));
+        float2 r = g + o - f;
+        float d = dot(r, r);
+        if (d < md) { md = d; mr = r; mg = g; }
+    }
+    md = 8.0;
+    for (int j = -2; j <= 2; j++)
+    for (int i = -2; i <= 2; i++) {
+        float2 g = mg + float2(float(i), float(j));
+        float2 o = 0.5 + 0.5 * sin(uTime + 6.2831 * hash2(n + g));
+        float2 r = g + o - f;
+        if (dot(mr - r, mr - r) > 0.00001) md = min(md, dot(0.5 * (mr + r), normalize(r - mr)));
+    }
+    float3 cell = 0.5 + 0.5 * cos(6.2831 * hash2(n + mg).x + float3(0, 2, 4));
+    float3 col = cell * (0.6 + 0.4 * sqrt(length(mr)));
+    col = mix(float3(0.05), col, smoothstep(0.02, 0.06, md));
+    col += float3(1.0) * (1.0 - smoothstep(0.0, 0.06, length(mr))) * 0.6;
+    return half4(half3(col), 1);
+}

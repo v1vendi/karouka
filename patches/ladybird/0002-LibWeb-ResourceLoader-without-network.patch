@@ -1,0 +1,57 @@
+diff --git a/Libraries/LibWeb/Loader/ResourceLoader.cpp b/Libraries/LibWeb/Loader/ResourceLoader.cpp
+index 58d6c08740..f7152bb239 100644
+--- a/Libraries/LibWeb/Loader/ResourceLoader.cpp
++++ b/Libraries/LibWeb/Loader/ResourceLoader.cpp
+@@ -40,6 +40,11 @@ void ResourceLoader::initialize(GC::Heap& heap, NonnullRefPtr<Requests::RequestC
+     resource_loader() = adopt_ref(*new ResourceLoader(heap, move(request_client)));
+ }
+ 
++void ResourceLoader::initialize_without_network(GC::Heap& heap)
++{
++    resource_loader() = adopt_ref(*new ResourceLoader(heap, nullptr));
++}
++
+ bool ResourceLoader::is_initialized()
+ {
+     return resource_loader() != nullptr;
+@@ -54,14 +59,15 @@ ResourceLoader& ResourceLoader::the()
+     return *resource_loader();
+ }
+ 
+-ResourceLoader::ResourceLoader(GC::Heap& heap, NonnullRefPtr<Requests::RequestClient> request_client)
++ResourceLoader::ResourceLoader(GC::Heap& heap, RefPtr<Requests::RequestClient> request_client)
+     : m_heap(heap)
+     , m_user_agent(MUST(String::from_utf8(default_user_agent)))
+     , m_platform(MUST(String::from_utf8(default_platform)))
+     , m_preferred_languages({ "en-US"_string })
+     , m_navigator_compatibility_mode(default_navigator_compatibility_mode)
+ {
+-    set_client(move(request_client));
++    if (request_client)
++        set_client(request_client.release_nonnull());
+ }
+ 
+ void ResourceLoader::set_client(NonnullRefPtr<Requests::RequestClient> request_client)
+diff --git a/Libraries/LibWeb/Loader/ResourceLoader.h b/Libraries/LibWeb/Loader/ResourceLoader.h
+index 08f625db45..8e8d0a15f2 100644
+--- a/Libraries/LibWeb/Loader/ResourceLoader.h
++++ b/Libraries/LibWeb/Loader/ResourceLoader.h
+@@ -30,6 +30,9 @@ class WEB_API ResourceLoader : public Core::EventReceiver {
+ 
+ public:
+     static void initialize(GC::Heap&, NonnullRefPtr<Requests::RequestClient>);
++    // Embedders that render local content only: no RequestServer is ever connected, so
++    // http(s) loads, WebSockets and DNS prefetch fail as if RequestServer were down.
++    static void initialize_without_network(GC::Heap&);
+     static bool is_initialized();
+     static ResourceLoader& the();
+ 
+@@ -73,7 +76,7 @@ public:
+     void set_enable_global_privacy_control(bool enable) { m_enable_global_privacy_control = enable; }
+ 
+ private:
+-    explicit ResourceLoader(GC::Heap&, NonnullRefPtr<Requests::RequestClient>);
++    explicit ResourceLoader(GC::Heap&, RefPtr<Requests::RequestClient>);
+ 
+     struct FileLoadResult {
+         ReadonlyBytes data;

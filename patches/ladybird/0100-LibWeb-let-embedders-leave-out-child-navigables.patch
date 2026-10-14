@@ -1,0 +1,147 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: let embedders leave out child navigables
+
+karouka renders one document per page and drops frames: an iframe,
+frame or object element stays in the DOM, but never gets a content
+navigable. Embedder/ChildNavigables lets the embedder turn child
+navigables off; NavigableContainer::create_new_child_navigable() then
+does nothing, so the element loads no document, fires no load event for
+one, its contentDocument and contentWindow are null, and it paints as an
+empty box. A frame skips processing its attributes (there is nothing to
+navigate), and an object whose resource is a document shows its
+fallback content. On by default.
+---
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -281,6 +281,7 @@ set(SOURCES
+     DOM/DocumentFragment.cpp
+     DOM/DocumentLoadEventDelayer.cpp
+     DOM/DocumentLoading.cpp
++    Embedder/ChildNavigables.cpp
+     Embedder/HostClock.cpp
+     Embedder/InPlaceLoad.cpp
+     Embedder/LocalCanvas.cpp
+diff --git a/Libraries/LibWeb/Embedder/ChildNavigables.cpp b/Libraries/LibWeb/Embedder/ChildNavigables.cpp
+new file mode 100644
+index 0000000000..4f6ecf56bf
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/ChildNavigables.cpp
+@@ -0,0 +1,23 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibWeb/Embedder/ChildNavigables.h>
++
++namespace Web::Embedder {
++
++static bool s_child_navigables_enabled = true;
++
++void set_child_navigables_enabled(bool enabled)
++{
++    s_child_navigables_enabled = enabled;
++}
++
++bool child_navigables_enabled()
++{
++    return s_child_navigables_enabled;
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/ChildNavigables.h b/Libraries/LibWeb/Embedder/ChildNavigables.h
+new file mode 100644
+index 0000000000..a377254a94
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/ChildNavigables.h
+@@ -0,0 +1,21 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Export.h>
++
++namespace Web::Embedder {
++
++// An embedder that renders one document per page can turn child navigables off. A navigable
++// container (iframe, frame, object) then never gets a content navigable: it loads no document,
++// fires no load event for one, its contentDocument and contentWindow are null, and it paints as an
++// empty box. An object whose resource is a document shows its fallback content instead. Set it
++// before the first document is created.
++WEB_API void set_child_navigables_enabled(bool);
++bool child_navigables_enabled();
++
++}
+diff --git a/Libraries/LibWeb/HTML/HTMLFrameElement.cpp b/Libraries/LibWeb/HTML/HTMLFrameElement.cpp
+index 50ebd36cea..e1d257dd6b 100644
+--- a/Libraries/LibWeb/HTML/HTMLFrameElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLFrameElement.cpp
+@@ -43,6 +43,11 @@ void HTMLFrameElement::post_connection()
+     // 2. Create a new child navigable for insertedNode.
+     create_new_child_navigable();
+ 
++    // AD-HOC: An embedder can leave child navigables out (Embedder/ChildNavigables.h); then there is nothing to
++    //         navigate.
++    if (!content_navigable())
++        return;
++
+     // 3. Process the frame attributes for insertedNode, with initialInsertion set to true.
+     process_the_frame_attributes(InitialInsertion::Yes);
+ }
+diff --git a/Libraries/LibWeb/HTML/HTMLObjectElement.cpp b/Libraries/LibWeb/HTML/HTMLObjectElement.cpp
+index 1978545674..040ea2e0a3 100644
+--- a/Libraries/LibWeb/HTML/HTMLObjectElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLObjectElement.cpp
+@@ -19,6 +19,7 @@
+ #include <LibWeb/DOM/DocumentLoading.h>
+ #include <LibWeb/DOM/DocumentObserver.h>
+ #include <LibWeb/DOM/Event.h>
++#include <LibWeb/Embedder/ChildNavigables.h>
+ #include <LibWeb/Fetch/Fetching/Fetching.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+ #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
+@@ -453,8 +454,13 @@ void HTMLObjectElement::run_object_representation_handler_steps(Fetch::Infrastru
+         }
+ 
+         // NOTE: Creating a new nested browsing context can fail if the document is not attached to a browsing context
+-        if (!m_content_navigable)
++        if (!m_content_navigable) {
++            // AD-HOC: An embedder that leaves child navigables out (Embedder/ChildNavigables.h) shows the fallback
++            //         content in place of the document.
++            if (!Embedder::child_navigables_enabled())
++                run_object_representation_fallback_steps();
+             return;
++        }
+ 
+         // Let response be the response from fetch.
+ 
+diff --git a/Libraries/LibWeb/HTML/NavigableContainer.cpp b/Libraries/LibWeb/HTML/NavigableContainer.cpp
+index 2134f73042..c6eeb38bcb 100644
+--- a/Libraries/LibWeb/HTML/NavigableContainer.cpp
++++ b/Libraries/LibWeb/HTML/NavigableContainer.cpp
+@@ -11,6 +11,7 @@
+ #include <LibURL/Origin.h>
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Event.h>
++#include <LibWeb/Embedder/ChildNavigables.h>
+ #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
+ #include <LibWeb/HTML/BrowsingContext.h>
+ #include <LibWeb/HTML/DocumentState.h>
+@@ -64,6 +65,11 @@ void NavigableContainer::visit_edges(Cell::Visitor& visitor)
+ // https://html.spec.whatwg.org/multipage/document-sequences.html#create-a-new-child-navigable
+ void NavigableContainer::create_new_child_navigable()
+ {
++    // AD-HOC: An embedder that renders one document per page leaves the content navigable null, so the element
++    //         loads nothing and paints as an empty box.
++    if (!Embedder::child_navigables_enabled())
++        return;
++
+     // 1. Let parentNavigable be element's node navigable.
+     auto parent_navigable = navigable();
+ 

@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>huge image churn</title>
+<style>
+  body { margin: 0; background: #202830; color: #e8eef4; font-family: sans-serif; }
+  #frame { width: 256px; height: 256px; display: block; margin: 16px; }
+</style>
+</head>
+<body>
+<!-- Each load decodes huge.png (2400x2400) into a new 21.97 MiB bitmap, one kmalloc that is
+     over mimalloc's 16 MiB large-object limit, so it gets a huge segment of its own.
+     Run it with KR_MEM_PHASE_EVERY=10 tools/dev.sh run pages/mem/huge_image_churn.html --headless
+     --frames 600 --mem-phases-heap and compare footprint_mb with kmalloc_mb (docs/MEMORY.md). -->
+<img id="frame" alt="">
+<script>
+  let frame = 0;
+  let images = 0;
+  // A new image goes in once the one before it has loaded; each URL is its own resource.
+  function next_image() {
+    ++images;
+    const decoded = new Image();
+    decoded.id = "frame";
+    decoded.onload = () => {
+      document.getElementById("frame").replaceWith(decoded);
+      next_image();
+    };
+    decoded.src = `huge.png?${images}`;
+  }
+  function step() {
+    ++frame;
+    document.title = `huge image churn ${frame} ${images}`;
+    requestAnimationFrame(step);
+  }
+  next_image();
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

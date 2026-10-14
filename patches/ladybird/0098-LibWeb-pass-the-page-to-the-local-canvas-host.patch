@@ -1,0 +1,68 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: pass the page to the local canvas host
+
+A LocalCanvas2DHost had no way to tell which page a canvas transport or
+placeholder belongs to; karouka guessed it from the running script's
+realm. A 2D backing storage made with no script running had no page:
+an OffscreenCanvas's at its placeholder commit in the rendering update,
+or a 2D context restored after contextlost. Its surfaces then stayed
+until the GC finalized the context, after the embedder had dropped the
+page.
+
+create_canvas_2d_transport and allocate_placeholder_canvas now take the
+page the canvas belongs to.
+---
+diff --git a/Libraries/LibWeb/Embedder/LocalCanvas.h b/Libraries/LibWeb/Embedder/LocalCanvas.h
+index 9bb5b16863..4655836d47 100644
+--- a/Libraries/LibWeb/Embedder/LocalCanvas.h
++++ b/Libraries/LibWeb/Embedder/LocalCanvas.h
+@@ -20,17 +20,21 @@ namespace Web::Embedder {
+ // embedder with no compositor sets a LocalCanvas2DHost: contexts on pages without a
+ // CompositorHost then take their transport from it, and each rendering update's present markers
+ // are flushed to it (flush_canvas_2d_stream) as they would be to the compositor.
++//
++// A transport or placeholder is made for the page it belongs to, passed as an identity the host may
++// use to drop a page's canvases at once; it is also passed when no script is running (a 2D context
++// restored after contextlost, an OffscreenCanvas's backing storage made at its placeholder commit).
+ class WEB_API LocalCanvas2DHost {
+ public:
+     virtual ~LocalCanvas2DHost() = default;
+ 
+-    virtual RefPtr<HTML::RemoteCanvas2DTransport> create_canvas_2d_transport() = 0;
++    virtual RefPtr<HTML::RemoteCanvas2DTransport> create_canvas_2d_transport(Page const&) = 0;
+     virtual void flush_canvas_2d_stream() = 0;
+ 
+     // The placeholder canvas of transferControlToOffscreen(), as the compositor keeps it: an id
+     // the canvas element paints with DrawCanvas, which each rendering update's commit points at a
+     // copy of its OffscreenCanvas's presented pixels (none: the placeholder paints nothing).
+-    virtual Optional<Compositor::PlaceholderCanvasLink> allocate_placeholder_canvas() = 0;
++    virtual Optional<Compositor::PlaceholderCanvasLink> allocate_placeholder_canvas(Page const&) = 0;
+     virtual void release_placeholder_canvas(Compositing::CanvasId) = 0;
+     virtual void commit_placeholder_canvas(Compositor::PlaceholderCanvasLink, Optional<Compositing::CanvasId> source_canvas_id, Gfx::IntSize, bool origin_clean) = 0;
+     virtual Compositor::PlaceholderCanvasPixels read_placeholder_canvas_pixels(Compositing::CanvasId, Gfx::IntRect) = 0;
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+index 1951923a92..4b640b870b 100644
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+@@ -321,7 +321,7 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
+     if (page.has_compositor_host())
+         transport = page.compositor_host().create_canvas_2d_transport();
+     else if (auto* local_host = Embedder::local_canvas_2d_host())
+-        transport = local_host->create_canvas_2d_transport();
++        transport = local_host->create_canvas_2d_transport(page);
+     if (!transport)
+         return false;
+ 
+diff --git a/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp b/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
+index c87223da89..d121d085ea 100644
+--- a/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
+@@ -598,7 +598,7 @@ WebIDL::ExceptionOr<GC::Ref<OffscreenCanvas>> HTMLCanvasElement::transfer_contro
+     if (document().page().has_compositor_host())
+         link = document().page().compositor_host().allocate_placeholder_canvas();
+     else if (auto* local_host = Embedder::local_canvas_2d_host())
+-        link = local_host->allocate_placeholder_canvas();
++        link = local_host->allocate_placeholder_canvas(document().page());
+     if (link.has_value()) {
+         m_placeholder_canvas_id = link->canvas_id;
+         placeholder_canvas_elements().set(link->canvas_id, unique_id());

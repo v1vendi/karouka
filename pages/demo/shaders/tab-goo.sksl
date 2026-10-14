@@ -1,0 +1,59 @@
+// The tab bar's liquid. The bar itself draws a flat surface line BAND px above its bottom with the page's color below
+// it; this shader draws what rises out of that surface, merged into it with smooth-min so the joins are concave
+// fillets that no border-radius can make. --mode 0: the active tab, a jelly blob with plasma inside, the full width
+// of its box less 24px fillet room a side. --mode 1: a hovered tab's small bobbing droplet. Below the surface it
+// paints only where the shape departs from it, so the bar's own line and fill show through everywhere else.
+uniform float2 uSize;
+uniform float uTime;
+uniform float mode;
+
+float box(float2 p, float2 b, float r) {
+    float2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+float smin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+half4 main(float2 c) {
+    float band = 14.0;
+    float line = uSize.y - band;
+    float surf = line - c.y;
+    float blob, k;
+    if (mode < 0.5) {
+        float2 ctr = float2(0.5 * uSize.x, 0.5 * line + 1.0 + 0.8 * sin(uTime * 2.3));
+        blob = box(c - ctr, float2(0.5 * uSize.x - 24.0, 16.0), 16.0);
+        blob += 0.7 * sin(c.x * 0.11 + uTime * 3.1) * sin(uTime * 1.3 + c.y * 0.2);
+        k = 26.0;
+    } else {
+        float2 ctr = float2(0.5 * uSize.x, line - 9.0 - 4.0 * (0.5 + 0.5 * sin(uTime * 4.0)));
+        blob = length(c - ctr) - 5.5;
+        k = 9.0;
+    }
+    float d = smin(blob, surf, k);
+    float w = clamp((surf - d) / 2.5, 0.0, 1.0);
+
+    float3 panel = float3(0.0706, 0.0784, 0.1216);
+    float inside = smoothstep(0.7, -0.7, d);
+    float paint = inside * (surf > 0.0 ? 1.0 : clamp(w * 3.0, 0.0, 1.0) * step(-2.5, surf));
+
+    float2 uv = c / uSize.y;
+    float v = sin(uv.x * 2.5 + uTime * 1.4) + sin(uv.y * 4.0 - uTime * 1.1 + uv.x * 1.7);
+    float3 plasma = 0.5 + 0.5 * cos(v * 0.9 + float3(0.0, 2.1, 4.2) + uTime * 0.25);
+    float body = smoothstep(4.0, -8.0, blob) * (mode < 0.5 ? 1.0 : 0.6);
+    float gloss = smoothstep(line * 0.5, 4.0, c.y) * smoothstep(1.0, -5.0, blob);
+    float3 fill = panel + body * (0.28 * plasma + 0.08) + 0.22 * gloss;
+
+    float3 lineC = float3(0.35, 0.85, 1.0);
+    float core = smoothstep(1.3, 0.2, abs(d)) * w;
+    float halo = exp(-max(d, 0.0) * 0.3) * 0.5 * w * (1.0 - inside);
+
+    float3 col = fill * paint;
+    float a = paint;
+    col = col * (1.0 - core) + lineC * core;
+    a = a * (1.0 - core) + core;
+    col += lineC * halo;
+    a = clamp(a + halo, 0.0, 1.0);
+    return half4(half3(min(col, float3(a))), half(a));
+}

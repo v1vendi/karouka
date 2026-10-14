@@ -1,0 +1,317 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* Restyling common elements: each row shows the element unstyled ("native")
+     next to one or more author restylings, so a regression reads as a visible
+     difference between columns. Rows marked "outside subset" use properties
+     docs/21-css-subset.md does not include (appearance, accent-color,
+     ::-webkit-scrollbar, ::placeholder); they are expected to match the native
+     column and are here to prove the declarations are ignored without harm. */
+  @font-face { font-family: "Inter"; src: url("fonts/Inter-Regular.ttf"); }
+  @font-face { font-family: "InterBold"; src: url("fonts/Inter-Bold.ttf"); }
+  * { box-sizing: border-box; }
+  :root { --ink: #2b3036; --ink-2: #7b848b; --line: #cfd5da; --line-2: #e7eaed; --key: #1261ec;
+          --key-3: #dbe7fd; --bg: #ffffff; --hl: #f5f6f8; --ok: #2f9e5b; --bad: #d44f4f; }
+  /* See sashimi_page.html: the engine has no implicit viewport scroller. */
+  html { height: 100%; overflow-y: auto; scrollbar-color: #9aa3a9 #eef0f2; }
+  body { margin: 0; font-family: "Inter"; font-size: 14px; line-height: 1.5; color: var(--ink); background: var(--bg); }
+  b, h1, h2, h3, th, .h { font-family: "InterBold"; }
+  .page { max-width: 1100px; margin: 0 auto; padding: 32px 32px 80px; }
+  h1 { font-size: 30px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line-2); }
+  .lead { color: var(--ink-2); margin: 0 0 8px; }
+  .grid { display: grid; grid-template-columns: 180px 1fr 1fr 1fr; gap: 12px; align-items: start; }
+  .grid .h { font-size: 11px; color: var(--ink-2); letter-spacing: 0.06em; }
+  .cell { border: 1px solid var(--line-2); border-radius: 8px; padding: 14px; min-height: 60px; }
+  .what { font-size: 13px; }
+  .what .note { display: block; color: var(--ink-2); font-size: 12px; }
+  .tag { display: inline-block; font-size: 10px; padding: 0 6px; border-radius: 4px; background: #fdecec; color: var(--bad); margin-left: 4px; }
+
+  /* ---------- scrollbars ---------- */
+  .scroller { height: 140px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .scroller p { margin: 0 0 8px; }
+  .sb-thin { scrollbar-width: thin; scrollbar-color: var(--key) var(--key-3); }
+  .sb-none { scrollbar-width: none; }
+  .sb-inherit { scrollbar-color: #e0708a #fde8ee; }
+  .sb-inherit .scroller { scrollbar-width: thin; }
+  .sb-webkit::-webkit-scrollbar { width: 14px; background: #222; }
+  .hscroll { overflow-x: auto; white-space: nowrap; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  .hscroll span { display: inline-block; width: 90px; height: 40px; margin-right: 8px; border-radius: 6px; background: var(--key-3); }
+  .hscroll.thin { scrollbar-width: thin; scrollbar-color: var(--ok) transparent; }
+
+  /* ---------- checkbox & radio ---------- */
+  label { display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer; }
+  /* sibling-combinator restyle: real input kept for state, visual is a span */
+  .rs input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .rs .box { width: 18px; height: 18px; border: 2px solid var(--line); border-radius: 5px; background: var(--bg);
+             display: flex; align-items: center; justify-content: center; transition: background-color 0.12s, border-color 0.12s; }
+  .rs .box::after { content: ""; width: 8px; height: 4px; border-left: 2px solid #fff; border-bottom: 2px solid #fff;
+                    transform: rotate(-45deg); margin-top: -2px; opacity: 0; }
+  .rs input:checked + .box { background: var(--key); border-color: var(--key); }
+  .rs input:checked + .box::after { opacity: 1; }
+  .rs input:focus-visible + .box { outline: 2px solid var(--key); outline-offset: 2px; }
+  .rs input:disabled + .box { background: var(--hl); border-color: var(--line-2); }
+  .rs input:disabled ~ .t { color: var(--ink-2); }
+  .rs .dot { width: 18px; height: 18px; border: 2px solid var(--line); border-radius: 50%; background: var(--bg); }
+  .rs input:checked + .dot { border: 6px solid var(--key); }
+  /* pill toggle made from a checkbox */
+  .sw input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .sw .track { width: 38px; height: 22px; border-radius: 11px; background: var(--line); position: relative; transition: background-color 0.15s; }
+  .sw .track::after { content: ""; position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%;
+                      background: #fff; transition: left 0.15s; }
+  .sw input:checked + .track { background: var(--ok); }
+  .sw input:checked + .track::after { left: 19px; }
+  /* segmented control made from radios */
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg label { margin: 0; flex-grow: 1; justify-content: center; padding: 4px 0; border-radius: 6px; }
+  .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .seg label:has(input:checked) { background: var(--key); color: #fff; }
+  /* outside subset */
+  .ap input { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border: 2px solid var(--bad); }
+  .ac input { accent-color: var(--ok); }
+  /* direct sizing / margins on the native control */
+  .big input { width: 24px; height: 24px; margin: 0; }
+
+  /* ---------- lists ---------- */
+  ul, ol { margin: 0; padding-left: 22px; }
+  li { margin: 2px 0; }
+  .l-square { list-style-type: square; }
+  .l-circle { list-style-type: circle; }
+  .l-none { list-style-type: none; padding-left: 0; }
+  .l-roman { list-style-type: upper-roman; }
+  .l-alpha { list-style-type: lower-alpha; }
+  .l-zero { list-style-type: decimal-leading-zero; }
+  .l-inside { list-style-position: inside; padding-left: 0; }
+  .l-inside li { background: var(--hl); padding: 2px 6px; border-radius: 4px; }
+  .l-marker li::marker { color: var(--key); font-family: "InterBold"; }
+  .l-star li::marker { content: "★ "; color: #e3a008; }
+  .l-counter { list-style: none; padding-left: 0; counter-reset: step; }
+  .l-counter li { counter-increment: step; display: flex; gap: 8px; align-items: center; }
+  /* inline-block, not flex: a display:flex ::before blanks the whole document. */
+  .l-counter li::before { content: counter(step); width: 22px; height: 22px; border-radius: 50%; background: var(--key-3);
+                          color: var(--key); font-size: 12px; display: inline-block; text-align: center; line-height: 22px; }
+  .l-check { list-style: none; padding-left: 0; }
+  .l-check li::before { content: "✓"; color: var(--ok); margin-right: 8px; }
+  .l-nested ul { list-style-type: circle; } .l-nested ul ul { list-style-type: square; }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+  dt { font-family: "InterBold"; } dd { margin: 0; color: var(--ink-2); }
+
+  /* ---------- text inputs, select, textarea, button ---------- */
+  .f input[type=text], .f select, .f textarea { font-family: "Inter"; font-size: 14px; width: 100%; }
+  .f1 input, .f1 select, .f1 textarea { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+                                        background: var(--bg); color: var(--ink); }
+  .f1 input:focus, .f1 select:focus, .f1 textarea:focus { border-color: var(--key); outline: 3px solid var(--key-3); }
+  .f1 input:invalid { border-color: var(--bad); }
+  .f2 input, .f2 select, .f2 textarea { border: 0; border-bottom: 2px solid var(--line); border-radius: 0; padding: 6px 0;
+                                        background: transparent; }
+  .f2 input:focus, .f2 textarea:focus { border-bottom-color: var(--key); }
+  .ph input::placeholder { color: var(--key); font-style: italic; }
+  .stack > * { display: block; margin-bottom: 8px; }
+  button { font-family: "Inter"; font-size: 14px; cursor: pointer; }
+  .b1 button { background: var(--key); color: #fff; border: 0; border-radius: 8px; padding: 8px 16px; }
+  .b1 button:hover { background: #0d4fc2; }
+  .b1 button:active { transform: translateY(1px); }
+  .b1 button:disabled { background: var(--line); cursor: default; }
+  .b2 button { background: transparent; color: var(--key); border: 1px solid var(--key); border-radius: 999px; padding: 6px 16px; }
+  .b2 button:focus-visible { outline: 2px dashed var(--key); outline-offset: 3px; }
+
+  /* ---------- range, progress, details, hr, links, tables ---------- */
+  .r1 input[type=range] { width: 100%; }
+  .r2 input[type=range] { width: 100%; accent-color: var(--bad); }
+  details { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  details + details { margin-top: 6px; }
+  .d1 summary { cursor: pointer; font-family: "InterBold"; }
+  .d1 details[open] { background: var(--hl); }
+  .d2 summary { list-style: none; cursor: pointer; }
+  .d2 summary::before { content: "+ "; color: var(--key); font-family: "InterBold"; }
+  .d2 details[open] summary::before { content: "− "; }
+  hr { margin: 10px 0; }
+  .hr1 hr { border: 0; height: 2px; background: var(--key-3); }
+  .hr2 hr { border: 0; border-top: 2px dashed var(--line); }
+  a { cursor: pointer; }
+  .a1 a { color: var(--key); text-decoration: none; border-bottom: 1px solid var(--key-3); }
+  .a1 a:hover { border-bottom-color: var(--key); }
+  .a2 a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--bad); text-decoration-thickness: 2px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { padding: 4px 8px; text-align: left; }
+  .t1 table { border: 1px solid var(--line); }
+  .t1 th { background: var(--hl); } .t1 td, .t1 th { border-bottom: 1px solid var(--line-2); }
+  .t1 tr:nth-child(even) td { background: #fafbfc; }
+  .t2 th { color: var(--ink-2); font-size: 11px; letter-spacing: 0.06em; }
+  .t2 tr:hover td { background: var(--key-3); }
+  blockquote { margin: 0; }
+  .q1 blockquote { border-left: 3px solid var(--key); padding: 4px 12px; color: var(--ink-2); }
+  code, kbd { font-size: 12px; }
+  .k1 kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--hl); }
+  .k1 code { background: var(--key-3); color: var(--key); padding: 1px 5px; border-radius: 4px; }
+
+  .log { position: fixed; right: 16px; bottom: 16px; background: var(--ink); color: #fff; font-size: 12px;
+         padding: 8px 12px; border-radius: 8px; min-width: 220px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Restyling common elements</h1>
+  <p class="lead">Each row: the element with no author styles, then restyled variants. Click and type; state changes are echoed bottom-right.</p>
+
+  <h2>Scrollbars</h2>
+  <div class="grid">
+    <div class="h">CASE</div><div class="h">NATIVE</div><div class="h">RESTYLED</div><div class="h">RESTYLED / EDGE</div>
+    <div class="what">Vertical scroller<span class="note">scrollbar-width / scrollbar-color</span></div>
+    <div class="cell"><div class="scroller" id="sc0"></div></div>
+    <div class="cell"><div class="scroller sb-thin" id="sc1"></div></div>
+    <div class="cell"><div class="scroller sb-none" id="sc2"></div><span class="note">width: none (still wheel-scrollable)</span></div>
+    <div class="what">Inherited color<span class="note">scrollbar-color inherits, width does not</span></div>
+    <div class="cell"><div class="scroller" id="sc3"></div></div>
+    <div class="cell sb-inherit"><div class="scroller" id="sc4"></div></div>
+    <div class="cell"><div class="scroller sb-webkit" id="sc5"></div><span class="tag">outside subset</span> ::-webkit-scrollbar</div>
+    <div class="what">Horizontal<span class="note">overflow-x: auto</span></div>
+    <div class="cell"><div class="hscroll"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+    <div class="cell"><div class="hscroll thin"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+    <div class="cell"><span class="note">Page scrollbar uses <code>scrollbar-color</code> on &lt;html&gt;</span></div>
+  </div>
+
+  <h2>Checkbox &amp; radio</h2>
+  <div class="grid">
+    <div class="h">CASE</div><div class="h">NATIVE</div><div class="h">RESTYLED</div><div class="h">RESTYLED / EDGE</div>
+    <div class="what">Checkbox<span class="note">:checked + sibling, :disabled, :focus-visible</span></div>
+    <div class="cell">
+      <label><input type="checkbox" data-log="cb native A" checked> Checked</label>
+      <label><input type="checkbox" data-log="cb native B"> Unchecked</label>
+      <label><input type="checkbox" disabled> Disabled</label>
+    </div>
+    <div class="cell rs">
+      <label><input type="checkbox" data-log="cb custom A" checked><span class="box"></span><span class="t">Checked</span></label>
+      <label><input type="checkbox" data-log="cb custom B"><span class="box"></span><span class="t">Unchecked</span></label>
+      <label><input type="checkbox" disabled checked><span class="box"></span><span class="t">Disabled</span></label>
+    </div>
+    <div class="cell sw">
+      <label><input type="checkbox" data-log="switch A" checked><span class="track"></span> Switch on</label>
+      <label><input type="checkbox" data-log="switch B"><span class="track"></span> Switch off</label>
+    </div>
+    <div class="what">Radio group<span class="note">name= groups, :has(:checked)</span></div>
+    <div class="cell">
+      <label><input type="radio" name="r0" data-log="radio native 1" checked> Tuna</label>
+      <label><input type="radio" name="r0" data-log="radio native 2"> Salmon</label>
+      <label><input type="radio" name="r0" data-log="radio native 3"> Eel</label>
+    </div>
+    <div class="cell rs">
+      <label><input type="radio" name="r1" data-log="radio custom 1" checked><span class="dot"></span> Tuna</label>
+      <label><input type="radio" name="r1" data-log="radio custom 2"><span class="dot"></span> Salmon</label>
+      <label><input type="radio" name="r1" data-log="radio custom 3"><span class="dot"></span> Eel</label>
+    </div>
+    <div class="cell"><div class="seg">
+      <label><input type="radio" name="r2" data-log="segment S" checked>S</label>
+      <label><input type="radio" name="r2" data-log="segment M">M</label>
+      <label><input type="radio" name="r2" data-log="segment L">L</label>
+    </div></div>
+    <div class="what">Direct styling<span class="note">width/height on the control itself</span></div>
+    <div class="cell big"><label><input type="checkbox" checked> 24px box</label><label><input type="radio" name="r3" checked> 24px radio</label></div>
+    <div class="cell ap"><label><input type="checkbox" checked> appearance:none</label><span class="tag">outside subset</span></div>
+    <div class="cell ac"><label><input type="checkbox" checked> accent-color</label><label><input type="radio" name="r4" checked> accent-color</label><span class="tag">outside subset</span></div>
+  </div>
+
+  <h2>Lists</h2>
+  <div class="grid">
+    <div class="h">CASE</div><div class="h">NATIVE</div><div class="h">RESTYLED</div><div class="h">RESTYLED / EDGE</div>
+    <div class="what">Unordered<span class="note">list-style-type, ::marker</span></div>
+    <div class="cell"><ul><li>Otoro</li><li>Chutoro</li><li>Akami</li></ul></div>
+    <div class="cell"><ul class="l-square l-marker"><li>Square, blue bold marker</li><li>Chutoro</li></ul>
+      <ul class="l-circle"><li>Circle</li></ul></div>
+    <div class="cell"><ul class="l-star"><li>::marker content</li><li>Chutoro</li></ul>
+      <ul class="l-check"><li>::before checkmarks</li><li>list-style none</li></ul></div>
+    <div class="what">Ordered<span class="note">numbering styles, start=, reversed</span></div>
+    <div class="cell"><ol><li>Rice</li><li>Fish</li><li>Serve</li></ol></div>
+    <div class="cell"><ol class="l-roman"><li>Upper roman</li><li>Two</li></ol>
+      <ol class="l-alpha" start="4"><li>alpha, start=4</li><li>e</li></ol></div>
+    <div class="cell"><ol class="l-zero" reversed><li>leading zero, reversed</li><li>b</li><li>c</li></ol>
+      <ol class="l-counter"><li>CSS counters</li><li>counter-increment</li></ol></div>
+    <div class="what">Position &amp; nesting<span class="note">inside/outside, nested markers</span></div>
+    <div class="cell"><ul><li>Outer<ul><li>Inner<ul><li>Innermost</li></ul></li></ul></li></ul></div>
+    <div class="cell"><ul class="l-inside"><li>Inside marker with a long line that wraps under the bullet</li><li>Short</li></ul></div>
+    <div class="cell"><ul class="l-nested l-none"><li>Top (no marker)<ul><li>circle<ul><li>square</li></ul></li></ul></li></ul>
+      <dl><dt>Uni</dt><dd>sea urchin</dd><dt>Ikura</dt><dd>salmon roe</dd></dl></div>
+  </div>
+
+  <h2>Text fields, select, textarea, buttons</h2>
+  <div class="grid">
+    <div class="h">CASE</div><div class="h">NATIVE</div><div class="h">RESTYLED</div><div class="h">RESTYLED / EDGE</div>
+    <div class="what">Form fields<span class="note">border, radius, :focus, :invalid</span></div>
+    <div class="cell f stack">
+      <input type="text" placeholder="Name" data-log="text native">
+      <select data-log="select native"><option>Counter</option><option>Table</option><option>Room</option></select>
+      <textarea rows="2" placeholder="Notes"></textarea>
+    </div>
+    <div class="cell f f1 stack">
+      <input type="text" placeholder="Name" data-log="text boxed">
+      <input type="text" required placeholder="required (empty = :invalid)">
+      <select data-log="select boxed"><option>Counter</option><option>Table</option><option>Room</option></select>
+      <textarea rows="2" placeholder="Notes"></textarea>
+    </div>
+    <div class="cell f f2 ph stack">
+      <input type="text" placeholder="Underline + ::placeholder" data-log="text underline">
+      <select><option>Counter</option><option>Table</option></select>
+      <textarea rows="2" placeholder="Notes"></textarea>
+      <span class="tag">::placeholder outside subset</span>
+    </div>
+    <div class="what">Buttons<span class="note">:hover, :active, :disabled, :focus-visible</span></div>
+    <div class="cell"><button data-log="button native">Button</button> <button disabled>Disabled</button></div>
+    <div class="cell b1"><button data-log="button solid">Solid</button> <button disabled>Disabled</button></div>
+    <div class="cell b2"><button data-log="button outline">Outline pill</button></div>
+    <div class="what">Range<span class="note">input type=range</span></div>
+    <div class="cell"><input type="range" min="0" max="10" value="4" data-log="range native"></div>
+    <div class="cell r1"><input type="range" min="0" max="10" value="7" data-log="range wide"></div>
+    <div class="cell r2"><input type="range" min="0" max="10" value="2"><span class="tag">accent-color outside subset</span></div>
+  </div>
+
+  <h2>Details, rules, links, tables, quotes</h2>
+  <div class="grid">
+    <div class="h">CASE</div><div class="h">NATIVE</div><div class="h">RESTYLED</div><div class="h">RESTYLED / EDGE</div>
+    <div class="what">details / summary<span class="note">[open], summary marker</span></div>
+    <div class="cell"><details><summary>Allergens</summary>Shellfish, soy.</details></div>
+    <div class="cell d1"><details open><summary>Allergens</summary>Shellfish, soy.</details><details><summary>Origin</summary>Toyosu.</details></div>
+    <div class="cell d2"><details><summary>Custom +/− marker</summary>list-style: none on summary.</details></div>
+    <div class="what">hr</div>
+    <div class="cell">above<hr>below</div>
+    <div class="cell hr1">above<hr>below</div>
+    <div class="cell hr2">above<hr>below</div>
+    <div class="what">Links<span class="note">text-decoration-*</span></div>
+    <div class="cell"><a href="#x">Default link</a></div>
+    <div class="cell a1"><a href="#x">Border underline</a></div>
+    <div class="cell a2"><a href="#x">Thick red underline</a></div>
+    <div class="what">Table<span class="note">collapse, zebra, :hover rows</span></div>
+    <div class="cell"><table><tr><th>Dish</th><th>¥</th></tr><tr><td>Otoro</td><td>1800</td></tr><tr><td>Aji</td><td>400</td></tr></table></div>
+    <div class="cell t1"><table><tr><th>Dish</th><th>¥</th></tr><tr><td>Otoro</td><td>1800</td></tr><tr><td>Aji</td><td>400</td></tr><tr><td>Ebi</td><td>550</td></tr></table></div>
+    <div class="cell t2"><table><tr><th>DISH</th><th>¥</th></tr><tr><td>Otoro</td><td>1800</td></tr><tr><td>Aji</td><td>400</td></tr></table></div>
+    <div class="what">Quote, code, kbd</div>
+    <div class="cell"><blockquote>Fresh is best.</blockquote><code>x = 1</code> <kbd>⌘K</kbd></div>
+    <div class="cell q1 k1"><blockquote>Fresh is best.</blockquote><code>x = 1</code> <kbd>⌘K</kbd></div>
+    <div class="cell"></div>
+  </div>
+</div>
+
+<div class="log" id="log">no events yet</div>
+
+<script>
+  const filler = "Sashimi is thinly sliced raw fish. Cuts vary by fish and season; the chef decides the thickness.";
+  for (let i = 0; i < 6; i++) {
+    const s = document.getElementById("sc" + i);
+    for (let j = 1; j <= 8; j++) { const p = document.createElement("p"); p.textContent = j + ". " + filler; s.appendChild(p); }
+  }
+  const log = document.getElementById("log");
+  function say(t) { log.textContent = t; }
+  document.querySelectorAll("[data-log]").forEach(el => {
+    const name = el.getAttribute("data-log");
+    const tag = el.tagName.toLowerCase(), type = el.getAttribute("type");
+    if (type === "checkbox" || type === "radio")
+      el.addEventListener("change", () => say(name + " → " + (el.checked ? "checked" : "unchecked")));
+    else if (tag === "button")
+      el.addEventListener("click", () => say(name + " clicked"));
+    else
+      el.addEventListener("input", () => say(name + " = " + el.value));
+    if (tag === "select") el.addEventListener("change", () => say(name + " = " + el.value));
+  });
+</script>
+</body>
+</html>

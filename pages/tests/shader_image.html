@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content='^shader\(url\("file:///[^"]*/checker\.sksl"\)\) \| shader\("half4 main\(float2 coord\) \{ return half4\(0\.0, 0\.5, 0\.0, 1\.0\); \}"\) \| shader\(url\("file:///[^"]*/checker\.sksl"\)\) \| shader\(url\("file:///[^"]*/checker\.sksl"\)\)$'>
+<meta name="karouka-check-pixels" content="18,18=#191c21~2 34,18=#339eff~2 18,34=#339eff~2 210,18=#339eff~2 218,18=#191c21~2 506,18=#191c21~2 522,18=#339eff~2 580,40=#222222 660,40=#008000 20,110=#ff0000 60,110=#ffffff 100,140=#ffffff 198,108=#191c21~2 214,108=#339eff~2 488,108=#191c21~2 504,108=#339eff~2 148,293=#191c21~2 164,293=#339eff~2 148,309=#339eff~2">
+<title>shader pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 16px sans-serif; }
+  .box { position: absolute; top: 10px; height: 64px; background-color: #222; }
+  .shader { background-image: shader(url(checker.sksl)); }
+  #norepeat { left: 10px; width: 160px; background-repeat: no-repeat; }
+  #repeat { left: 190px; width: 160px; background-repeat: repeat; background-size: 24px 24px; }
+  #resize { left: 370px; width: 40px; background-repeat: no-repeat; }
+  #broken { left: 550px; width: 60px; background-image: shader('this is not valid SkSL'); }
+  #inline { left: 630px; width: 60px; background-image: shader("half4 main(float2 coord) { return half4(0.0, 0.5, 0.0, 1.0); }"); }
+  #mask { position: absolute; left: 10px; top: 100px; width: 160px; height: 64px; background: #f00;
+          mask-image: shader(url(checker.sksl)); mask-size: 32px 32px; mask-repeat: no-repeat; }
+  #list { position: absolute; left: 400px; top: 420px; margin: 0; padding-left: 40px;
+          list-style-image: shader(url(checker.sksl)); }
+  #content { position: absolute; left: 190px; top: 100px; width: 100px; height: 64px;
+             content: shader(url(checker.sksl)); }
+  #before { position: absolute; left: 480px; top: 100px; }
+  #before::before { content: shader(url(checker.sksl)); }
+</style>
+</head>
+<body>
+<!-- shader() images (patch 0106; docs/ENGINE.md), ported from css-shader-image's tests/m1-static.html.
+     checker.sksl paints 16 px cells from each tile's top-left, dark rgb(26, 28, 33) where the cell's x + y
+     is even and light rgb(51, 158, 255) where it is odd. Row 1: a background under no-repeat (fills the
+     box), under repeat at 24 px tiles (210 is light, 218 dark again, so the tiles restart), a box widened
+     from 40 to 160 px after load (cells stay 16 px: 506 dark, 522 light; stretched they'd be 64 px), a
+     shader that doesn't compile (the #222 background shows; one console error), and an inline shader("...").
+     Row 2: a mask (only its 32 px top-left square of red shows), content: on an element and on ::before,
+     and a list-style-image marker. A sizeless image gets the 300x150 default size as a marker and as
+     ::before content, as a sizeless SVG does. The title reads back getComputedStyle. -->
+<div class="box shader" id="norepeat"></div>
+<div class="box shader" id="repeat"></div>
+<div class="box shader" id="resize"></div>
+<div class="box" id="broken"></div>
+<div class="box" id="inline"></div>
+<div id="mask"></div>
+<ul id="list"><li>item</li></ul>
+<div id="content"></div>
+<div id="before"></div>
+<script>
+  const style = (id) => getComputedStyle(document.getElementById(id));
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.getElementById("resize").style.width = "160px";
+    document.title = [style("repeat").backgroundImage, style("inline").backgroundImage,
+                      style("mask").maskImage, style("list").listStyleImage].join(" | ");
+  }));
+</script>
+</body>
+</html>

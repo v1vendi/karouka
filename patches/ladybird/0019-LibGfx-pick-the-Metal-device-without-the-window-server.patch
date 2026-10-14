@@ -1,0 +1,39 @@
+diff --git a/Libraries/LibGfx/MetalContext.mm b/Libraries/LibGfx/MetalContext.mm
+index 9f0b87ba86..dab4a96029 100644
+--- a/Libraries/LibGfx/MetalContext.mm
++++ b/Libraries/LibGfx/MetalContext.mm
+@@ -90,9 +90,33 @@ private:
+     id<MTLCommandQueue> m_queue;
+ };
+ 
++// MTLCreateSystemDefaultDevice() asks the window server (SkyLight) for the GPU driving the main
++// display. In a process that has not talked to the window server yet (a WebContent process, an
++// embedder rendering offscreen) that handshake and its TCC check cost ~25 ms of startup, waiting on
++// other processes. MTLCopyAllDevices() lists the GPUs without it. Prefer the GPU the default would
++// pick on a dual-GPU Mac (the high-power, built-in one); with one GPU it is the same device.
++static id<MTLDevice> create_metal_device()
++{
++    NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
++    id<MTLDevice> chosen = nil;
++    for (id<MTLDevice> device in devices) {
++        if (!device.isLowPower && !device.isRemovable) {
++            chosen = device;
++            break;
++        }
++    }
++    if (!chosen)
++        chosen = devices.firstObject;
++    [chosen retain];
++    [devices release];
++    if (!chosen)
++        return MTLCreateSystemDefaultDevice();
++    return chosen;
++}
++
+ RefPtr<MetalContext> get_metal_context()
+ {
+-    auto device = MTLCreateSystemDefaultDevice();
++    auto device = create_metal_device();
+     if (!device) {
+         dbgln("Failed to create Metal device");
+         return {};

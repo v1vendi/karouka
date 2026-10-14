@@ -1,0 +1,2 @@
+# vendored WPT reftest corpus: bytes as upstream has them, never eol-converted
+third_party/wpt/** -text linguist-vendored

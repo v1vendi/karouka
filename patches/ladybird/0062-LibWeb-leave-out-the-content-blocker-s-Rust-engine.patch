@@ -1,0 +1,172 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: leave out the content blocker's Rust engine
+
+A LIBWEB_PRUNE_WEB_APIS build (karouka) has no network and never loads
+a filter list, so it leaves libweb_content_blocker_rust out of the link:
+the adblock crate with psl, regex, regex-automata, aho-corasick, idna,
+flatbuffers and serde_json behind it. Loader/ContentBlocker.cpp stays
+without its engine, so its callers need no guards: nothing is filtered,
+there is no cosmetic style sheet, and setting any rules fails.
+
+---
+diff --git a/Libraries/LibWeb/Embedder/Prune/ContentBlocker.cmake b/Libraries/LibWeb/Embedder/Prune/ContentBlocker.cmake
+new file mode 100644
+index 0000000000..81a0e0f384
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/ContentBlocker.cmake
+@@ -0,0 +1,8 @@
++# karouka: the content blocker's Rust engine (ContentBlocker/Rust: the adblock crate, with psl, regex,
++# aho-corasick, idna and flatbuffers behind it). An embedder with no network has nothing to block, and
++# never loads a filter list. Loader/ContentBlocker.cpp stays, without its engine: nothing is filtered,
++# there is no cosmetic style sheet, and setting rules other than none fails. The callers ask it, so they
++# need no guards. This is not a family: the definition is on ContentBlocker.cpp alone, so turning it on
++# recompiles one file, and LibWeb's CMakeLists.txt leaves libweb_content_blocker_rust out of the link.
++set(LIBWEB_PRUNE_CONTENTBLOCKER ON)
++set_property(SOURCE Loader/ContentBlocker.cpp APPEND PROPERTY COMPILE_DEFINITIONS LIBWEB_PRUNE_CONTENTBLOCKER)
+diff --git a/Libraries/LibWeb/Loader/ContentBlocker.cpp b/Libraries/LibWeb/Loader/ContentBlocker.cpp
+index f182faa905..9d1205f1f0 100644
+--- a/Libraries/LibWeb/Loader/ContentBlocker.cpp
++++ b/Libraries/LibWeb/Loader/ContentBlocker.cpp
+@@ -8,7 +8,9 @@
+ #include <AK/StringBuilder.h>
+ #include <AK/Vector.h>
+ #include <LibURL/Parser.h>
+-#include <LibWeb/ContentBlockerRustFFI.h>
++#ifndef LIBWEB_PRUNE_CONTENTBLOCKER
++#    include <LibWeb/ContentBlockerRustFFI.h>
++#endif
+ #include <LibWeb/Loader/ContentBlocker.h>
+ 
+ namespace Web {
+@@ -21,6 +23,11 @@ ContentBlocker& ContentBlocker::the()
+ 
+ ContentBlocker::ContentBlocker() = default;
+ 
++#ifdef LIBWEB_PRUNE_CONTENTBLOCKER
++// karouka: built without the Rust engine (Embedder/Prune/ContentBlocker.cmake). m_engine stays null, so
++// nothing is filtered and there is no cosmetic style sheet.
++ContentBlocker::~ContentBlocker() = default;
++#else
+ ContentBlocker::~ContentBlocker()
+ {
+     ContentBlocking::FFI::rust_content_blocker_free(m_engine);
+@@ -133,6 +140,7 @@ static bool rules_contain_cosmetic_rules(ReadonlyBytes rules_bytes)
+     });
+     return has_cosmetic_rules;
+ }
++#endif
+ 
+ ErrorOr<void> ContentBlocker::set_patterns(ReadonlySpan<String> patterns)
+ {
+@@ -151,6 +159,11 @@ ErrorOr<void> ContentBlocker::set_patterns(ReadonlySpan<String> patterns)
+ 
+ ErrorOr<void> ContentBlocker::set_rules_from_bytes(ReadonlyBytes rules_bytes)
+ {
++#ifdef LIBWEB_PRUNE_CONTENTBLOCKER
++    if (rules_bytes.is_empty())
++        return {};
++    return Error::from_string_literal("This build has no content blocker");
++#else
+     // OPTIMIZATION: Building an engine costs the same tokenizing and flatbuffer work whether or not there are any
+     //               rules to put in it, and every caller already treats a missing engine as "nothing is blocked".
+     //               Drop the engine instead of rebuilding an empty one.
+@@ -173,6 +186,7 @@ ErrorOr<void> ContentBlocker::set_rules_from_bytes(ReadonlyBytes rules_bytes)
+     m_engine = engine;
+     m_has_cosmetic_rules = has_cosmetic_rules;
+     return {};
++#endif
+ }
+ 
+ bool ContentBlocker::is_filtered(URL::URL const& url) const
+@@ -185,6 +199,12 @@ bool ContentBlocker::is_filtered(URL::URL const& url, URL::URL const& source_url
+     return is_filtered(url, source_url_for_matching(source_url), resource_type_from_fetch_metadata(destination, initiator_type, mode));
+ }
+ 
++#ifdef LIBWEB_PRUNE_CONTENTBLOCKER
++bool ContentBlocker::is_filtered(URL::URL const&, URL::URL const&, ResourceType) const
++{
++    return false;
++}
++#else
+ bool ContentBlocker::is_filtered(URL::URL const& url, URL::URL const& source_url, ResourceType resource_type) const
+ {
+     if (!filtering_enabled() || !m_engine)
+@@ -207,12 +227,24 @@ bool ContentBlocker::is_filtered(URL::URL const& url, URL::URL const& source_url
+         reinterpret_cast<u8 const*>(request_type.characters_without_null_termination()),
+         request_type.length());
+ }
++#endif
+ 
+ Utf16String ContentBlocker::cosmetic_style_sheet_for_url(URL::URL const& url) const
+ {
+     return cosmetic_style_sheet_for_url(url, {}, {});
+ }
+ 
++#ifdef LIBWEB_PRUNE_CONTENTBLOCKER
++Utf16String ContentBlocker::cosmetic_style_sheet_for_url(URL::URL const&, ReadonlySpan<Utf16FlyString>, ReadonlySpan<Utf16FlyString>) const
++{
++    return {};
++}
++
++bool ContentBlocker::has_generic_cosmetic_selectors_for_url(URL::URL const&, ReadonlySpan<Utf16FlyString>, ReadonlySpan<Utf16FlyString>) const
++{
++    return false;
++}
++#else
+ Utf16String ContentBlocker::cosmetic_style_sheet_for_url(URL::URL const& url, ReadonlySpan<Utf16FlyString> classes, ReadonlySpan<Utf16FlyString> ids) const
+ {
+     if (!filtering_enabled() || !m_engine || !m_has_cosmetic_rules)
+@@ -266,6 +298,7 @@ bool ContentBlocker::has_generic_cosmetic_selectors_for_url(URL::URL const& url,
+         reinterpret_cast<u8 const*>(ids_bytes.characters_without_null_termination()),
+         ids_bytes.length());
+ }
++#endif
+ 
+ ContentBlocker::ResourceType ContentBlocker::resource_type_from_fetch_metadata(Optional<Fetch::Infrastructure::Request::Destination> const& destination, Optional<Fetch::Infrastructure::Request::InitiatorType> const& initiator_type, Fetch::Infrastructure::Request::Mode mode)
+ {
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index df762bd2a8..496061aa45 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -1240,14 +1240,20 @@ import_rust_crate(
+ target_link_libraries(libweb_rust INTERFACE LibGfx)
+ test_rust_crate(MANIFEST_PATH Rust/Cargo.toml CRATE_NAME libweb_rust)
+ 
++# karouka: Embedder/Prune/ContentBlocker.cmake leaves the content blocker's Rust engine out.
++if (LIBWEB_PRUNE_CONTENTBLOCKER)
++    target_link_libraries(LibWeb PRIVATE libweb_rust)
++else()
+ set(content_blocker_rust_features "")
+ if (NOT BUILD_SHARED_LIBS)
+     set(content_blocker_rust_features FEATURES allocator)
+ endif()
+ import_rust_crate(MANIFEST_PATH ContentBlocker/Rust/Cargo.toml CRATE_NAME libweb_content_blocker_rust ${content_blocker_rust_features} FFI_HEADER ContentBlockerRustFFI.h)
+ target_link_libraries(LibWeb PRIVATE libweb_rust libweb_content_blocker_rust)
+-get_target_property(_libweb_rust_lib libweb_rust IMPORTED_LOCATION)
+ get_target_property(_libweb_content_blocker_rust_lib libweb_content_blocker_rust IMPORTED_LOCATION)
++set(_libweb_content_blocker_rust_merge COMMAND ${CMAKE_AR} -x $<TARGET_FILE:libweb_content_blocker_rust>)
++endif()
++get_target_property(_libweb_rust_lib libweb_rust IMPORTED_LOCATION)
+ set_property(SOURCE HTML/Parser/HTMLTokenizer.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+ set_property(SOURCE HTML/Parser/HTMLParser.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+ set_property(SOURCE HTML/Parser/SpeculativeHTMLParser.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+@@ -1258,7 +1264,7 @@ endif()
+ if(NOT BUILD_SHARED_LIBS)
+     add_custom_command(TARGET LibWeb POST_BUILD
+         COMMAND ${CMAKE_AR} -x $<TARGET_FILE:libweb_rust>
+-        COMMAND ${CMAKE_AR} -x $<TARGET_FILE:libweb_content_blocker_rust>
++        ${_libweb_content_blocker_rust_merge}
+         COMMAND ${CMAKE_AR} -qS $<TARGET_FILE:LibWeb> *.o
+         COMMAND ${CMAKE_RANLIB} $<TARGET_FILE:LibWeb>
+         COMMAND ${CMAKE_COMMAND} -E remove -f *.o
+@@ -1280,7 +1286,9 @@ if(NOT BUILD_SHARED_LIBS)
+     set_property(SOURCE Painting/PaintingRustBridge.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+     set_property(SOURCE SVG/AttributeParsing.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+     set_property(SOURCE SVG/Path.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_rust_lib})
+-    set_property(SOURCE Loader/ContentBlocker.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_content_blocker_rust_lib})
++    if (NOT LIBWEB_PRUNE_CONTENTBLOCKER)
++        set_property(SOURCE Loader/ContentBlocker.cpp APPEND PROPERTY OBJECT_DEPENDS ${_libweb_content_blocker_rust_lib})
++    endif()
+ endif()
+ 
+ if (HAS_FONTCONFIG)

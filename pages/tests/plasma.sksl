@@ -1,0 +1,33 @@
+// plasma.sksl — M2 (uniforms) and M3 (time).
+//
+// Declaring uTime is what opts this element into per-frame repaint. Shaders
+// that do not animate must not declare it. See docs/04-syntax.md.
+//
+// CSS:
+//   background-image: shader(url(shaders/plasma.sksl),
+//                            --speed 0.3, --tint #33aaff, --scale 3.0);
+
+uniform float2 uSize;
+uniform float  uTime;
+
+uniform float  speed;   // --speed : animation rate multiplier
+uniform float  scale;   // --scale : number of wave periods across the tile
+uniform half4  tint;    // --tint  : unpremultiplied RGBA from a CSS <color>
+
+half4 main(float2 coord) {
+    float2 uv = coord / uSize;          // 0..1 across the tile
+    float  t  = uTime * speed;
+
+    float v = sin(uv.x * scale * 6.2831853 + t)
+            + sin(uv.y * scale * 6.2831853 - t * 1.3)
+            + sin((uv.x + uv.y) * scale * 4.4428829 + t * 0.7);
+
+    float n = v / 3.0 * 0.5 + 0.5;      // -> 0..1
+
+    half3 base = mix(half3(0.05, 0.05, 0.10), tint.rgb, half(n));
+    half  a    = tint.a;
+
+    // Runtime shaders return PREMULTIPLIED rgba. Forgetting this looks correct
+    // at a = 1 and wrong at every other alpha.
+    return half4(base * a, a);
+}

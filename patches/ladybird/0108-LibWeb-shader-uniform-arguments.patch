@@ -1,0 +1,557 @@
+diff --git a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
+--- a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
++++ b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
+@@ -11,10 +11,16 @@
+ #include <LibGC/Weak.h>
+ #include <LibWeb/CSS/Fetch.h>
+ #include <LibWeb/CSS/StyleSheetState.h>
++#include <LibWeb/CSS/StyleValues/CustomIdentStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/ImageStyleValue.h>
++#include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
++#include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
++#include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
++#include <LibWeb/CSS/StyleValues/StyleValueList.h>
+ #include <LibWeb/CSS/StyleValues/URLStyleValue.h>
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOMURL/DOMURL.h>
++#include <LibWeb/Embedder/ShaderDecodedImageData.h>
+ #include <LibWeb/HTML/DecodedImageData.h>
+ #include <LibWeb/HTML/PotentialCORSRequest.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+@@ -355,11 +361,71 @@
+     m_image_style_value.unregister_client(*this);
+ }
+ 
++// karouka: a shader() image's uniform arguments (pairs of a dashed ident and its computed value in the
++// Rust data) as the embedder takes them.
++static Vector<Embedder::ShaderArgument> shader_arguments_from_rust_data(StyleValueFFI::RetainedStyleValueData const& retained_list)
++{
++    auto const* list_data = static_cast<StyleValueFFI::StyleValueData const*>(retained_list.pointer);
++    if (!list_data)
++        return {};
++    auto const& list = list_data->value_list.values;
++    auto child = [&](size_t index) {
++        auto const* data = static_cast<StyleValueFFI::StyleValueData const*>(list.pointer[index].pointer);
++        return StyleValue::adopt_rust_style_value_data(StyleValueFFI::rust_style_value_retain(data));
++    };
++    Vector<Embedder::ShaderArgument> arguments;
++    for (size_t index = 0; index + 1 < list.length; index += 2) {
++        auto name = child(index);
++        if (!name->is_custom_ident())
++            continue;
++        Embedder::ShaderArgument argument;
++        argument.name = name->as_custom_ident().custom_ident().to_utf16_string().to_utf8_but_should_be_ported_to_utf16();
++        auto value = child(index + 1);
++        if (value->is_number()) {
++            argument.type = Embedder::ShaderArgument::Type::Number;
++            argument.values[0] = static_cast<float>(value->as_number().number());
++        } else if (value->is_percentage()) {
++            argument.type = Embedder::ShaderArgument::Type::Percentage;
++            argument.values[0] = static_cast<float>(value->as_percentage().percentage().as_fraction());
++        } else if (value->is_length()) {
++            if (auto length = value->as_length().length(); length.is_absolute()) {
++                argument.type = Embedder::ShaderArgument::Type::Length;
++                argument.values[0] = length.absolute_length_to_px().to_float();
++            }
++        } else if (value->is_value_list()) {
++            auto values = value->as_value_list().values();
++            if (values.size() == 2 && values[0]->is_number() && values[1]->is_number()) {
++                argument.type = Embedder::ShaderArgument::Type::NumberPair;
++                argument.values[0] = static_cast<float>(values[0]->as_number().number());
++                argument.values[1] = static_cast<float>(values[1]->as_number().number());
++            }
++        } else if (value->has_color()) {
++            // FIXME: currentcolor and light-dark() need the element's color and scheme, which this doesn't have.
++            if (auto color = value->to_color({}); color.has_value()) {
++                argument.type = Embedder::ShaderArgument::Type::Color;
++                argument.values = { color->red() / 255.f, color->green() / 255.f, color->blue() / 255.f, color->alpha() / 255.f };
++            }
++        }
++        arguments.append(move(argument));
++    }
++    return arguments;
++}
++
+ GC::Ptr<HTML::DecodedImageData> ImageStyleValue::Client::decoded_image_data() const
+ {
+     if (!m_resource)
+         return nullptr;
+-    return m_resource->decoded_image_data();
++    auto decoded_image_data = m_resource->decoded_image_data();
++    // karouka: a shader() image with arguments paints its source's decoded data bound to them.
++    auto const* shader = as_if<Embedder::ShaderDecodedImageData>(decoded_image_data.ptr());
++    if (!shader || !m_image_style_value.rust_style_value_data()->image.shader_arguments.pointer)
++        return decoded_image_data;
++    if (m_shader_image_data_bound != shader) {
++        GC::Ref<HTML::DecodedImageData> bound = shader->with_arguments(shader_arguments_from_rust_data(m_image_style_value.rust_style_value_data()->image.shader_arguments));
++        m_shader_image_data_with_arguments = GC::Root<HTML::DecodedImageData> { bound };
++        m_shader_image_data_bound = shader;
++    }
++    return m_shader_image_data_with_arguments.ptr();
+ }
+ 
+ }
+diff --git a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.h b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.h
+--- a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.h
++++ b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.h
+@@ -12,6 +12,7 @@
+ #include <AK/HashMap.h>
+ #include <AK/HashTable.h>
+ #include <AK/Optional.h>
++#include <LibGC/Root.h>
+ #include <LibGC/Weak.h>
+ #include <LibGfx/Forward.h>
+ #include <LibJS/Heap/Cell.h>
+@@ -76,6 +77,12 @@
+         ImageStyleValue const& m_image_style_value;
+         GC::Weak<DOM::Document> m_document;
+         ImageStyleValueResource* m_resource { nullptr };
++
++    private:
++        // karouka: a shader() image with uniform arguments paints its decoded data bound to them, made once
++        // per decoded data (Embedder::ShaderDecodedImageData::with_arguments).
++        mutable GC::Root<HTML::DecodedImageData> m_shader_image_data_with_arguments;
++        mutable HTML::DecodedImageData const* m_shader_image_data_bound { nullptr };
+     };
+ 
+     static ValueComparingNonnullRefPtr<ImageStyleValue const> create(URL const&);
+diff --git a/Libraries/LibWeb/Rust/src/css/serialize.rs b/Libraries/LibWeb/Rust/src/css/serialize.rs
+--- a/Libraries/LibWeb/Rust/src/css/serialize.rs
++++ b/Libraries/LibWeb/Rust/src/css/serialize.rs
+@@ -1204,12 +1204,26 @@
+             url,
+             url_type,
+             url_modifiers,
++            shader_arguments,
+             ..
+         } => {
+             use crate::css::parser::images_gradients_parser::{SHADER_SOURCE_IMAGE_TYPE, SHADER_URL_IMAGE_TYPE};
++            // karouka: a shader()'s uniform arguments follow its source, `, --name value` each.
++            let serialize_shader_arguments = |sink: &mut TextSink| {
++                let Some(StyleValueData::ValueList { values, .. }) = shader_arguments.optional_data() else {
++                    return;
++                };
++                for (index, argument) in values.as_slice().iter().enumerate() {
++                    sink.push_ascii(if index % 2 == 0 { ", " } else { " " });
++                    if let Some(argument) = argument.optional_data() {
++                        serialize_style_value(sink, argument, mode);
++                    }
++                }
++            };
+             if *url_type == SHADER_SOURCE_IMAGE_TYPE {
+                 sink.push_ascii("shader(");
+                 serialize_url_text(sink, url);
++                serialize_shader_arguments(sink);
+                 sink.push_ascii(")");
+                 return true;
+             }
+@@ -1224,6 +1238,7 @@
+             }
+             sink.push_ascii(")");
+             if *url_type == SHADER_URL_IMAGE_TYPE {
++                serialize_shader_arguments(sink);
+                 sink.push_ascii(")");
+             }
+             true
+diff --git a/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs b/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
+--- a/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
++++ b/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
+@@ -24,8 +24,8 @@
+ 
+ use super::value_parser::{
+     NumericRange, ParseContext, ParseOutcome, equals_ascii_case_insensitive, parse_angle_from_stream,
+-    parse_angle_percentage_from_stream, parse_length_percentage_from_stream, parse_resolution_from_stream,
+-    parse_url_value,
++    parse_angle_percentage_from_stream, parse_length_percentage_from_stream, parse_length_value, parse_number_value,
++    parse_percentage_value, parse_resolution_from_stream, parse_url_value,
+ };
+ 
+ fn retained(value: StyleValueData) -> RetainedStyleValueData {
+@@ -73,6 +73,7 @@
+         url_type,
+         url_modifiers: modifiers,
+         resource_context: image_resource_context(context)?,
++        shader_arguments: no_shader_arguments(),
+     })
+ }
+ 
+@@ -82,6 +83,7 @@
+         url_type: 0,
+         url_modifiers: RetainedRequestUrlModifierList::from_retained_modifiers(Vec::new()),
+         resource_context: image_resource_context(context)?,
++        shader_arguments: no_shader_arguments(),
+     })
+ }
+ 
+@@ -91,23 +93,82 @@
+ /// karouka: the `url_type` of a `shader(<string>)` image, whose `url` is the shader's source text.
+ pub(crate) const SHADER_SOURCE_IMAGE_TYPE: u8 = 3;
+ 
+-/// karouka: `shader( <url> | <string> )`, an image whose pixels an SkSL shader paints
+-/// (docs/ENGINE.md). Uniform arguments aren't supported yet.
+-fn parse_shader(context: &ParseContext, arguments: &[ComponentValue]) -> Option<StyleValueData> {
++/// No shader() uniform arguments: the `shader_arguments` of every other image.
++pub(crate) fn no_shader_arguments() -> RetainedStyleValueData {
++    RetainedStyleValueData::none()
++}
++
++/// karouka: one shader() uniform argument's value, per the CSS-to-SkSL type table
++/// (docs/ENGINE.md): a `<number>`, two space-separated numbers, a `<percentage>`, a `<length>` or
++/// a `<color>`. var() was substituted before the value got here.
++fn parse_shader_argument_value(context: &ParseContext, property: u16, values: &[ComponentValue]) -> Option<StyleValueData> {
++    let tokens: Vec<&ComponentValue> = values.iter().filter(|value| !value.is_whitespace()).collect();
++    match tokens.as_slice() {
++        [first, second] => {
++            let first = parse_number_value(first, NumericRange::INFINITE)?;
++            let second = parse_number_value(second, NumericRange::INFINITE)?;
++            Some(StyleValueData::ValueList {
++                values: RetainedStyleValueDataList::from_retained_values(vec![retained(first), retained(second)]),
++                separator: 0,
++                collapsible: false,
++            })
++        }
++        [value] => parse_number_value(value, NumericRange::INFINITE)
++            .or_else(|| parse_percentage_value(value, NumericRange::INFINITE))
++            .or_else(|| parse_length_value(context, property, value, NumericRange::INFINITE))
++            .or_else(|| {
++                let mut stream = TokenStream::new(values);
++                let color = parse_color_value(context, property, &mut stream, false)?;
++                stream.discard_whitespace();
++                (!stream.has_next_token()).then_some(color)
++            }),
++        _ => None,
++    }
++}
++
++/// karouka: `shader( [<url> | <string>] [, <dashed-ident> <value>]* )`, an image whose pixels an
++/// SkSL shader paints (docs/ENGINE.md). Each argument names the uniform it sets (`--speed` sets
++/// `uniform float speed`); a name given twice is invalid.
++fn parse_shader(context: &ParseContext, property: u16, arguments: &[ComponentValue]) -> Option<StyleValueData> {
+     if context.contains_attr_tainted_values {
+         return None;
+     }
+-    let mut arguments = arguments.iter().filter(|value| !value.is_whitespace());
+-    let source = arguments.next()?;
+-    if arguments.next().is_some() {
+-        return None;
++    let mut groups = arguments.split(|value| value.is_comma());
++    let mut source = groups.next()?.iter().filter(|value| !value.is_whitespace());
++    let source = source.next().filter(|_| source.next().is_none())?;
++
++    let mut shader_arguments: Vec<RetainedStyleValueData> = Vec::new();
++    let mut names: Vec<&[u16]> = Vec::new();
++    for group in groups {
++        let start = group.iter().position(|value| !value.is_whitespace())?;
++        let name = group[start].ident()?;
++        if !name.starts_with(&[u16::from(b'-'), u16::from(b'-')]) || name.len() == 2 || names.contains(&name) {
++            return None;
++        }
++        let value = parse_shader_argument_value(context, property, &group[start + 1..])?;
++        names.push(name);
++        shader_arguments.push(retained(StyleValueData::CustomIdent {
++            custom_ident: CssString::from_utf16(name),
++        }));
++        shader_arguments.push(retained(value));
+     }
++    let shader_arguments = if shader_arguments.is_empty() {
++        no_shader_arguments()
++    } else {
++        retained(StyleValueData::ValueList {
++            values: RetainedStyleValueDataList::from_retained_values(shader_arguments),
++            separator: 1,
++            collapsible: false,
++        })
++    };
++
+     if let Some(string) = source.string() {
+         return Some(StyleValueData::Image {
+             url: RetainedString::from_utf16(string)?,
+             url_type: SHADER_SOURCE_IMAGE_TYPE,
+             url_modifiers: RetainedRequestUrlModifierList::from_retained_modifiers(Vec::new()),
+             resource_context: image_resource_context(context)?,
++            shader_arguments,
+         });
+     }
+     let StyleValueData::Url {
+@@ -126,6 +187,7 @@
+         url_type: SHADER_URL_IMAGE_TYPE,
+         url_modifiers: modifiers,
+         resource_context: image_resource_context(context)?,
++        shader_arguments,
+     })
+ }
+ 
+@@ -695,7 +757,7 @@
+     if let Some((name, arguments)) = tokens.next_token().function()
+         && equals_ascii_case_insensitive(name, b"shader")
+     {
+-        let parsed = parse_shader(context, arguments)?;
++        let parsed = parse_shader(context, property, arguments)?;
+         tokens.discard_a_token();
+         return Some(parsed);
+     }
+diff --git a/Libraries/LibWeb/Rust/src/css/style_value.rs b/Libraries/LibWeb/Rust/src/css/style_value.rs
+--- a/Libraries/LibWeb/Rust/src/css/style_value.rs
++++ b/Libraries/LibWeb/Rust/src/css/style_value.rs
+@@ -1913,6 +1913,9 @@
+         url_type: u8,
+         url_modifiers: RetainedRequestUrlModifierList,
+         resource_context: ImageResourceContext,
++        /// karouka: a shader() image's uniform arguments, a comma-separated ValueList of pairs: a
++        /// CustomIdent (the `--name`), then its value. Null for every other image.
++        shader_arguments: RetainedStyleValueData,
+     },
+     /// image-set() with its retained options.
+     ImageSet { options: RetainedImageSetOptionList },
+@@ -3273,6 +3276,7 @@
+             parent_style_sheet_origin_clean: false,
+             should_absolutize_url_for_computed_value: false,
+         },
++        shader_arguments: RetainedStyleValueData::none(),
+     }))
+ }
+ 
+diff --git a/Libraries/LibWeb/Rust/src/css/style_compute.rs b/Libraries/LibWeb/Rust/src/css/style_compute.rs
+--- a/Libraries/LibWeb/Rust/src/css/style_compute.rs
++++ b/Libraries/LibWeb/Rust/src/css/style_compute.rs
+@@ -1100,7 +1100,6 @@
+         | StyleValueData::EmptyOptional
+         | StyleValueData::GridAutoFlow { .. }
+         | StyleValueData::GridTemplateArea { .. }
+-        | StyleValueData::Image { .. }
+         | StyleValueData::RepeatStyle { .. }
+         | StyleValueData::TextUnderlinePosition { .. }
+         | StyleValueData::Url { .. }
+@@ -1252,6 +1251,10 @@
+             }
+             Some(independent)
+         }
++        // karouka: a shader()'s uniform arguments may hold relative lengths.
++        StyleValueData::Image { shader_arguments, .. } => shader_arguments
++            .optional_data()
++            .map_or(Some(true), value_is_computationally_independent),
+         StyleValueData::ImageSet { options } => {
+             let mut independent = true;
+             for option in options.as_slice() {
+@@ -1517,6 +1520,7 @@
+                 url,
+                 url_type,
+                 resource_context,
++                shader_arguments,
+                 ..
+             } => {
+                 // A shader(<string>) image's url is its source text, not a URL.
+@@ -1524,6 +1528,8 @@
+                     && *url_type != crate::css::parser::images_gradients_parser::SHADER_SOURCE_IMAGE_TYPE;
+                 dependencies.needs_document_base_url |= is_url && !resource_context.has_base_url;
+                 dependencies.may_need_style_sheet_resource_context |= is_url;
++                // karouka: a shader()'s uniform arguments may hold relative lengths.
++                collect_optional(shader_arguments, dependencies);
+             }
+             StyleValueData::Calculated { rust_calculation, .. } => {
+                 collect_calculation(rust_calculation.node(), dependencies);
+diff --git a/Libraries/LibWeb/Rust/src/css/absolutize.rs b/Libraries/LibWeb/Rust/src/css/absolutize.rs
+--- a/Libraries/LibWeb/Rust/src/css/absolutize.rs
++++ b/Libraries/LibWeb/Rust/src/css/absolutize.rs
+@@ -317,13 +317,26 @@
+         url_type,
+         url_modifiers,
+         resource_context,
++        shader_arguments,
+     } = value
+     else {
+         return None;
+     };
++    // karouka: a shader()'s uniform arguments compute as the values they are (lengths to px).
++    let mut shader_arguments_changed = false;
++    let shader_arguments = absolutize_child(shader_arguments, context, &mut shader_arguments_changed)?;
+     // A shader(<string>) image's url is its source text, not a URL.
+     if url.is_empty() || *url_type == crate::css::parser::images_gradients_parser::SHADER_SOURCE_IMAGE_TYPE {
+-        return Some(Absolutized::Unchanged);
++        if !shader_arguments_changed {
++            return Some(Absolutized::Unchanged);
++        }
++        return Some(Absolutized::Changed(retain_new(StyleValueData::Image {
++            url: url.clone(),
++            url_type: *url_type,
++            url_modifiers: url_modifiers.clone(),
++            resource_context: resource_context.clone(),
++            shader_arguments,
++        })));
+     }
+ 
+     let base_url = context
+@@ -381,6 +394,7 @@
+             parent_style_sheet_origin_clean,
+             should_absolutize_url_for_computed_value,
+         },
++        shader_arguments,
+     })))
+ }
+ 
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+--- a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+@@ -43,14 +43,14 @@
+     shader_content_hook() = move(hook);
+ }
+ 
+-Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale)
++Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale, ReadonlySpan<ShaderArgument> arguments)
+ {
+     auto& hook = shader_content_hook();
+     if (!hook)
+         return {};
+     if (!(raster_scale > 0))
+         raster_scale = 1;
+-    auto content_id = hook(source, raster_scale);
++    auto content_id = hook(source, raster_scale, arguments);
+     if (!content_id.has_value())
+         return {};
+ 
+@@ -90,13 +90,21 @@
+     return Compositing::DisplayListResource { Compositing::DisplayList::create_from_command_bytes(tree, move(bytes), move(runs)), tree };
+ }
+ 
+-GC::Ref<ShaderDecodedImageData> ShaderDecodedImageData::create(String source)
++GC::Ref<ShaderDecodedImageData> ShaderDecodedImageData::create(String source, Vector<ShaderArgument> arguments)
+ {
+-    return GC::Heap::the().allocate<ShaderDecodedImageData>(move(source));
++    return GC::Heap::the().allocate<ShaderDecodedImageData>(move(source), move(arguments));
+ }
+ 
+-ShaderDecodedImageData::ShaderDecodedImageData(String source)
++GC::Ref<ShaderDecodedImageData> ShaderDecodedImageData::with_arguments(Vector<ShaderArgument> arguments) const
++{
++    auto image = create(m_source, move(arguments));
++    image->set_is_cors_cross_origin(is_cors_cross_origin());
++    return image;
++}
++
++ShaderDecodedImageData::ShaderDecodedImageData(String source, Vector<ShaderArgument> arguments)
+     : m_source(move(source))
++    , m_arguments(move(arguments))
+     , m_vector_content_identity(next_vector_content_identity())
+ {
+ }
+@@ -108,7 +116,7 @@
+     RenderKey const key { css_size, raster_scale };
+     if (auto it = m_cached_display_lists.find(key); it != m_cached_display_lists.end())
+         return it->value;
+-    auto display_list = record_shader_display_list(m_source.bytes_as_string_view(), css_size, raster_scale);
++    auto display_list = record_shader_display_list(m_source.bytes_as_string_view(), css_size, raster_scale, m_arguments);
+     if (!display_list.has_value())
+         return {};
+     // FIXME: Evict least used entries.
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+--- a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+@@ -6,10 +6,12 @@
+ 
+ #pragma once
+ 
++#include <AK/Array.h>
+ #include <AK/Function.h>
+ #include <AK/HashMap.h>
+ #include <AK/Optional.h>
+ #include <AK/String.h>
++#include <AK/Vector.h>
+ #include <LibCompositing/DisplayList/DisplayList.h>
+ #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
+ #include <LibWeb/Export.h>
+@@ -17,31 +19,73 @@
+ 
+ namespace Web::Embedder {
+ 
++// One `--name value` uniform argument of a shader() image (CSS `shader(<source>, --speed 0.3)`), as
++// computed: name is the dashed ident, values hold what the uniform is set to. A <number> is one value,
++// a <percentage> one value already divided by 100, a <length> one value in CSS px, two numbers two
++// values, and a <color> four: unpremultiplied RGBA in 0-1. A value of another kind (a relative color
++// that didn't resolve, say) is Unsupported and sets nothing.
++struct ShaderArgument {
++    enum class Type : u8 {
++        Number,
++        Percentage,
++        Length,
++        NumberPair,
++        Color,
++        Unsupported,
++    };
++    String name;
++    Type type { Type::Unsupported };
++    Array<float, 4> values {};
++
++    size_t value_count() const
++    {
++        switch (type) {
++        case Type::Number:
++        case Type::Percentage:
++        case Type::Length:
++            return 1;
++        case Type::NumberPair:
++            return 2;
++        case Type::Color:
++            return 4;
++        case Type::Unsupported:
++            return 0;
++        }
++        VERIFY_NOT_REACHED();
++    }
++    bool operator==(ShaderArgument const&) const = default;
++};
++
+ // A shader() image's pixels come from the embedder: LibWeb records one DrawEmbedderContent command
+ // (LibCompositing) naming a content id the embedder gave it, and the embedder's player resolves the id
+ // to pixels at replay. The hook compiles `source` (the shader's text) and answers the id of content
+ // that paints it into a nested display list recorded at raster_scale device pixels per CSS pixel,
+ // filling the command's destination rectangle; nothing when the source paints nothing (it doesn't
+ // compile, or it declares what the embedder doesn't supply). It is asked again for each recording
+-// the image does not have cached, so it caches by source itself.
+-using ShaderContentHook = Function<Optional<u64>(StringView source, float raster_scale)>;
++// the image does not have cached, so it caches by source itself. `arguments` are the image's uniform
++// arguments; the embedder sets the uniforms they name, and a mismatch paints nothing.
++using ShaderContentHook = Function<Optional<u64>(StringView source, float raster_scale, ReadonlySpan<ShaderArgument> arguments)>;
+ WEB_API void set_shader_content_hook(ShaderContentHook);
+ 
+ // The nested display list a shader() image is drawn as: one DrawEmbedderContent over
+ // css_size × raster_scale device pixels, or nothing without a hook or content id.
+-WEB_API Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale);
++WEB_API Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale, ReadonlySpan<ShaderArgument> arguments = {});
+ 
+ // The decoded data of a shader() image: vector content with no natural size, recorded through the
+-// hook above. Its rendering depends only on its source, the size and the scale.
++// hook above. Its rendering depends only on its source, its arguments, the size and the scale. The
++// shared request decodes one per source, without arguments; an image style value with arguments paints
++// a copy bound to them (with_arguments), which is vector content of its own identity.
+ class WEB_API ShaderDecodedImageData final : public HTML::DecodedImageData {
+     GC_CELL(ShaderDecodedImageData, HTML::DecodedImageData);
+     GC_DECLARE_ALLOCATOR(ShaderDecodedImageData);
+ 
+ public:
+-    static GC::Ref<ShaderDecodedImageData> create(String source);
++    static GC::Ref<ShaderDecodedImageData> create(String source, Vector<ShaderArgument> arguments = {});
+     virtual ~ShaderDecodedImageData() override;
+ 
+     String const& source() const { return m_source; }
++    ReadonlySpan<ShaderArgument> arguments() const { return m_arguments; }
++    GC::Ref<ShaderDecodedImageData> with_arguments(Vector<ShaderArgument>) const;
+ 
+     virtual bool is_vector_content() const override { return true; }
+     virtual u64 vector_content_identity() const override { return m_vector_content_identity; }
+@@ -59,7 +103,7 @@
+     virtual Optional<CSSPixelFraction> intrinsic_aspect_ratio() const override { return {}; }
+ 
+ private:
+-    explicit ShaderDecodedImageData(String source);
++    ShaderDecodedImageData(String source, Vector<ShaderArgument> arguments);
+ 
+     struct RenderKey {
+         CSSPixelSize css_size;
+@@ -75,6 +119,7 @@
+     };
+ 
+     String m_source;
++    Vector<ShaderArgument> m_arguments;
+     u64 m_vector_content_identity { 0 };
+     // The recordings, so that a nested list painted again is the same list (and the player's raster
+     // of it stays valid).

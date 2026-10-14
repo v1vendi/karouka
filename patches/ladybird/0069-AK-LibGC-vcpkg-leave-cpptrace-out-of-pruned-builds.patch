@@ -1,0 +1,103 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] AK+LibGC+vcpkg: leave cpptrace out of pruned builds
+
+cpptrace, and the libdwarf and zstd it reads debug info with, cost a
+LIBWEB_PRUNE_WEB_APIS build (karouka) 1.9 MB across three dylibs bound
+before main. Two places use it: AK/Assertions.cpp symbolizes assertion
+backtraces with file:line, and LibGC's heap dump labels stack roots
+with their frames. Such a build no longer looks for cpptrace, so AK
+falls back to backtrace(3) (symbol names from the dynamic symbol table,
+no file:line) and heap dumps leave stack frames unlabelled.
+
+cpptrace and libdwarf move into a new default "backtraces" feature of
+vcpkg.json, which pruned builds leave out like "browser". zstd is still
+installed for tiff but nothing karouka loads links it.
+
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ffcc662bda..9e60028334 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -70,8 +70,10 @@ if (LADYBIRD_MEDIA_STUB OR LIBWEB_PRUNE_WEB_APIS OR LIBCRYPTO_COMMONCRYPTO)
+     if (NOT LADYBIRD_MEDIA_STUB)
+         list(APPEND VCPKG_MANIFEST_FEATURES media)
+     endif()
++    # karouka: a LIBWEB_PRUNE_WEB_APIS build also leaves out cpptrace, libdwarf and zstd, the
++    # "backtraces" feature (Meta/CMake/check_for_dependencies.cmake).
+     if (NOT LIBWEB_PRUNE_WEB_APIS)
+-        list(APPEND VCPKG_MANIFEST_FEATURES browser)
++        list(APPEND VCPKG_MANIFEST_FEATURES backtraces browser)
+     endif()
+     if (NOT LIBCRYPTO_COMMONCRYPTO)
+         list(APPEND VCPKG_MANIFEST_FEATURES openssl)
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index 1e459c1e99..7465a510fa 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -12,7 +12,13 @@ find_package(mimalloc CONFIG REQUIRED)
+ 
+ # AK dependencies
+ find_package(Backtrace)
+-find_package(cpptrace CONFIG)
++# karouka: a LIBWEB_PRUNE_WEB_APIS build leaves out cpptrace and the libdwarf and zstd it brings
++# (1.9 MB, three dylibs bound before main; vcpkg.json's "backtraces" feature). AK's assertion
++# backtraces fall back to backtrace(3) (AK/Assertions.cpp: symbol names, no file:line), and LibGC's
++# heap dumps leave stack roots without frame labels (Libraries/LibGC/Heap.cpp).
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    find_package(cpptrace CONFIG)
++endif()
+ find_package(FastFloat CONFIG REQUIRED)
+ find_package(fmt CONFIG REQUIRED)
+ find_package(simdutf REQUIRED)
+diff --git a/vcpkg.json b/vcpkg.json
+index 99e64d3579..966996c4f5 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -2,10 +2,6 @@
+   "builtin-baseline": "7f3781e19cc7d4e4882a4caec01668c6f7b5c163",
+   "dependencies": [
+     "brotli",
+-    {
+-      "name": "cpptrace",
+-      "platform": "linux | windows | osx"
+-    },
+     {
+       "name": "dbus",
+       "default-features": false,
+@@ -44,10 +40,6 @@
+         "dav1d"
+       ]
+     },
+-    {
+-      "name": "libdwarf",
+-      "platform": "linux | windows | osx"
+-    },
+     "libjpeg-turbo",
+     {
+       "name": "libpng",
+@@ -191,11 +183,25 @@
+     "zlib"
+   ],
+   "default-features": [
++    "backtraces",
+     "browser",
+     "media",
+     "openssl"
+   ],
+   "features": {
++    "backtraces": {
++      "description": "Symbolized stack traces for AK's assertion failures and LibGC's heap dumps: cpptrace and the libdwarf (and zstd) it reads debug info with. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave this feature out, and AK falls back to backtrace(3).",
++      "dependencies": [
++        {
++          "name": "cpptrace",
++          "platform": "linux | windows | osx"
++        },
++        {
++          "name": "libdwarf",
++          "platform": "linux | windows | osx"
++        }
++      ]
++    },
+     "browser": {
+       "description": "The browser's own dependencies: RequestServer's curl and libproxy, LibURL's libpsl (the public suffix list for cookies and same-site checks), LibDatabase's sqlite3, LibWebView's SDL3, the js REPL's libedit, the pdf.js viewer and the Compositor's ANGLE. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave the browser and this feature out.",
+       "dependencies": [

@@ -1,0 +1,104 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: collect stage-thread heaps when the embedder is idle
+
+The StyleLayout and Paint threads park between jobs and never collect their
+mimalloc heaps: the empty pages those heaps cache, and the blocks other threads
+freed into them, stay dirty until the thread allocates again. Add
+Web::Embedder::collect_stage_thread_heaps(), which posts a job to each stage
+thread that was started that runs ak_kmalloc_collect() there, through a new
+ladybird_kmalloc_collect() FFI helper in AK.
+---
+diff --git a/AK/FFIHelpers.cpp b/AK/FFIHelpers.cpp
+index 6842b78c5d..c1675b2811 100644
+--- a/AK/FFIHelpers.cpp
++++ b/AK/FFIHelpers.cpp
+@@ -66,6 +66,11 @@ extern "C" void ladybird_utf16_string_unref(FlatPtr raw)
+     AK::Utf16String::unref_raw(raw);
+ }
+ 
++extern "C" void ladybird_kmalloc_collect()
++{
++    ak_kmalloc_collect();
++}
++
+ extern "C" void* ladybird_alloc(size_t size, size_t alignment)
+ {
+     // NB: mimalloc only guarantees natural alignment up to the allocation size.
+diff --git a/AK/FFIHelpers.h b/AK/FFIHelpers.h
+index a3fd21922a..7a219b5f3d 100644
+--- a/AK/FFIHelpers.h
++++ b/AK/FFIHelpers.h
+@@ -27,6 +27,9 @@ void* ladybird_alloc_zeroed(size_t size, size_t alignment);
+ void* ladybird_realloc(void*, size_t old_size, size_t new_size, size_t alignment);
+ void ladybird_dealloc(void*, size_t alignment);
+ 
++// Collects the calling thread's mimalloc heaps (ak_kmalloc_collect), for threads Rust owns.
++void ladybird_kmalloc_collect();
++
+ FlatPtr ladybird_utf16_string_create_uninitialized(size_t, bool has_ascii_storage);
+ FlatPtr ladybird_utf16_fly_string_from_utf8(u8 const*, size_t);
+ FlatPtr ladybird_utf16_fly_string_from_utf16(u16 const*, size_t);
+diff --git a/Libraries/LibWeb/Embedder/StageThreads.cpp b/Libraries/LibWeb/Embedder/StageThreads.cpp
+index 300a53289a..751dfce6c7 100644
+--- a/Libraries/LibWeb/Embedder/StageThreads.cpp
++++ b/Libraries/LibWeb/Embedder/StageThreads.cpp
+@@ -14,4 +14,9 @@ void halt_stage_threads()
+     Layout::RustFFI::stage_threads_halt();
+ }
+ 
++void collect_stage_thread_heaps()
++{
++    Layout::RustFFI::stage_threads_collect();
++}
++
+ }
+diff --git a/Libraries/LibWeb/Embedder/StageThreads.h b/Libraries/LibWeb/Embedder/StageThreads.h
+index 6d4b6994ec..301e0a756d 100644
+--- a/Libraries/LibWeb/Embedder/StageThreads.h
++++ b/Libraries/LibWeb/Embedder/StageThreads.h
+@@ -16,4 +16,9 @@ namespace Web::Embedder {
+ // on a stage thread does not race exit()'s static destructors (Skia's typeface cache among them).
+ WEB_API void halt_stage_threads();
+ 
++// Has the StyleLayout and Paint threads, if they were started, each collect their mimalloc heaps
++// (ak_kmalloc_collect) once the jobs handed to them before are done, and returns right away. For an
++// embedder whose host has gone idle: the stage threads park between jobs and never collect on their own.
++WEB_API void collect_stage_thread_heaps();
++
+ }
+diff --git a/Libraries/LibWeb/Rust/src/stage_thread.rs b/Libraries/LibWeb/Rust/src/stage_thread.rs
+index 7e20f1bc5f..c60dfe0a03 100644
+--- a/Libraries/LibWeb/Rust/src/stage_thread.rs
++++ b/Libraries/LibWeb/Rust/src/stage_thread.rs
+@@ -718,6 +718,31 @@ pub extern "C" fn stage_threads_halt() {
+     }
+ }
+ 
++/// Has each stage thread that was started return the free memory its allocator heaps hold to the OS, once the jobs
++/// handed to it before are done. Nothing else collects a stage thread's heaps: mimalloc keeps the empty pages they
++/// cache, and the blocks other threads freed into them, until the thread allocates again. For an embedder whose host
++/// has gone idle; a thread that was never started is not started for it.
++#[unsafe(no_mangle)]
++pub extern "C" fn stage_threads_collect() {
++    let started = [STYLE_LAYOUT_THREAD.get(), crate::paint_stage::paint_thread_if_started()];
++    for thread in started.into_iter().flatten() {
++        thread.post(collect_this_threads_heaps);
++    }
++}
++
++#[cfg(not(test))]
++fn collect_this_threads_heaps() {
++    unsafe extern "C" {
++        fn ladybird_kmalloc_collect();
++    }
++    // SAFETY: It collects the calling thread's heaps only, and takes nothing.
++    unsafe { ladybird_kmalloc_collect() }
++}
++
++// Unit tests run on the test harness's allocator, without AK.
++#[cfg(test)]
++fn collect_this_threads_heaps() {}
++
+ /// The StyleLayout thread, which every document's render state lives on.
+ pub(crate) fn style_layout_thread() -> &'static StageThread {
+     STYLE_LAYOUT_THREAD.get_or_init(|| StageThread::spawn("StyleLayout"))

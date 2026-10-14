@@ -1,0 +1,20 @@
+diff --git a/AK/kmalloc.cpp b/AK/kmalloc.cpp
+index 70ad04dd5f..c56dfc0cd4 100644
+--- a/AK/kmalloc.cpp
++++ b/AK/kmalloc.cpp
+@@ -94,6 +94,15 @@ static struct MimallocConfiguration {
+ #        ifdef AK_OS_MACOS
+         // Keep mimalloc allocations separate from IOAccelerator, which uses mimalloc's default tag of 100.
+         mi_option_set_default(mi_option_os_tag, VM_MEMORY_APPLICATION_SPECIFIC_1);
++        // Purge freed pages 1 ms after they are freed (mimalloc's default is 10). Purging each one right away costs
++        // a decommit, and a recommit when it is reused, for pages that a busy page frees and takes again within a
++        // frame. A delayed purge only runs when a later allocation, free or collection on the same thread passes the
++        // deadline, so a thread that goes idle keeps the pages it freed dirty, and on macOS dirty pages count toward
++        // the physical footprint until they are decommitted: an embedder whose host goes idle has every thread that
++        // allocates collect its heaps (ak_kmalloc_collect). A segment freed whole goes back to its arena, which purges
++        // it 10 ms later (purge_delay times arena_purge_mult; the vcpkg overlay's karouka-purge-expired-arenas.patch
++        // fixes 2.2.7's inverted deadline check, which left arena ranges to a forced collect).
++        mi_option_set_default(mi_option_purge_delay, 1);
+ #        else
+         // mimalloc otherwise purges with MADV_DONTNEED, and every later reuse of a purged page takes a page fault.
+         mi_option_set_default(mi_option_purge_decommits, 0);

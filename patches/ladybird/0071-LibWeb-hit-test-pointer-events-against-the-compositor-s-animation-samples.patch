@@ -1,0 +1,226 @@
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -10387,9 +10387,20 @@
+             return {};
+     }
+ 
++    // AD-HOC: While the main thread has left throttled animations unsampled (a pointer event's layout update does, see
++    //         UpdateLayout.cpp), the tree's compositor animations are sampled at the time the compositor samples them,
++    //         as the frame shows them and as intersection observation reads them.
++    auto visual_context_tree = paint_state().visual_context_tree_without_update(read, *this);
++    bool const samples_visual_animations = m_has_throttled_animation_style_update && visual_context_tree.has_visual_animations();
++    if (samples_visual_animations) {
++        auto sample_time_ns = static_cast<i64>(HighResolutionTime::unsafe_shared_current_time() * 1'000'000.0);
++        visual_context_tree = visual_context_tree.with_visual_animation_samples(sample_time_ns);
++    }
++
+     return Painting::HitTestQuery {
+         *m_hit_test_display_list,
+-        paint_state().visual_context_tree_without_update(read, *this),
++        move(visual_context_tree),
++        samples_visual_animations,
+         scroll_state_snapshot(),
+         page().client().device_pixels_per_css_pixel(),
+         page().chrome_metrics(),
+diff --git a/Libraries/LibWeb/Layout/UpdateLayout.cpp b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+--- a/Libraries/LibWeb/Layout/UpdateLayout.cpp
++++ b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+@@ -6,6 +6,8 @@
+ 
+ #include <AK/ScopeGuard.h>
+ #include <LibGfx/FontCascadeList.h>
++#include <LibWeb/Animations/Animation.h>
++#include <LibWeb/Animations/KeyframeEffect.h>
+ #include <LibWeb/CSS/StyleComputer.h>
+ #include <LibWeb/CSS/StyleEngineBridge.h>
+ #include <LibWeb/DOM/Document.h>
+@@ -22,6 +24,40 @@
+ 
+ namespace Web::DOM {
+ 
++// AD-HOC: A pointer event's hit test reads the compositor's animations off the visual context tree, sampled at the time
++//         the compositor samples them (prepare_hit_test_query()), so the event's layout update leaves them unsampled on
++//         the main thread when every throttled effect is one of them. An effect throttled off screen or while invisible
++//         has no sample in the tree, and with one of those the update samples them all, as before. Otherwise every mouse
++//         move over a page with a running compositor animation restyled its targets and laid the document out.
++static bool reason_hit_tests_through_visual_animation_samples(UpdateLayoutReason reason)
++{
++    switch (reason) {
++    case UpdateLayoutReason::EventHandlerHandleDragAndDrop:
++    case UpdateLayoutReason::EventHandlerHandleMouseDown:
++    case UpdateLayoutReason::EventHandlerHandleMouseMove:
++    case UpdateLayoutReason::EventHandlerHandleMouseUp:
++    case UpdateLayoutReason::EventHandlerHandleMouseWheel:
++        return true;
++    default:
++        return false;
++    }
++}
++
++template<typename AnimationSet>
++static bool hit_test_reads_throttled_animations_off_the_visual_context_tree(UpdateLayoutReason reason, AnimationSet& animations)
++{
++    if (!reason_hit_tests_through_visual_animation_samples(reason))
++        return false;
++    for (auto& animation : animations) {
++        auto* effect = as_if<Animations::KeyframeEffect>(animation.effect().ptr());
++        if (!effect || !effect->can_skip_per_frame_style_update())
++            continue;
++        if (!effect->is_compositor_driven() && !effect->is_compositor_replaced())
++            return false;
++    }
++    return true;
++}
++
+ // The document-side steps of the layout update, which the Rust loop drives through this table.
+ Layout::RustFFI::FfiLayoutUpdateHostCallbacks Document::layout_update_host_callbacks()
+ {
+@@ -145,8 +181,11 @@
+         Layout::ForcedReadScope read { style_computer().style_engine().render_document() };
+         drain_flown_style_transaction(read);
+ 
+-        if (reason != UpdateLayoutReason::HTMLEventLoopRenderingUpdate && reason != UpdateLayoutReason::ChildDocumentStyleUpdate)
+-            flush_throttled_animation_style_update();
++        if (reason != UpdateLayoutReason::HTMLEventLoopRenderingUpdate && reason != UpdateLayoutReason::ChildDocumentStyleUpdate) {
++            note_animations_that_can_skip_per_frame_style_updates();
++            if (!m_has_throttled_animation_style_update || !hit_test_reads_throttled_animations_off_the_visual_context_tree(reason, m_associated_animations))
++                flush_throttled_animation_style_update();
++        }
+ 
+         // AD-HOC: An embedded document's update lays out its embedding documents first when they wait for it (their
+         //         layout may resize the frame), so its update is skipped only when the whole embedding chain is clean,
+@@ -276,8 +315,11 @@
+     // Internal layout dependencies do not observe compositor animation values.
+     if (reason != UpdateLayoutReason::HTMLEventLoopRenderingUpdate
+         && reason != UpdateLayoutReason::ChildDocumentStyleUpdate
+-        && animation_sampling_scope == ThrottledAnimationSamplingScope::Document)
+-        flush_throttled_animation_style_update();
++        && animation_sampling_scope == ThrottledAnimationSamplingScope::Document) {
++        note_animations_that_can_skip_per_frame_style_updates();
++        if (!m_has_throttled_animation_style_update || !hit_test_reads_throttled_animations_off_the_visual_context_tree(reason, m_associated_animations))
++            flush_throttled_animation_style_update();
++    }
+ 
+     auto& arena = layout_node_arena();
+     Layout::RustFFI::document_host_begin_update_layout(arena.host());
+diff --git a/Libraries/LibWeb/Painting/HitTestDisplayList.cpp b/Libraries/LibWeb/Painting/HitTestDisplayList.cpp
+--- a/Libraries/LibWeb/Painting/HitTestDisplayList.cpp
++++ b/Libraries/LibWeb/Painting/HitTestDisplayList.cpp
+@@ -88,6 +88,10 @@
+             .scroll_offsets_len = scroll_offsets.size(),
+             .has_chrome_metrics = query != nullptr,
+             .chrome_metrics = {},
++            // AD-HOC: A tree whose visual animations the query sampled is the one its items are found through, as it
++            //         is the one their local points convert through; the render state's tree carries the values the
++            //         main thread last published.
++            .visual_context_tree = query && query->visual_context_tree_has_animation_samples() ? query->visual_context_tree().rust_handle() : nullptr,
+             .contains = [](void* context_pointer, Layout::RustFFI::FfiNodeIdentity ancestor, Layout::RustFFI::FfiNodeIdentity node) -> bool {
+                 auto& context = *static_cast<QueryContext*>(context_pointer);
+                 if (!context.document)
+diff --git a/Libraries/LibWeb/Painting/HitTestDisplayList.h b/Libraries/LibWeb/Painting/HitTestDisplayList.h
+--- a/Libraries/LibWeb/Painting/HitTestDisplayList.h
++++ b/Libraries/LibWeb/Painting/HitTestDisplayList.h
+@@ -51,13 +51,16 @@
+     Compositing::ScrollStateSnapshot const& scroll_state() const { return m_scroll_state; }
+     double device_pixels_per_css_pixel() const { return m_device_pixels_per_css_pixel; }
+     ChromeMetrics const& chrome_metrics() const { return m_chrome_metrics; }
++    // Whether the tree's visual animations were sampled for the query, which then hands the tree to every item it asks.
++    bool visual_context_tree_has_animation_samples() const { return m_visual_context_tree_has_animation_samples; }
+ 
+ private:
+     friend class DOM::Document;
+ 
+-    HitTestQuery(HitTestDisplayList const& list, Compositing::AccumulatedVisualContextTree visual_context_tree, Compositing::ScrollStateSnapshot const& scroll_state, double device_pixels_per_css_pixel, ChromeMetrics chrome_metrics)
++    HitTestQuery(HitTestDisplayList const& list, Compositing::AccumulatedVisualContextTree visual_context_tree, bool visual_context_tree_has_animation_samples, Compositing::ScrollStateSnapshot const& scroll_state, double device_pixels_per_css_pixel, ChromeMetrics chrome_metrics)
+         : m_list(list)
+         , m_visual_context_tree(move(visual_context_tree))
++        , m_visual_context_tree_has_animation_samples(visual_context_tree_has_animation_samples)
+         , m_scroll_state(scroll_state)
+         , m_device_pixels_per_css_pixel(device_pixels_per_css_pixel)
+         , m_chrome_metrics(chrome_metrics)
+@@ -66,6 +69,7 @@
+ 
+     HitTestDisplayList const& m_list;
+     Compositing::AccumulatedVisualContextTree m_visual_context_tree;
++    bool m_visual_context_tree_has_animation_samples { false };
+     Compositing::ScrollStateSnapshot const& m_scroll_state;
+     double m_device_pixels_per_css_pixel { 1 };
+     ChromeMetrics m_chrome_metrics;
+diff --git a/Libraries/LibWeb/Rust/src/painting/ffi/main_thread_entries.rs b/Libraries/LibWeb/Rust/src/painting/ffi/main_thread_entries.rs
+--- a/Libraries/LibWeb/Rust/src/painting/ffi/main_thread_entries.rs
++++ b/Libraries/LibWeb/Rust/src/painting/ffi/main_thread_entries.rs
+@@ -1059,6 +1059,7 @@
+     read: &crate::render_state::BegunRead,
+     needs_caret_lines: bool,
+     default: R,
++    tree_override: Option<&crate::painting::visual_context::VisualContextTree>,
+     query: impl FnOnce(
+         &crate::painting::hit_test::HitTestList,
+         &crate::painting::visual_context::VisualContextTree,
+@@ -1076,7 +1077,10 @@
+             }
+         },
+         |list, rows, source| {
+-            let tree = rows.visual_context_tree.as_deref()?;
++            let tree = match tree_override {
++                Some(tree) => tree,
++                None => rows.visual_context_tree.as_deref()?,
++            };
+             Some(query(list, tree, source))
+         },
+     )
+@@ -1207,6 +1211,7 @@
+         read,
+         false,
+         Default::default(),
++        callbacks.visual_context_tree(),
+         |list, tree, arena| ffi_topmost(list.find_topmost_item(arena, tree, &callbacks, point.into())),
+     )
+ }
+@@ -1228,6 +1233,7 @@
+         read,
+         false,
+         Vec::new(),
++        callbacks.visual_context_tree(),
+         |list, tree, arena| list.hit_test_all(arena, tree, &callbacks, point.into()),
+     );
+     for index in indices {
+@@ -1254,7 +1260,7 @@
+     // SAFETY: Guaranteed by the entry point's contract.
+     let main_thread = unsafe { main_thread(host) };
+     let mode = crate::painting::hit_test::caret::CaretPositionMode::from_u8(mode);
+-    with_hit_test_list_spatial_indexes_and_visual_context_tree(host, read, true, None, |list, tree, arena| {
++    with_hit_test_list_spatial_indexes_and_visual_context_tree(host, read, true, None, callbacks.visual_context_tree(), |list, tree, arena| {
+         list.caret_position_from_point(
+             &main_thread,
+             arena,
+diff --git a/Libraries/LibWeb/Rust/src/painting/host/hit_test.rs b/Libraries/LibWeb/Rust/src/painting/host/hit_test.rs
+--- a/Libraries/LibWeb/Rust/src/painting/host/hit_test.rs
++++ b/Libraries/LibWeb/Rust/src/painting/host/hit_test.rs
+@@ -18,6 +18,10 @@
+     pub scroll_offsets_len: usize,
+     pub has_chrome_metrics: bool,
+     pub chrome_metrics: crate::painting::ffi::FfiChromeMetrics,
++    /// The visual context tree the query converts its points through in place of the render state's, or null. The host
++    /// hands one over whose visual animations it sampled at the compositor's time, while the main thread has left them
++    /// unsampled (DOM::Document::prepare_hit_test_query), and keeps it retained for the synchronous query.
++    pub visual_context_tree: *const c_void,
+     /// Private: reached only through the method below, which takes the main thread token.
+     contains: unsafe extern "C" fn(*mut c_void, FfiNodeIdentity, FfiNodeIdentity) -> bool,
+ }
+@@ -33,6 +37,14 @@
+         // SAFETY: The C++ host answers synchronously.
+         unsafe { (self.contains)(self.context, ancestor, node) }
+     }
++    pub(crate) fn visual_context_tree(&self) -> Option<&crate::painting::visual_context::VisualContextTree> {
++        if self.visual_context_tree.is_null() {
++            return None;
++        }
++        // SAFETY: The host keeps the tree it hands over retained for the synchronous query.
++        Some(unsafe { &*self.visual_context_tree.cast::<crate::painting::visual_context::VisualContextTree>() })
++    }
++
+     pub(crate) fn scroll_offsets(&self) -> &[libgfx_rust::FloatPoint] {
+         if self.scroll_offsets.is_null() {
+             return &[];

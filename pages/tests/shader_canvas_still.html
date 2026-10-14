@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^ready$">
+<meta name="karouka-check-pixels" content="110,60=#00c000~2 310,60=#00c000~2">
+<title>shader canvas still pending</title>
+<style>
+  body { margin: 0; background: #fff; }
+  #source { display: none; }
+  .box { position: absolute; top: 10px; width: 200px; height: 100px; background-color: #222; }
+  #still { left: 10px; background-image: shader("uniform shader tex; half4 main(float2 coord) { return tex.eval(coord); }", --tex element(#source)); }
+  #tiled { left: 220px; background-size: 50px 50px; background-image: shader("uniform shader tex; half4 main(float2 coord) { return tex.eval(coord); }", --tex element(#source)); }
+</style>
+</head>
+<body>
+<!-- A shader() canvas input with no uTime (docs/ENGINE.md): #still and #tiled (in 50 px tiles) sample a canvas that is
+     never painted (display: none) and nothing else on the page moves, so the view renders again only because the
+     canvas presented new pixels: red at load, green at the 10th frame. From then on nothing changes, and nothing
+     renders. -->
+<canvas id="source" width="200" height="100"></canvas>
+<div class="box" id="still"></div>
+<div class="box" id="tiled"></div>
+<script>
+const context = document.getElementById('source').getContext('2d');
+context.fillStyle = '#c00000'; context.fillRect(0, 0, 200, 100);
+let frame = 0;
+function step() {
+  if (++frame === 10) {
+    context.fillStyle = '#00c000'; context.fillRect(0, 0, 200, 100);
+    document.title = 'ready';
+    return;
+  }
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>
+</body>
+</html>

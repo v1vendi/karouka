@@ -1,0 +1,44 @@
+diff --git a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+--- a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
++++ b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+@@ -773,8 +773,10 @@
+     while (true) {
+         // 1. Recalculate styles and update layout for doc.
+         // NOTE: Recalculation of styles is handled by update_layout()
++        // AD-HOC: Only when something invalidated style or layout since the last update: a static page's update would
++        //         otherwise run a layout update that finds nothing to do, every frame.
+         Layout::ForcedReadScope read { document };
+-        document.update_layout(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
++        document.update_layout_if_needed(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
+ 
+         // AD-HOC: Script that ran earlier in this rendering update may have spun the event loop (e.g. with a
+         //         synchronous XHR) and run tasks that stopped document from being actively rendered, for example
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -7204,8 +7204,10 @@
+     if (is_svg_page())
+         return false;
+     if (auto document = active_document()) {
++        // AD-HOC: Only when something invalidated layout: the rendering update's step 16 laid the document out, and a
++        //         layout update that finds nothing to do still walks the render state.
+         if (lay_out_first == LayOutFirst::Yes)
+-            document->update_layout(layout_reason);
++            document->update_layout_if_needed(layout_reason);
+         if (document->font_computer().should_defer_initial_paint())
+             return false;
+     }
+diff --git a/Libraries/LibWeb/Layout/UpdateLayout.cpp b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+--- a/Libraries/LibWeb/Layout/UpdateLayout.cpp
++++ b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+@@ -204,6 +204,10 @@
+     if (!navigable || navigable->active_document().ptr() != this || !m_layout_node_arena)
+         return false;
+     Layout::ForcedReadScope read { *this };
++    // AD-HOC: A document that nothing invalidated since it was last laid out has no round to fly. The rendering update
++    //         goes on in step with the event loop, and its update_layout_if_needed() finds nothing to do either.
++    if (is_clean_for_layout_geometry_read(read) && !m_needs_scroll_container_resnap)
++        return false;
+     update_highlight_states_if_needed(read);
+     auto inputs = first_layout_round_inputs();
+     return Layout::RustFFI::render_state_let_first_layout_round_fly(m_layout_node_arena->host(), read, &inputs, blocker);

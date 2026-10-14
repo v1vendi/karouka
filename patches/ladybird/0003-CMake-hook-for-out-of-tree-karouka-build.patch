@@ -1,0 +1,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 76636afe95..761f666067 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -151,3 +151,8 @@ add_custom_target(check-style
+     COMMAND ${Python3_EXECUTABLE} "${ladybird_SOURCE_DIR}/Meta/Linters/check_style.py"
+     USES_TERMINAL
+ )
++
++# karouka: build an out-of-tree embedder with this tree's toolchain, flags and library targets.
++if (KAROUKA_SOURCE_DIR)
++    add_subdirectory("${KAROUKA_SOURCE_DIR}/src" "${CMAKE_BINARY_DIR}/karouka")
++endif()

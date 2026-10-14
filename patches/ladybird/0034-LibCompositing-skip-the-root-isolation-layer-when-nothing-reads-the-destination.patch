@@ -1,0 +1,327 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayList.cpp b/Libraries/LibCompositing/DisplayList/DisplayList.cpp
+index c6ef4d3d76..16c7b5302d 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayList.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayList.cpp
+@@ -59,7 +59,8 @@ void const* DisplayList::replay_effect_clip_plan(AccumulatedVisualContextTree co
+     if (auto const* plan = m_replay_effect_clip_plan.load())
+         return plan;
+     auto runs = command_runs();
+-    auto const* plan = Compositing::RustFFI::display_list_create_effect_clip_plan(tree.rust_handle(), runs.data(), runs.size());
++    auto bytes = command_bytes();
++    auto const* plan = Compositing::RustFFI::display_list_create_effect_clip_plan(tree.rust_handle(), runs.data(), runs.size(), bytes.data(), bytes.size());
+     VERIFY(plan);
+     void const* existing = nullptr;
+     if (!m_replay_effect_clip_plan.compare_exchange_strong(existing, plan)) {
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/effect_clip_plan.rs b/Libraries/LibCompositing/Rust/src/display_list/effect_clip_plan.rs
+index 7b1f2e68ce..e10a491fe5 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/effect_clip_plan.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/effect_clip_plan.rs
+@@ -13,6 +13,10 @@ use crate::visual_context::{VisualContextTree, clip_lowest_common_ancestor_with_
+ /// participate, so appending unused nodes cannot change a retained list's plan.
+ pub struct EffectClipPlan {
+     output_clips: Vec<Option<ClipNodeIndex>>,
++    // Whether a command recorded outside any group composites with a non-Normal operator, so it
++    // reads what the canvas holds under it (see replay::commands_read_destination). Lists made
++    // without their command bytes assume they do.
++    pub commands_read_destination: bool,
+ }
+ 
+ impl EffectClipPlan {
+@@ -75,7 +79,10 @@ impl EffectClipPlan {
+                 *parent_output = Some(common_clip(parent_output.unwrap(), clip));
+             }
+         }
+-        Some(Self { output_clips })
++        Some(Self {
++            output_clips,
++            commands_read_destination: true,
++        })
+     }
+ 
+     pub fn output_clip(&self, effect: EffectNodeIndex) -> ClipNodeIndex {
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/replay.rs b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+index 1282fe6c47..c3a4f0f2b3 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/replay.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+@@ -4,9 +4,12 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++use crate::display_list::builder::{for_each_command, read_command};
+ use crate::display_list::commands::{
+-    ClipNodeIndex, DisplayListCommandRun, EffectNodeIndex, REPLAY_LAYER_NO_SOLE_RUN, ReplayClip, ReplayLayer,
+-    ReplayMask, SpatialNodeIndex,
++    ClipNodeIndex, DisplayListCommandRun, DisplayListCommandType, DrawIsolatedGroup, DrawRepeatedDecodedImageFrame,
++    DrawRepeatedTile, DrawScaledDecodedImageFrame, EffectNodeIndex, FillPath, FillRect, PaintConicGradient,
++    PaintLinearGradient, PaintRadialGradient, REPLAY_LAYER_NO_SOLE_RUN, ReplayClip, ReplayLayer, ReplayMask,
++    SpatialNodeIndex,
+ };
+ use crate::display_list::depth_sorted_plan::{DepthSortedReplayStepKind, build_depth_sorted_replay_plan};
+ use crate::display_list::effect_clip_plan::EffectClipPlan;
+@@ -126,6 +129,8 @@ struct ReplayDriver<'a, Painter: ReplayPainter> {
+     culling: TreeCullingScratch,
+     spatial_dependency_order: Vec<u32>,
+     tree_has_sorting_contexts: bool,
++    // root_isolation_needs_layer's answer for this replay.
++    root_isolation_pushes_layer: bool,
+     replay_base_matrix: FloatMatrix4x4,
+     // The palette entry the canvas matrix currently equals, if known; popping a clip or a layer
+     // resets the matrix to its save point, so unwinding invalidates it. Recorded streams contain
+@@ -208,6 +213,71 @@ fn effect_can_paint_outside_its_ink(data: &EffectNodeData) -> bool {
+     }
+ }
+ 
++// Whether a command recorded at the top level of a list (not inside an isolated group, whose own
++// layer bounds what its content reads) composites with an operator other than Normal, and so
++// reads what the canvas already holds. An image drawn against an isolated backdrop color blends
++// with that color instead. Nested display lists are not followed: a document's list carries its
++// own root isolation effect, which its own replay keeps whenever something in it reads the
++// destination.
++pub fn commands_read_destination(bytes: &[u8]) -> bool {
++    let mut reads = false;
++    for_each_command(bytes, |header, _, payload| {
++        if reads {
++            return;
++        }
++        let (operator, blends_with_isolated_backdrop_color) = match header.command_type {
++            DisplayListCommandType::FillRect => (read_command::<FillRect>(payload).compositing_and_blending_operator, false),
++            DisplayListCommandType::FillPath => (read_command::<FillPath>(payload).compositing_and_blending_operator, false),
++            DisplayListCommandType::DrawScaledDecodedImageFrame => {
++                let command = read_command::<DrawScaledDecodedImageFrame>(payload);
++                (command.compositing_and_blending_operator, command.isolated_backdrop_color.has_value)
++            }
++            DisplayListCommandType::DrawRepeatedDecodedImageFrame => {
++                let command = read_command::<DrawRepeatedDecodedImageFrame>(payload);
++                (command.compositing_and_blending_operator, command.isolated_backdrop_color.has_value)
++            }
++            DisplayListCommandType::DrawRepeatedTile => {
++                (read_command::<DrawRepeatedTile>(payload).compositing_and_blending_operator, false)
++            }
++            DisplayListCommandType::PaintLinearGradient => {
++                (read_command::<PaintLinearGradient>(payload).compositing_and_blending_operator, false)
++            }
++            DisplayListCommandType::PaintRadialGradient => {
++                (read_command::<PaintRadialGradient>(payload).compositing_and_blending_operator, false)
++            }
++            DisplayListCommandType::PaintConicGradient => {
++                (read_command::<PaintConicGradient>(payload).compositing_and_blending_operator, false)
++            }
++            DisplayListCommandType::DrawIsolatedGroup => {
++                (read_command::<DrawIsolatedGroup>(payload).compositing_and_blending_operator, false)
++            }
++            _ => return,
++        };
++        reads = operator != CompositingAndBlendingOperator::Normal && !blends_with_isolated_backdrop_color;
++    });
++    reads
++}
++
++// The root isolation effect exists so that blend modes, backdrop filters and destination-reading
++// draws composite against the page rather than against what the canvas held before the list
++// (the canvas fill, a nested list's host), and so that depth-sorted plane clips have a layer to
++// unwind to. When none of those is present its layer is an opacity-1, Normal-blended copy of its
++// content, and source-over being associative, drawing the content straight onto the canvas gives
++// the same pixels without a surface-sized offscreen texture and render pass per frame. Effect
++// values can change between replays of one list, so the effects are checked per replay.
++fn root_isolation_needs_layer(
++    tree: &VisualContextTree,
++    tree_has_sorting_contexts: bool,
++    commands_read_destination: bool,
++) -> bool {
++    tree_has_sorting_contexts
++        || commands_read_destination
++        || tree.effect_nodes.iter().any(|node| {
++            matches!(&node.data, EffectNodeData::Effects(effects)
++                if effects.blend_mode != CompositingAndBlendingOperator::Normal || effects.backdrop_filter.is_some())
++        })
++}
++
+ // For every effect, the only run its subtree draws when that run is recorded directly under the
+ // effect, else REPLAY_LAYER_NO_SOLE_RUN. Only opacity-only, non-root layers keep the entry: a
+ // single draw under a group opacity composites the same as the draw with its alpha scaled, so the
+@@ -426,6 +496,15 @@ impl<Painter: ReplayPainter> ReplayDriver<'_, Painter> {
+         Some(device_to_layer.map_rect(device_ink.inflated(4.0, 4.0)))
+     }
+ 
++    // tree.effect_pushes_layer_at_replay, except that the root isolation effect only pushes its
++    // layer when something reads the destination (root_isolation_needs_layer).
++    fn effect_pushes_layer(&self, effect: EffectNodeIndex) -> bool {
++        if self.tree.root_isolation_effect == Some(effect) && !self.root_isolation_pushes_layer {
++            return false;
++        }
++        self.tree.effect_pushes_layer_at_replay(effect)
++    }
++
+     fn ensure_ctm_space(&mut self, spatial: SpatialNodeIndex) {
+         let space = self.palette.draw_spaces[spatial.0 as usize];
+         if self.current_ctm_space == Some(space) {
+@@ -504,7 +583,7 @@ impl<Painter: ReplayPainter> ReplayDriver<'_, Painter> {
+                     let node = &tree.effect_nodes[effect.0 as usize];
+                     match &node.data {
+                         EffectNodeData::Effects(_) => {
+-                            if tree.effect_pushes_layer_at_replay(effect) {
++                            if self.effect_pushes_layer(effect) {
+                                 self.painter.pop();
+                                 self.current_ctm_space = None;
+                             }
+@@ -584,7 +663,7 @@ impl<Painter: ReplayPainter> ReplayDriver<'_, Painter> {
+                     }
+                     match &node.data {
+                         EffectNodeData::Effects(effects) => {
+-                            if tree.effect_pushes_layer_at_replay(effect) {
++                            if self.effect_pushes_layer(effect) {
+                                 self.ensure_ctm_space(node.spatial);
+                                 let sole_run = self.sole_runs_by_effect[effect.0 as usize];
+                                 let bounds = self.layer_bounds(effect, node.spatial);
+@@ -719,6 +798,9 @@ pub fn replay_display_list(
+     let mut scratch = take_replay_scratch_storage();
+     tree.fill_culling_scratch(&mut scratch.culling);
+     fill_sole_runs_by_effect(tree, command_runs, &mut scratch.run_counts_by_effect, &mut scratch.sole_runs_by_effect);
++    let tree_has_sorting_contexts = tree.spatial_nodes.iter().any(|node| {
++        matches!(&node.data, SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
++    });
+     let mut driver = ReplayDriver {
+         tree,
+         command_runs,
+@@ -727,9 +809,12 @@ pub fn replay_display_list(
+         palette: scratch.palette,
+         culling: scratch.culling,
+         spatial_dependency_order: tree.spatial_dependency_order(),
+-        tree_has_sorting_contexts: tree.spatial_nodes.iter().any(|node| {
+-            matches!(&node.data, SpatialData::Transform(transform) if transform.sorting_context_root_index.is_some())
+-        }),
++        tree_has_sorting_contexts,
++        root_isolation_pushes_layer: root_isolation_needs_layer(
++            tree,
++            tree_has_sorting_contexts,
++            effect_clips.commands_read_destination,
++        ),
+         replay_base_matrix,
+         current_ctm_space: None,
+         applied: scratch.applied,
+@@ -1747,4 +1832,76 @@ mod tests {
+         assert_eq!(depth, 0);
+         assert_eq!(painter.events.last(), Some(&PainterEvent::SetMatrix(base)));
+     }
++
++    // A page whose root isolation effect sits over an opacity group and nothing that reads the
++    // destination, replayed with the given blend mode on the group and the given command verdict.
++    fn root_isolation_layer_pushes(group_blend_mode: CompositingAndBlendingOperator, commands_read_destination: bool) -> Vec<f32> {
++        let mut tree = identity_tree();
++        let root_layer = effect_under(&mut tree, effects(1.0), EffectNodeIndex::NONE, ClipNodeIndex::NONE);
++        tree.root_isolation_effect = Some(root_layer);
++        let EffectNodeData::Effects(mut group_effects) = effects(0.5) else {
++            unreachable!()
++        };
++        group_effects.blend_mode = group_blend_mode;
++        let group = effect_under(&mut tree, EffectNodeData::Effects(group_effects), root_layer, ClipNodeIndex::NONE);
++        let runs = [
++            run(VISUAL_VIEWPORT_NODE_INDEX, ContextRef { effect: root_layer, ..ContextRef::default() }, visible_bounds()),
++            run(VISUAL_VIEWPORT_NODE_INDEX, ContextRef { effect: group, ..ContextRef::default() }, visible_bounds()),
++            run(VISUAL_VIEWPORT_NODE_INDEX, ContextRef { effect: root_layer, ..ContextRef::default() }, visible_bounds()),
++        ];
++        let mut plan = EffectClipPlan::new(&tree, &runs).unwrap();
++        plan.commands_read_destination = commands_read_destination;
++        let mut painter = RecordingPainter::new();
++        replay_display_list(&tree, &runs, &plan, &[], &mut painter);
++        let mut depth = 0i32;
++        let mut layers = Vec::new();
++        for event in &painter.events {
++            match event {
++                PainterEvent::PushLayer(opacity) => {
++                    layers.push(*opacity);
++                    depth += 1;
++                }
++                PainterEvent::PushClip(_) | PainterEvent::PushMask(_) | PainterEvent::PushPlaneClip(_) => depth += 1,
++                PainterEvent::Pop | PainterEvent::PopMask(_) => depth -= 1,
++                _ => {}
++            }
++        }
++        assert_eq!(depth, 0, "every push is popped");
++        assert_eq!(
++            painter.events.iter().filter(|event| matches!(event, PainterEvent::Run(_))).count(),
++            runs.len()
++        );
++        layers
++    }
++
++    #[test]
++    fn the_root_isolation_layer_is_skipped_when_nothing_reads_the_destination() {
++        assert_eq!(root_isolation_layer_pushes(CompositingAndBlendingOperator::Normal, false), vec![0.5]);
++    }
++
++    #[test]
++    fn a_blend_mode_or_a_destination_reading_draw_keeps_the_root_isolation_layer() {
++        assert_eq!(root_isolation_layer_pushes(CompositingAndBlendingOperator::Multiply, false), vec![1.0, 0.5]);
++        assert_eq!(root_isolation_layer_pushes(CompositingAndBlendingOperator::Normal, true), vec![1.0, 0.5]);
++    }
++
++    #[test]
++    fn only_top_level_non_normal_draws_read_the_destination() {
++        use crate::display_list::builder::DisplayListBuilder;
++        use crate::display_list::commands::FillRect;
++        let fill = |operator| FillRect {
++            rect: IntRect::new(0, 0, 10, 10),
++            color: libgfx_rust::Color::default(),
++            compositing_and_blending_operator: operator,
++            background_color_animation_effect: EffectNodeIndex::NONE,
++        };
++        let mut normal = DisplayListBuilder::new();
++        normal.append(&fill(CompositingAndBlendingOperator::Normal), &[], ContextRef::default());
++        assert!(!commands_read_destination(normal.bytes()));
++        let mut multiply = DisplayListBuilder::new();
++        multiply.append(&fill(CompositingAndBlendingOperator::Normal), &[], ContextRef::default());
++        multiply.append(&fill(CompositingAndBlendingOperator::Multiply), &[], ContextRef::default());
++        assert!(commands_read_destination(multiply.bytes()));
++        assert!(!commands_read_destination(&[]));
++    }
+ }
+diff --git a/Libraries/LibCompositing/Rust/src/ffi.rs b/Libraries/LibCompositing/Rust/src/ffi.rs
+index 33c684325c..db5c9f56ae 100644
+--- a/Libraries/LibCompositing/Rust/src/ffi.rs
++++ b/Libraries/LibCompositing/Rust/src/ffi.rs
+@@ -150,18 +150,24 @@ pub unsafe extern "C" fn display_list_animated_content_may_affect_viewport(
+ 
+ /// # Safety
+ /// `tree` must be a live, structurally valid tree; `command_runs` must be valid for
+-/// `command_run_count` entries. The returned immutable plan is safe to share across
+-/// replay threads while its owner keeps it alive.
++/// `command_run_count` entries, and `command_bytes` for `command_byte_count` bytes of validated
++/// records that the runs cover. The returned immutable plan is safe to share across replay threads
++/// while its owner keeps it alive.
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn display_list_create_effect_clip_plan(
+     tree: *const c_void,
+     command_runs: *const crate::display_list::commands::DisplayListCommandRun,
+     command_run_count: usize,
++    command_bytes: *const u8,
++    command_byte_count: usize,
+ ) -> *const c_void {
+     let tree = unsafe { tree_from_handle(tree) };
+     let runs = unsafe { ffi_slice(command_runs, command_run_count) };
+-    crate::display_list::effect_clip_plan::EffectClipPlan::new(tree, runs)
+-        .map_or(std::ptr::null(), |plan| Box::into_raw(Box::new(plan)).cast())
++    let bytes = unsafe { ffi_slice(command_bytes, command_byte_count) };
++    crate::display_list::effect_clip_plan::EffectClipPlan::new(tree, runs).map_or(std::ptr::null(), |mut plan| {
++        plan.commands_read_destination = crate::display_list::replay::commands_read_destination(bytes);
++        Box::into_raw(Box::new(plan)).cast()
++    })
+ }
+ 
+ /// # Safety
+diff --git a/Libraries/LibCompositing/Rust/src/visual_context/queries.rs b/Libraries/LibCompositing/Rust/src/visual_context/queries.rs
+index 6a90440db7..6b9b41b4d3 100644
+--- a/Libraries/LibCompositing/Rust/src/visual_context/queries.rs
++++ b/Libraries/LibCompositing/Rust/src/visual_context/queries.rs
+@@ -678,7 +678,10 @@ impl VisualContextTree {
+ impl VisualContextTree {
+     // An effects node whose values are all no-ops (opacity 1, normal blending, no filters) exists
+     // as the target of values that may arrive later; replay draws its content directly rather than
+-    // through a layer. The root isolation effect keeps its layer at those values.
++    // through a layer. The root isolation effect keeps its layer at those values whenever something
++    // under it reads the destination; replay skips it otherwise (replay::root_isolation_needs_layer),
++    // so it still isolates every blend, backdrop filter and destination-reading draw these queries
++    // ask about.
+     pub fn effect_pushes_layer_at_replay(&self, effect: EffectNodeIndex) -> bool {
+         match &self.effect_nodes[effect.0 as usize].data {
+             EffectNodeData::Effects(effects) => effects.needs_layer() || self.root_isolation_effect == Some(effect),

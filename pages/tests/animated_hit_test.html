@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-input" content="--poke 140,50@20 --poke 40,50@24 --move 20,50:150,50@28x1">
+<meta name="karouka-check-title" content="^(box,BODY\|box|\|none)$">
+<meta name="karouka-check-animated" content="the box slides on past frame 30, so that pointer events hit it mid-animation">
+<style>
+  /* A pointer event hits a box that a compositor-driven transform animation moves where
+     the compositor shows it, without the main thread restyling it first: the hit test samples the
+     visual context tree's animations at the compositor's time. The box slides 200px a second from
+     x 0: about x 65 to 165 when the click at x 140 (frames 20-22) hits it, x 80 to 180 when the one
+     at x 40 (frames 24-26) misses it, and x 90 to 190 when the move to x 150 (frame 28) hits it
+     again. Hit testing the box where its unsampled style puts it (x 0 to 100) gets all three
+     wrong. The title reads "|none" until an event arrives, as in dev.sh check's run without the
+     input. Text-free. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); height: 600px; }
+  #box { position: absolute; left: 0; top: 0; width: 100px; height: 100px; background: rgb(80, 110, 230);
+         animation: slide 6s linear infinite; }
+  @keyframes slide { from { transform: translateX(0px); } to { transform: translateX(1200px); } }
+</style>
+</head>
+<body>
+<div id="box"></div>
+<script>
+  const clicks = [];
+  let lastMove = "none";
+  const name = (target) => target.id || target.tagName;
+  document.addEventListener("click", (e) => { clicks.push(name(e.target)); update(); });
+  document.addEventListener("mousemove", (e) => { lastMove = name(e.target); update(); });
+  function update() { document.title = clicks.join(",") + "|" + lastMove; }
+  update();
+</script>
+</body>
+</html>

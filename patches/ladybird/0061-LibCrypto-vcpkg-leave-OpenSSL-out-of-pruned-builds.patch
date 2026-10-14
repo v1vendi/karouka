@@ -1,0 +1,379 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibCrypto+vcpkg: leave OpenSSL out of pruned builds
+
+With SubtleCrypto pruned, LibJS and LibWeb use only LibCrypto's big
+integers, ASN.1 and SHA-1/SHA-2 (subresource integrity, CSP hash
+sources, the bytecode cache key, WebAssembly's module hash, LibHTTP's
+memory cache key). LIBCRYPTO_COMMONCRYPTO (on for karouka) builds only
+those, and answers the OpenSSL EVP digest calls OpenSSLHashFunction
+makes with Apple's CommonCrypto, so the hash classes and their callers
+are unchanged. OpenSSL (libcrypto.3.dylib, 5.3 MB) leaves the link.
+
+LibDNS, LibTLS, LibWebSocket and the dns utility, which only the
+browser's RequestServer uses, aren't configured in such a build. The
+openssl port moves into a default "openssl" feature of vcpkg.json, which
+these builds leave out.
+
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 344b3ef116..e8b3f3311b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -40,7 +40,17 @@ else()
+ endif()
+ option(LIBWEB_PRUNE_WEB_APIS "Leave browser-only Web API families out of LibWeb" ${LIBWEB_PRUNE_WEB_APIS_DEFAULT})
+ 
+-if (LADYBIRD_MEDIA_STUB OR LIBWEB_PRUNE_WEB_APIS)
++# karouka: a pruned LibWeb has no SubtleCrypto, and the browser's TLS, DNS and WebSocket libraries
++# aren't linked, so LibCrypto can leave OpenSSL out on Apple platforms (Libraries/LibCrypto/CMakeLists.txt)
++# and vcpkg needn't install it: the default "openssl" feature of vcpkg.json.
++if (KAROUKA_SOURCE_DIR)
++    set(LIBCRYPTO_COMMONCRYPTO_DEFAULT ON)
++else()
++    set(LIBCRYPTO_COMMONCRYPTO_DEFAULT OFF)
++endif()
++option(LIBCRYPTO_COMMONCRYPTO "Build LibCrypto without OpenSSL: big integers, ASN.1, and SHA-1/SHA-2 over CommonCrypto" ${LIBCRYPTO_COMMONCRYPTO_DEFAULT})
++
++if (LADYBIRD_MEDIA_STUB OR LIBWEB_PRUNE_WEB_APIS OR LIBCRYPTO_COMMONCRYPTO)
+     set(VCPKG_MANIFEST_NO_DEFAULT_FEATURES ON)
+     if (NOT LADYBIRD_MEDIA_STUB)
+         list(APPEND VCPKG_MANIFEST_FEATURES media)
+@@ -48,6 +58,9 @@ if (LADYBIRD_MEDIA_STUB OR LIBWEB_PRUNE_WEB_APIS)
+     if (NOT LIBWEB_PRUNE_WEB_APIS)
+         list(APPEND VCPKG_MANIFEST_FEATURES browser)
+     endif()
++    if (NOT LIBCRYPTO_COMMONCRYPTO)
++        list(APPEND VCPKG_MANIFEST_FEATURES openssl)
++    endif()
+ endif()
+ 
+ # Pass additional information to vcpkg if we are using it.
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index 4cecacd29d..dda5a17f0b 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -1,7 +1,11 @@
+ add_subdirectory(LibCompress)
+ add_subdirectory(LibCore)
+ add_subdirectory(LibCrypto)
+-add_subdirectory(LibDNS)
++# karouka: LibDNS, LibTLS and LibWebSocket need LibCrypto's OpenSSL-backed code (or OpenSSL itself),
++# and only the browser's RequestServer uses them. A LIBCRYPTO_COMMONCRYPTO build leaves them out.
++if (NOT LIBCRYPTO_COMMONCRYPTO)
++    add_subdirectory(LibDNS)
++endif()
+ # karouka: only the browser uses LibDatabase (sqlite3) and LibWebView (SDL3), and a pruned LibWeb
+ # leaves the browser out (see the top-level CMakeLists.txt).
+ if (NOT LIBWEB_PRUNE_WEB_APIS)
+@@ -18,14 +22,18 @@ add_subdirectory(LibRegex)
+ add_subdirectory(LibRequests)
+ add_subdirectory(LibSandbox)
+ add_subdirectory(LibSyntax)
+-add_subdirectory(LibTLS)
++if (NOT LIBCRYPTO_COMMONCRYPTO)
++    add_subdirectory(LibTLS)
++endif()
+ add_subdirectory(LibTest)
+ add_subdirectory(LibTextCodec)
+ add_subdirectory(LibThreading)
+ add_subdirectory(LibURL)
+ add_subdirectory(LibUnicode)
+ add_subdirectory(LibWasm)
+-add_subdirectory(LibWebSocket)
++if (NOT LIBCRYPTO_COMMONCRYPTO)
++    add_subdirectory(LibWebSocket)
++endif()
+ add_subdirectory(LibWakeLock)
+ add_subdirectory(LibXML)
+ 
+diff --git a/Libraries/LibCrypto/CMakeLists.txt b/Libraries/LibCrypto/CMakeLists.txt
+index 599f790273..6e207fd33d 100644
+--- a/Libraries/LibCrypto/CMakeLists.txt
++++ b/Libraries/LibCrypto/CMakeLists.txt
+@@ -30,7 +30,32 @@ set(SOURCES
+     PK/RSA.cpp
+ )
+ 
++# karouka: a LIBCRYPTO_COMMONCRYPTO build (top-level CMakeLists.txt) leaves OpenSSL out. It keeps only
++# what a pruned LibWeb (no SubtleCrypto) and LibJS use: big integers and fractions (libtommath),
++# ASN.1, and SHA-1/SHA-2, whose OpenSSL EVP calls CommonCryptoDigest.cpp answers with Apple's
++# CommonCrypto. Every cipher, MAC, KDF, curve, public-key scheme and other hash goes with OpenSSL.cpp.
++if (LIBCRYPTO_COMMONCRYPTO)
++    if (NOT APPLE OR NOT LIBWEB_PRUNE_WEB_APIS)
++        message(FATAL_ERROR "LIBCRYPTO_COMMONCRYPTO needs CommonCrypto (Apple) and a LibWeb without SubtleCrypto (LIBWEB_PRUNE_WEB_APIS)")
++    endif()
++    set(SOURCES
++        ASN1/ASN1.cpp
++        ASN1/DER.cpp
++        ASN1/PEM.cpp
++        BigFraction/BigFraction.cpp
++        BigInt/SignedBigInteger.cpp
++        BigInt/UnsignedBigInteger.cpp
++        Hash/CommonCryptoDigest.cpp
++        Hash/SHA1.cpp
++        Hash/SHA2.cpp
++    )
++endif()
++
+ ladybird_lib(LibCrypto crypto)
+ 
+ target_link_libraries(LibCrypto PRIVATE PkgConfig::libtommath)
+-target_link_libraries(LibCrypto PUBLIC OpenSSL::Crypto)
++if (LIBCRYPTO_COMMONCRYPTO)
++    target_compile_definitions(LibCrypto PRIVATE LIBCRYPTO_COMMONCRYPTO)
++else()
++    target_link_libraries(LibCrypto PUBLIC OpenSSL::Crypto)
++endif()
+diff --git a/Libraries/LibCrypto/Hash/CommonCryptoDigest.cpp b/Libraries/LibCrypto/Hash/CommonCryptoDigest.cpp
+new file mode 100644
+index 0000000000..2544c1525f
+--- /dev/null
++++ b/Libraries/LibCrypto/Hash/CommonCryptoDigest.cpp
+@@ -0,0 +1,120 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++// karouka: OpenSSL's EVP digest calls, as far as OpenSSLHashFunction<> makes them, over Apple's
++// CommonCrypto (a system library). See CommonCryptoDigest.h.
++
++#include <AK/StdLibExtras.h>
++#include <AK/kmalloc.h>
++#include <LibCrypto/Hash/CommonCryptoDigest.h>
++
++// CC_SHA1 is deprecated as a cryptographic primitive. LibCrypto's SHA1 only keys LibHTTP's memory
++// cache (LibHTTP/Cache/Utilities.cpp) in a build that uses this file.
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++#include <CommonCrypto/CommonDigest.h>
++
++namespace {
++
++union DigestState {
++    CC_SHA1_CTX sha1;
++    CC_SHA256_CTX sha256;
++    CC_SHA512_CTX sha512;
++};
++
++}
++
++extern "C" {
++
++struct evp_md_st {
++    int (*init)(DigestState*);
++    int (*update)(DigestState*, void const*, CC_LONG);
++    int (*final)(unsigned char*, DigestState*);
++    unsigned int digest_size;
++};
++
++struct evp_md_ctx_st {
++    EVP_MD const* type { nullptr };
++    DigestState state;
++};
++
++static constexpr evp_md_st s_sha1 {
++    [](DigestState* state) { return CC_SHA1_Init(&state->sha1); },
++    [](DigestState* state, void const* data, CC_LONG length) { return CC_SHA1_Update(&state->sha1, data, length); },
++    [](unsigned char* digest, DigestState* state) { return CC_SHA1_Final(digest, &state->sha1); },
++    CC_SHA1_DIGEST_LENGTH,
++};
++
++static constexpr evp_md_st s_sha256 {
++    [](DigestState* state) { return CC_SHA256_Init(&state->sha256); },
++    [](DigestState* state, void const* data, CC_LONG length) { return CC_SHA256_Update(&state->sha256, data, length); },
++    [](unsigned char* digest, DigestState* state) { return CC_SHA256_Final(digest, &state->sha256); },
++    CC_SHA256_DIGEST_LENGTH,
++};
++
++static constexpr evp_md_st s_sha384 {
++    [](DigestState* state) { return CC_SHA384_Init(&state->sha512); },
++    [](DigestState* state, void const* data, CC_LONG length) { return CC_SHA384_Update(&state->sha512, data, length); },
++    [](unsigned char* digest, DigestState* state) { return CC_SHA384_Final(digest, &state->sha512); },
++    CC_SHA384_DIGEST_LENGTH,
++};
++
++static constexpr evp_md_st s_sha512 {
++    [](DigestState* state) { return CC_SHA512_Init(&state->sha512); },
++    [](DigestState* state, void const* data, CC_LONG length) { return CC_SHA512_Update(&state->sha512, data, length); },
++    [](unsigned char* digest, DigestState* state) { return CC_SHA512_Final(digest, &state->sha512); },
++    CC_SHA512_DIGEST_LENGTH,
++};
++
++EVP_MD const* EVP_sha1() { return &s_sha1; }
++EVP_MD const* EVP_sha256() { return &s_sha256; }
++EVP_MD const* EVP_sha384() { return &s_sha384; }
++EVP_MD const* EVP_sha512() { return &s_sha512; }
++
++EVP_MD_CTX* EVP_MD_CTX_new()
++{
++    return new (nothrow) evp_md_ctx_st;
++}
++
++void EVP_MD_CTX_free(EVP_MD_CTX* context)
++{
++    delete context;
++}
++
++int EVP_DigestInit_ex(EVP_MD_CTX* context, EVP_MD const* type, ENGINE*)
++{
++    context->type = type;
++    return type->init(&context->state);
++}
++
++int EVP_DigestUpdate(EVP_MD_CTX* context, void const* data, size_t length)
++{
++    auto const* bytes = static_cast<unsigned char const*>(data);
++    // CC_LONG is 32 bits.
++    while (length > 0) {
++        auto chunk = static_cast<CC_LONG>(min<size_t>(length, 1u << 30));
++        if (context->type->update(&context->state, bytes, chunk) != 1)
++            return 0;
++        bytes += chunk;
++        length -= chunk;
++    }
++    return 1;
++}
++
++int EVP_DigestFinal_ex(EVP_MD_CTX* context, unsigned char* digest, unsigned int* digest_size)
++{
++    if (digest_size)
++        *digest_size = context->type->digest_size;
++    return context->type->final(digest, &context->state);
++}
++
++int EVP_MD_CTX_copy_ex(EVP_MD_CTX* destination, EVP_MD_CTX const* source)
++{
++    *destination = *source;
++    return 1;
++}
++
++}
++
++#pragma clang diagnostic pop
+diff --git a/Libraries/LibCrypto/Hash/CommonCryptoDigest.h b/Libraries/LibCrypto/Hash/CommonCryptoDigest.h
+new file mode 100644
+index 0000000000..bff50f9586
+--- /dev/null
++++ b/Libraries/LibCrypto/Hash/CommonCryptoDigest.h
+@@ -0,0 +1,20 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++// karouka: with LIBCRYPTO_COMMONCRYPTO (Libraries/LibCrypto/CMakeLists.txt) LibCrypto builds without
++// OpenSSL. OpenSSLHashFunction<> calls OpenSSL's EVP digest API from its header, so SHA-1 and SHA-2
++// keep their classes and callers unchanged: CommonCryptoDigest.cpp implements the part of that API
++// they use (EVP_MD_CTX_new/free/copy_ex, EVP_DigestInit_ex/Update/Final_ex) over CommonCrypto, and
++// the digests below stand in for <openssl/evp.h>'s.
++
++#include <LibCrypto/OpenSSLForward.h>
++
++extern "C" {
++EVP_MD const* EVP_sha1();
++EVP_MD const* EVP_sha256();
++EVP_MD const* EVP_sha384();
++EVP_MD const* EVP_sha512();
++}
+diff --git a/Libraries/LibCrypto/Hash/SHA1.cpp b/Libraries/LibCrypto/Hash/SHA1.cpp
+index 40e94fbf72..72647012d2 100644
+--- a/Libraries/LibCrypto/Hash/SHA1.cpp
++++ b/Libraries/LibCrypto/Hash/SHA1.cpp
+@@ -6,7 +6,11 @@
+ 
+ #include <LibCrypto/Hash/SHA1.h>
+ 
+-#include <openssl/evp.h>
++#ifdef LIBCRYPTO_COMMONCRYPTO
++#    include <LibCrypto/Hash/CommonCryptoDigest.h>
++#else
++#    include <openssl/evp.h>
++#endif
+ 
+ namespace Crypto::Hash {
+ 
+diff --git a/Libraries/LibCrypto/Hash/SHA2.cpp b/Libraries/LibCrypto/Hash/SHA2.cpp
+index a19026022f..5e06d9ebc9 100644
+--- a/Libraries/LibCrypto/Hash/SHA2.cpp
++++ b/Libraries/LibCrypto/Hash/SHA2.cpp
+@@ -6,7 +6,11 @@
+ 
+ #include <LibCrypto/Hash/SHA2.h>
+ 
+-#include <openssl/evp.h>
++#ifdef LIBCRYPTO_COMMONCRYPTO
++#    include <LibCrypto/Hash/CommonCryptoDigest.h>
++#else
++#    include <openssl/evp.h>
++#endif
+ 
+ namespace Crypto::Hash {
+ 
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index eee46366a5..1e459c1e99 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -77,7 +77,10 @@ if (NOT LIBWEB_PRUNE_WEB_APIS)
+ endif()
+ find_package(ICU 78.3 EXACT REQUIRED COMPONENTS data i18n uc)
+ find_package(LibXml2 REQUIRED)
+-find_package(OpenSSL REQUIRED)
++# karouka: a LIBCRYPTO_COMMONCRYPTO build has no OpenSSL (Libraries/LibCrypto/CMakeLists.txt).
++if (NOT LIBCRYPTO_COMMONCRYPTO)
++    find_package(OpenSSL REQUIRED)
++endif()
+ find_package(simdjson CONFIG REQUIRED)
+ find_package(Threads REQUIRED)
+ find_package(ZLIB REQUIRED)
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 7535f04582..c0fe32dc88 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -10,7 +10,10 @@ if (NOT WIN32 AND NOT ANDROID AND NOT LIBWEB_PRUNE_WEB_APIS)
+ endif()
+ 
+ ladybird_utility(xml SOURCES xml.cpp LIBS LibFileSystem LibMain LibXML LibURL)
+-ladybird_utility(dns SOURCES dns.cpp LIBS LibDNS LibMain LibTLS LibCrypto)
++# karouka: a LIBCRYPTO_COMMONCRYPTO build has no LibDNS or LibTLS (Libraries/CMakeLists.txt).
++if (NOT LIBCRYPTO_COMMONCRYPTO)
++    ladybird_utility(dns SOURCES dns.cpp LIBS LibDNS LibMain LibTLS LibCrypto)
++endif()
+ 
+ if (ENABLE_GUI_TARGETS)
+     ladybird_utility(image SOURCES image.cpp LIBS LibGfx LibImageDecoders LibMain)
+diff --git a/vcpkg.json b/vcpkg.json
+index c1d61fb09d..cbffaaef33 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -70,7 +70,6 @@
+       "platform": "windows"
+     },
+     "mimalloc",
+-    "openssl",
+     {
+       "name": "pthread",
+       "platform": "windows"
+@@ -193,7 +192,8 @@
+   ],
+   "default-features": [
+     "browser",
+-    "media"
++    "media",
++    "openssl"
+   ],
+   "features": {
+     "browser": {
+@@ -256,6 +256,12 @@
+           ]
+         }
+       ]
++    },
++    "openssl": {
++      "description": "LibCrypto's OpenSSL backend: WebCrypto's ciphers, MACs, KDFs and key pairs, TLS, DNSSEC. Builds with LIBCRYPTO_COMMONCRYPTO (karouka: no SubtleCrypto, SHA-1/SHA-2 over CommonCrypto) leave it out.",
++      "dependencies": [
++        "openssl"
++      ]
+     }
+   },
+   "overrides": [

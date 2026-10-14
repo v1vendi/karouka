@@ -1,0 +1,8 @@
+# WPT reftests `tools/dev.sh check` renders (tools/wpt.py --filter, one corpus-path substring per line, `#` comments),
+# under the same ratchet as `dev.sh wpt`: tests that Ladybird patches fixed, so check catches a regression in seconds.
+# Keep each filter narrow; the whole corpus is `dev.sh wpt`'s job.
+css/css-contain/contain-body-bg-         # patch 0053, no body background propagation under containment
+css/css-contain/contain-html-bg-         # patch 0053
+background-color-body-propagation-       # patch 0053
+grid-abspos-staticpos-                   # patch 0054, grid abspos static position alignment
+clip-path/clip-path-polygon-             # patch 0055, clip-path <basic-shape> <geometry-box>

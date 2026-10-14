@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^crypto ok$">
+<title>pending</title>
+<style>
+  /* karouka's own page: a pruned build has no WebCrypto SubtleCrypto (`crypto.subtle` is
+     undefined) and no OpenSSL; crypto.getRandomValues() and crypto.randomUUID() stay, and the SHA-2
+     digests behind subresource integrity and CSP hash sources (csp_hash.html) come from CommonCrypto. BigInt and
+     Temporal keep LibCrypto's big integers. The title lists every failed check. */
+  body { margin: 0; background: rgb(28, 32, 40); color: rgb(220, 220, 220); font: 20px sans-serif; }
+  #result { margin: 20px; padding: 16px; border-radius: 8px; background: rgb(120, 40, 40); white-space: pre-wrap; }
+  #result.ok { background: rgb(40, 110, 60); }
+</style>
+<!-- Each matching digest runs the script once; the wrong one must not run it. -->
+<script src="crypto_subresource.js" integrity="sha256-vIxsQemFu9Mi/wl5Jp2w5LJxOFk83DmCcYXTZ04likk="></script>
+<script src="crypto_subresource.js" integrity="sha384-952lGTSojA5jklKyCXQ2szZ8j4CclwtiNa4aVgGUq6E91CBDYr7lQjwlOLa696yE"></script>
+<script src="crypto_subresource.js" integrity="sha512-W1BjR3tIs98BSmEopa3M/ADtOAEQdjF8E/Ru+OtR0bu0Vf/WmWEbhGyz0Tn8hzMketI5H7OujWF1O4vQWRsjBw=="></script>
+<script src="crypto_subresource.js" integrity="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="></script>
+</head>
+<body>
+<div id="result">running</div>
+<script>
+  const failures = [];
+  const check = (what, ok) => { try { if (!ok()) failures.push(what); } catch (e) { failures.push(what + " threw " + e); } };
+
+  check("subtle undefined", () => crypto.subtle === undefined && !("subtle" in crypto));
+  check("no SubtleCrypto", () => typeof SubtleCrypto === "undefined" && typeof CryptoKey === "undefined");
+  check("Crypto", () => crypto instanceof Crypto);
+  check("getRandomValues", () => {
+    const a = new Uint32Array(64);
+    const b = crypto.getRandomValues(a);
+    return b === a && a.some(x => x !== 0) && new Set(a).size > 60;
+  });
+  check("getRandomValues quota", () => {
+    try { crypto.getRandomValues(new Uint8Array(65537)); return false; } catch (e) { return e.name === "QuotaExceededError"; }
+  });
+  check("getRandomValues float", () => {
+    try { crypto.getRandomValues(new Float32Array(4)); return false; } catch (e) { return e.name === "TypeMismatchError"; }
+  });
+  check("randomUUID", () => {
+    const u = crypto.randomUUID();
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(u) && u !== crypto.randomUUID();
+  });
+  check("integrity", () => window.integrityRuns === 3);
+  check("BigInt", () => (2n ** 200n).toString(16) === "1" + "0".repeat(50) && (-(10n ** 30n) / 7n).toString() === "-142857142857142857142857142857");
+  check("BigInt.asUintN", () => BigInt.asUintN(64, -1n) === 18446744073709551615n);
+  check("Temporal", () => Temporal.Instant.fromEpochNanoseconds(10n ** 18n).toString() === "2001-09-09T01:46:40Z"
+      && Temporal.Duration.from({ hours: 1, minutes: 30 }).total("seconds") === 5400);
+
+  const result = document.getElementById("result");
+  const title = failures.length ? "crypto FAILED: " + failures.join(", ") : "crypto ok";
+  result.textContent = title;
+  result.className = failures.length ? "" : "ok";
+  document.title = title;
+</script>
+</body>
+</html>

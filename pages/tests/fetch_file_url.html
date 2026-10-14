@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^fetch file ok 64x64 text missing-rejected$">
+<title>fetch file pending</title>
+<!-- fetch() reads file: URLs from a file: page. Upstream scheme fetch
+     serves file: URLs only to requests with a destination (subresource loads),
+     never to fetch(); kr_system_create2 turns on
+     Web::Embedder::set_fetch_reads_file_urls. The page fetches an image as a
+     blob and draws it through createImageBitmap (as WPT's
+     2d.drawImage.negative* do), reads a script as text, and checks that a
+     missing file still rejects. -->
+<style>
+  body { margin: 0; background: #fff; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="64" height="64"></canvas>
+<script>
+(async () => {
+  const parts = [];
+  try {
+    const response = await fetch('swatch.png');
+    const bitmap = await createImageBitmap(await response.blob());
+    document.getElementById('c').getContext('2d').drawImage(bitmap, 0, 0);
+    parts.push(`ok ${bitmap.width}x${bitmap.height}`);
+  } catch (e) {
+    parts.push(`image failed: ${e}`);
+  }
+  try {
+    const text = await (await fetch('external_module_dep.js')).text();
+    parts.push(text.length > 0 ? 'text' : 'text empty');
+  } catch (e) {
+    parts.push(`text failed: ${e}`);
+  }
+  try {
+    await fetch('fetch_file_url_missing.txt');
+    parts.push('missing resolved');
+  } catch (e) {
+    parts.push('missing-rejected');
+  }
+  document.title = `fetch file ${parts.join(' ')}`;
+})();
+</script>
+</body>
+</html>

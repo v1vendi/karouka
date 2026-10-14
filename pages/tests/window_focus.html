@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-input" content="--blur 8 --focus 14 --blur 20">
+<meta name="karouka-check-title" content="^focus true( false true false)?$">
+<meta name="karouka-check-pixels" content="54,43=#606060~2 350,40=#c83c3c">
+<title>focus pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 40px sans-serif; }
+  p { margin: 0; position: absolute; left: 20px; top: 20px; white-space: pre; }
+  #swatch { position: absolute; left: 300px; top: 20px; width: 100px; height: 40px; background: rgb(40, 160, 80); }
+  #swatch.blurred { background: rgb(200, 60, 60); }
+</style>
+</head>
+<body>
+<!-- The viewer's window key state reaches the page. --blur/--focus run the KRHost
+     setFocused: that windowDidResignKey/windowDidBecomeKey send, which calls kr_view_set_focused.
+     The title logs each document.hasFocus() change, read every frame: "focus true" without the
+     input (dev.sh check's run without it), "focus true false true false" with it. The pixels are
+     checked only with the input and hold the last blur: the script's selection paints in the
+     palette's InactiveSelection color (#606060, Selection is #843533; script_selection.html)
+     and the swatch turns red. If the viewer stops calling kr_view_set_focused, both stay focused. -->
+<p id="selected">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</p>
+<div id="swatch"></div>
+<script>
+getSelection().selectAllChildren(document.getElementById("selected"));
+const states = [];
+function poll() {
+    const focused = document.hasFocus();
+    if (states[states.length - 1] !== focused) {
+        states.push(focused);
+        document.title = "focus " + states.join(" ");
+        document.getElementById("swatch").className = focused ? "" : "blurred";
+    }
+    requestAnimationFrame(poll);
+}
+poll();
+</script>
+</body>
+</html>

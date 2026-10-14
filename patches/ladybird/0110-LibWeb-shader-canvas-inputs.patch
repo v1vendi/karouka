@@ -1,0 +1,368 @@
+diff --git a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
+--- a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
++++ b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
+@@ -12,6 +12,7 @@
+ #include <LibWeb/CSS/Fetch.h>
+ #include <LibWeb/CSS/StyleSheetState.h>
+ #include <LibWeb/CSS/StyleValues/CustomIdentStyleValue.h>
++#include <LibWeb/CSS/StyleValues/FunctionStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/ImageStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
+@@ -22,6 +23,7 @@
+ #include <LibWeb/DOMURL/DOMURL.h>
+ #include <LibWeb/Embedder/ShaderDecodedImageData.h>
+ #include <LibWeb/HTML/DecodedImageData.h>
++#include <LibWeb/HTML/HTMLCanvasElement.h>
+ #include <LibWeb/HTML/PotentialCORSRequest.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/SharedResourceRequest.h>
+@@ -354,6 +356,8 @@
+ 
+ ImageStyleValue::Client::~Client()
+ {
++    // karouka: the element a shader() image's canvas input is checked against (Embedder::set_image_client_element).
++    Embedder::set_image_client_element(this, nullptr);
+ }
+ 
+ void ImageStyleValue::Client::image_style_value_finalize()
+@@ -361,9 +365,41 @@
+     m_image_style_value.unregister_client(*this);
+ }
+ 
++// karouka: a shader() canvas input, element(#id), resolved against the document the image is painted in:
++// the canvas's presented surface, or why it is refused (docs/ENGINE.md). painted_element is the element the
++// image paints for, which a canvas inside it would paint itself into.
++static void resolve_shader_canvas_input(Embedder::ShaderArgument& argument, FunctionStyleValue const& function, DOM::Document const* document, DOM::Element const* painted_element)
++{
++    using Refusal = Embedder::ShaderArgument::CanvasRefusal;
++    argument.type = Embedder::ShaderArgument::Type::RefusedCanvas;
++    auto refuse = [&](Refusal refusal) { argument.canvas_refusal = refusal; };
++    auto id_value = function.value();
++    if (!id_value->is_custom_ident())
++        return refuse(Refusal::NoElement);
++    auto id = id_value->as_custom_ident().custom_ident().to_utf16_string();
++    argument.element_id = id.to_utf8_but_should_be_ported_to_utf16();
++    auto element = document ? document->get_element_by_id(id) : nullptr;
++    if (!element)
++        return refuse(Refusal::NoElement);
++    auto* canvas = as_if<HTML::HTMLCanvasElement>(*element);
++    if (!canvas)
++        return refuse(Refusal::NotACanvas);
++    if (painted_element && canvas->is_shadow_including_inclusive_descendant_of(*painted_element))
++        return refuse(Refusal::InsidePaintedElement);
++    // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
++    // As getImageData() and toDataURL(): pixels script can't read, a shader can't sample.
++    if (!canvas->is_origin_clean())
++        return refuse(Refusal::NotOriginClean);
++    auto canvas_id = canvas->canvas_id();
++    if (!canvas_id.has_value())
++        return refuse(Refusal::NoContent);
++    argument.type = Embedder::ShaderArgument::Type::Canvas;
++    argument.canvas_id = canvas_id->value();
++}
++
+ // karouka: a shader() image's uniform arguments (pairs of a dashed ident and its computed value in the
+ // Rust data) as the embedder takes them.
+-static Vector<Embedder::ShaderArgument> shader_arguments_from_rust_data(StyleValueFFI::RetainedStyleValueData const& retained_list)
++static Vector<Embedder::ShaderArgument> shader_arguments_from_rust_data(StyleValueFFI::RetainedStyleValueData const& retained_list, DOM::Document const* document, DOM::Element const* painted_element)
+ {
+     auto const* list_data = static_cast<StyleValueFFI::StyleValueData const*>(retained_list.pointer);
+     if (!list_data)
+@@ -381,7 +417,9 @@
+         Embedder::ShaderArgument argument;
+         argument.name = name->as_custom_ident().custom_ident().to_utf16_string().to_utf8_but_should_be_ported_to_utf16();
+         auto value = child(index + 1);
+-        if (value->is_number()) {
++        if (value->is_function() && value->as_function().name() == "element"sv) {
++            resolve_shader_canvas_input(argument, value->as_function(), document, painted_element);
++        } else if (value->is_number()) {
+             argument.type = Embedder::ShaderArgument::Type::Number;
+             argument.values[0] = static_cast<float>(value->as_number().number());
+         } else if (value->is_percentage()) {
+@@ -420,8 +458,12 @@
+     auto const* shader = as_if<Embedder::ShaderDecodedImageData>(decoded_image_data.ptr());
+     if (!shader || !m_image_style_value.rust_style_value_data()->image.shader_arguments.pointer)
+         return decoded_image_data;
+-    if (m_shader_image_data_bound != shader) {
+-        GC::Ref<HTML::DecodedImageData> bound = shader->with_arguments(shader_arguments_from_rust_data(m_image_style_value.rust_style_value_data()->image.shader_arguments));
++    // A canvas input resolves to the canvas's surface as it is now (another context, or a canvas tainted since,
++    // gives other arguments), so the arguments are resolved on each ask and a change binds them anew.
++    auto arguments = shader_arguments_from_rust_data(m_image_style_value.rust_style_value_data()->image.shader_arguments, m_document.ptr().ptr(), Embedder::image_client_element(this));
++    auto const* bound_data = as_if<Embedder::ShaderDecodedImageData>(m_shader_image_data_with_arguments.ptr());
++    if (m_shader_image_data_bound != shader || !bound_data || bound_data->arguments() != arguments.span()) {
++        GC::Ref<HTML::DecodedImageData> bound = shader->with_arguments(move(arguments));
+         m_shader_image_data_with_arguments = GC::Root<HTML::DecodedImageData> { bound };
+         m_shader_image_data_bound = shader;
+     }
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+--- a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+@@ -8,6 +8,8 @@
+ #include <LibCompositing/DisplayList/DisplayListCommand.h>
+ #include <LibCompositing/DisplayList/VisualContextTreeTestBuilder.h>
+ #include <LibGC/Heap.h>
++#include <LibGC/Weak.h>
++#include <LibWeb/DOM/Element.h>
+ #include <LibWeb/Embedder/ShaderDecodedImageData.h>
+ #include <LibWeb/Painting/ImagePaint.h>
+ #include <math.h>
+@@ -90,6 +92,30 @@
+     return Compositing::DisplayListResource { Compositing::DisplayList::create_from_command_bytes(tree, move(bytes), move(runs)), tree };
+ }
+ 
++static HashMap<void const*, GC::Weak<DOM::Element>>& image_client_elements()
++{
++    // Never destroyed: clients may outlive static destruction.
++    static auto& elements = *new HashMap<void const*, GC::Weak<DOM::Element>>;
++    return elements;
++}
++
++void set_image_client_element(void const* client, DOM::Element const* element)
++{
++    if (!element) {
++        image_client_elements().remove(client);
++        return;
++    }
++    image_client_elements().set(client, GC::Weak<DOM::Element> { const_cast<DOM::Element&>(*element) });
++}
++
++DOM::Element const* image_client_element(void const* client)
++{
++    auto element = image_client_elements().get(client);
++    if (!element.has_value())
++        return nullptr;
++    return element->ptr().ptr();
++}
++
+ GC::Ref<ShaderDecodedImageData> ShaderDecodedImageData::create(String source, Vector<ShaderArgument> arguments)
+ {
+     return GC::Heap::the().allocate<ShaderDecodedImageData>(move(source), move(arguments));
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+--- a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+@@ -15,6 +15,7 @@
+ #include <LibCompositing/DisplayList/DisplayList.h>
+ #include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
+ #include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
+ #include <LibWeb/HTML/DecodedImageData.h>
+ 
+ namespace Web::Embedder {
+@@ -22,7 +23,10 @@
+ // One `--name value` uniform argument of a shader() image (CSS `shader(<source>, --speed 0.3)`), as
+ // computed: name is the dashed ident, values hold what the uniform is set to. A <number> is one value,
+ // a <percentage> one value already divided by 100, a <length> one value in CSS px, two numbers two
+-// values, and a <color> four: unpremultiplied RGBA in 0-1. A value of another kind (a relative color
++// values, and a <color> four: unpremultiplied RGBA in 0-1. element(#id) naming a <canvas> is a Canvas
++// input, which binds a `uniform shader` child to the canvas's presented pixels: canvas_id is its
++// surface in the embedder's canvas surface registry (Compositing::CanvasSurfaceRegistry). One LibWeb
++// won't bind is a RefusedCanvas, and canvas_refusal says why. A value of another kind (a relative color
+ // that didn't resolve, say) is Unsupported and sets nothing.
+ struct ShaderArgument {
+     enum class Type : u8 {
+@@ -31,11 +35,31 @@
+         Length,
+         NumberPair,
+         Color,
++        Canvas,
++        RefusedCanvas,
+         Unsupported,
+     };
++    // Why element(#id) binds no canvas.
++    enum class CanvasRefusal : u8 {
++        None,
++        // No element has the id.
++        NoElement,
++        // The element isn't a <canvas>.
++        NotACanvas,
++        // The canvas has no 2D context with pixels yet.
++        NoContent,
++        // The canvas isn't origin-clean: script can't read its pixels, so a shader can't either.
++        NotOriginClean,
++        // The canvas is inside the element the image is painted for, which would paint itself.
++        InsidePaintedElement,
++    };
+     String name;
+     Type type { Type::Unsupported };
+     Array<float, 4> values {};
++    u64 canvas_id { 0 };
++    CanvasRefusal canvas_refusal { CanvasRefusal::None };
++    // The id element(#id) names, for a Canvas or RefusedCanvas.
++    String element_id;
+ 
+     size_t value_count() const
+     {
+@@ -48,6 +72,8 @@
+             return 2;
+         case Type::Color:
+             return 4;
++        case Type::Canvas:
++        case Type::RefusedCanvas:
+         case Type::Unsupported:
+             return 0;
+         }
+@@ -56,6 +82,11 @@
+     bool operator==(ShaderArgument const&) const = default;
+ };
+ 
++// The element an image style value's client (CSS::ImageStyleValue::Client, by address) paints its images
++// for, so that a shader() canvas input inside it is refused (InsidePaintedElement); null forgets it.
++void set_image_client_element(void const* client, DOM::Element const*);
++DOM::Element const* image_client_element(void const* client);
++
+ // The embedder content a shader() image is drawn with: the id its DrawEmbedderContent command names,
+ // and whether its pixels change with the frame's time (the shader animates), which makes the command
+ // live (DrawEmbedderContent::is_live): drawn at every frame's time and damaged every frame.
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+@@ -153,6 +153,13 @@
+ }
+ 
+ // 4.12.5.1.14 Drawing images, https://html.spec.whatwg.org/multipage/canvas.html#drawing-images
++void Canvas2DContextBase::set_not_origin_clean()
++{
++    if (m_origin_clean && m_transport)
++        m_transport->did_become_not_origin_clean();
++    m_origin_clean = false;
++}
++
+ WebIDL::ExceptionOr<void> Canvas2DContextBase::draw_image_internal(CanvasImageSource const& image, float source_x, float source_y, float source_width, float source_height, float destination_x, float destination_y, float destination_width, float destination_height)
+ {
+     // 1. If any of the arguments are infinite or NaN, then return.
+@@ -235,7 +242,7 @@
+ 
+         // 7. If image is not origin-clean, then set the CanvasRenderingContext2D's origin-clean flag to false.
+         if (image_is_not_origin_clean(image))
+-            m_origin_clean = false;
++            set_not_origin_clean();
+     };
+ 
+     if (auto const* source_canvas = image.get_pointer<GC::Ref<HTMLCanvasElement>>(); source_canvas && !(*source_canvas)->is_placeholder()) {
+@@ -286,7 +293,7 @@
+ 
+     // 7. If image is not origin-clean, then set the CanvasRenderingContext2D's origin-clean flag to false.
+     if (image_is_not_origin_clean(image))
+-        m_origin_clean = false;
++        set_not_origin_clean();
+ 
+     return {};
+ }
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.h
+@@ -60,6 +60,8 @@
+ 
+     // https://html.spec.whatwg.org/multipage/canvas.html#concept-canvas-origin-clean
+     bool origin_clean() const { return m_origin_clean; }
++    // karouka: clears the origin-clean flag, telling the transport (RemoteCanvas2DTransport::did_become_not_origin_clean).
++    void set_not_origin_clean();
+ 
+     virtual void fill_rect(float x, float y, float width, float height) override;
+     virtual void stroke_rect(float x, float y, float width, float height) override;
+diff --git a/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h b/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h
+--- a/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h
++++ b/Libraries/LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h
+@@ -28,6 +28,10 @@
+     virtual void flush_shared_stream() = 0;
+ 
+     virtual RefPtr<Gfx::Bitmap> read_back_pixels(Gfx::IntRect const&) = 0;
++
++    // karouka: the context's origin-clean flag went false, so what it presents from now on is pixels script
++    // can't read, and an embedder sampling them elsewhere (a shader() canvas input) must refuse them.
++    virtual void did_become_not_origin_clean() { }
+ };
+ 
+ }
+diff --git a/Libraries/LibWeb/Layout/Node.cpp b/Libraries/LibWeb/Layout/Node.cpp
+--- a/Libraries/LibWeb/Layout/Node.cpp
++++ b/Libraries/LibWeb/Layout/Node.cpp
+@@ -15,6 +15,7 @@
+ #include <LibWeb/DOM/AbstractElement.h>
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Element.h>
++#include <LibWeb/Embedder/ShaderDecodedImageData.h>
+ #include <LibWeb/DOM/ShadowRoot.h>
+ #include <LibWeb/DOM/Text.h>
+ #include <LibWeb/Dump.h>
+@@ -247,6 +248,9 @@
+     , m_owner(owner)
+     , m_image(move(image))
+ {
++    // karouka: a shader() image's canvas input inside the element it paints for is refused.
++    DOM::Element const* element = owner.is_generated_for_pseudo_element() ? owner.pseudo_element_generator().ptr() : as_if<DOM::Element>(owner.dom_node());
++    Embedder::set_image_client_element(this, element);
+ }
+ 
+ NodeWithStyle::ImageObserver::~ImageObserver()
+diff --git a/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs b/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
+--- a/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
++++ b/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
+@@ -98,9 +98,36 @@
+     RetainedStyleValueData::none()
+ }
+ 
++/// karouka: the name of a shader() canvas input, `element(<id-selector>)`, kept as a Function
++/// named `element` around the id's CustomIdent (serialized back as `element(#id)`).
++pub(crate) const SHADER_ELEMENT_FUNCTION: &[u8] = b"element";
++
++/// karouka: `element(#id)`, a shader() argument that binds the `<canvas>` with that id as a
++/// `uniform shader` child.
++fn parse_shader_element_reference(value: &ComponentValue) -> Option<StyleValueData> {
++    let (name, arguments) = value.function()?;
++    if !equals_ascii_case_insensitive(name, SHADER_ELEMENT_FUNCTION) {
++        return None;
++    }
++    let mut arguments = arguments.iter().filter(|value| !value.is_whitespace());
++    let id = arguments.next()?;
++    if arguments.next().is_some() {
++        return None;
++    }
++    let ComponentKind::Token(ParserTokenKind::Hash { value: id, is_id: true }) = &id.kind else {
++        return None;
++    };
++    Some(StyleValueData::Function {
++        name: CssString::from_utf16(&SHADER_ELEMENT_FUNCTION.iter().copied().map(u16::from).collect::<Vec<u16>>()),
++        value: retained(StyleValueData::CustomIdent {
++            custom_ident: CssString::from_utf16(AsRef::<[u16]>::as_ref(id)),
++        }),
++    })
++}
++
+ /// karouka: one shader() uniform argument's value, per the CSS-to-SkSL type table
+-/// (docs/ENGINE.md): a `<number>`, two space-separated numbers, a `<percentage>`, a `<length>` or
+-/// a `<color>`. var() was substituted before the value got here.
++/// (docs/ENGINE.md): a `<number>`, two space-separated numbers, a `<percentage>`, a `<length>`, a
++/// `<color>` or `element(#id)`. var() was substituted before the value got here.
+ fn parse_shader_argument_value(context: &ParseContext, property: u16, values: &[ComponentValue]) -> Option<StyleValueData> {
+     let tokens: Vec<&ComponentValue> = values.iter().filter(|value| !value.is_whitespace()).collect();
+     match tokens.as_slice() {
+@@ -114,6 +141,7 @@
+             })
+         }
+         [value] => parse_number_value(value, NumericRange::INFINITE)
++            .or_else(|| parse_shader_element_reference(value))
+             .or_else(|| parse_percentage_value(value, NumericRange::INFINITE))
+             .or_else(|| parse_length_value(context, property, value, NumericRange::INFINITE))
+             .or_else(|| {
+diff --git a/Libraries/LibWeb/Rust/src/css/serialize.rs b/Libraries/LibWeb/Rust/src/css/serialize.rs
+--- a/Libraries/LibWeb/Rust/src/css/serialize.rs
++++ b/Libraries/LibWeb/Rust/src/css/serialize.rs
+@@ -1215,6 +1215,16 @@
+                 };
+                 for (index, argument) in values.as_slice().iter().enumerate() {
+                     sink.push_ascii(if index % 2 == 0 { ", " } else { " " });
++                    // A canvas input, element(#id), keeps its id selector's `#`.
++                    if let Some(StyleValueData::Function { name, value }) = argument.optional_data()
++                        && name.units().iter().copied().eq(crate::css::parser::images_gradients_parser::SHADER_ELEMENT_FUNCTION.iter().copied().map(u16::from))
++                        && let Some(StyleValueData::CustomIdent { custom_ident }) = value.optional_data()
++                    {
++                        sink.push_ascii("element(#");
++                        with_fly_string_units(custom_ident, |units| serialize_an_identifier(sink, &units));
++                        sink.push_ascii(")");
++                        continue;
++                    }
+                     if let Some(argument) = argument.optional_data() {
+                         serialize_style_value(sink, argument, mode);
+                     }

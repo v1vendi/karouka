@@ -1,0 +1,372 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: reorder line fragments across elements and fonts
+
+The line box ordered glyph runs only inside one fragment, and a fragment
+holds one text node's runs in one font. Fragments of different elements or
+fonts were laid out in logical order, left to right even in a right-to-left
+paragraph: Arabic words in two spans, a span inside an Arabic word, a number
+or "%" in another font inside Arabic, and every multi-element line of a
+dir=rtl block came out in the wrong order.
+
+Merge a glyph run into a fragment only while its resolved direction holds,
+so every fragment has one direction, and after the line is built resolve
+each fragment's embedding level from its direction and its neighbours (W4,
+W5, W7, N1, N2, I1, I2 over whole fragments; no explicit embeddings or
+isolates) and reverse the fragments level by level (UAX #9 rule L2). The
+fragments keep their logical order; their inline offsets move, and the
+space between them (inline box edges, text-indent) moves with the run it is
+inside. Justification spreads space in visual order on reordered lines.
+
+---
+diff --git a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
+index fec5c04bad..b7ea372118 100644
+--- a/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
++++ b/Libraries/LibWeb/Rust/src/layout/inline_formatting_context.rs
+@@ -337,8 +337,15 @@ pub(crate) fn apply_to_fragments(text_justify: u8, line: &mut line_box::LineBoxD
+         CssPixels::default()
+     };
+ 
++    // Spread the space from left to right: in visual order, which differs from the logical one where line_bidi
++    // reordered the fragments.
++    let mut visual_order: Vec<usize> = (0..line.fragments.len()).collect();
++    if line.is_visually_reordered {
++        visual_order.sort_by_key(|index| line.fragments[*index].inline_offset);
++    }
+     let mut running_diff = CssPixels::default();
+-    for fragment in &mut line.fragments {
++    for index in visual_order {
++        let fragment = &mut line.fragments[index];
+         if fragment.is_fully_truncated {
+             continue;
+         }
+@@ -1349,6 +1356,7 @@ impl<'context> InlineFormattingContext<'context> {
+                     .collect(),
+                 static_position_markers: Vec::new(),
+                 inline_box_baselines: Vec::new(),
++                is_visually_reordered: false,
+             };
+             fragment_start = fragment_end;
+             let line_item_start = item_index;
+diff --git a/Libraries/LibWeb/Rust/src/layout/line_bidi.rs b/Libraries/LibWeb/Rust/src/layout/line_bidi.rs
+new file mode 100644
+index 0000000000..6a999739a2
+--- /dev/null
++++ b/Libraries/LibWeb/Rust/src/layout/line_bidi.rs
+@@ -0,0 +1,202 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++//! Line-level bidi reordering of a line box's fragments (UAX #9 rule L2).
++//!
++//! The line box merges glyph runs into one fragment only while their resolved direction holds, and a fragment orders
++//! its own runs. Fragments of different elements or fonts are separate units, and the line builder lays them out in
++//! logical order. This pass resolves each fragment's embedding level from its runs' directions and its neighbours
++//! (a simplified W4-W7, N1-N2 and I1-I2 over whole fragments: no explicit embeddings or isolates), reverses the
++//! fragments at each level from the highest down to the lowest odd one, and moves them to their visual offsets.
++//! The fragments keep their logical order in the line box; only their inline offsets change.
++
++use super::*;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Class {
++    L,
++    R,
++    Number,
++    NumberPunctuation(text_chunker::NumberPunctuation),
++    Neutral,
++}
++
++fn classify(fragment: &line_box_fragment::LineBoxFragmentData) -> Class {
++    if fragment.is_atomic_inline || fragment.is_block_ellipsis || fragment.glyphs.is_none() {
++        return Class::Neutral;
++    }
++    let text = fragment.text();
++    if text_chunker::is_number_run(text) {
++        return Class::Number;
++    }
++    if let Some(punctuation) = text_chunker::number_punctuation_run(text) {
++        return Class::NumberPunctuation(punctuation);
++    }
++    match fragment.strong_direction {
++        Some(direction::LTR) => Class::L,
++        Some(direction::RTL) => Class::R,
++        _ => Class::Neutral,
++    }
++}
++
++// The embedding level of each class once resolved, in a paragraph of the given base level (rules I1 and I2).
++fn level(class: Class, base_level: u8) -> u8 {
++    match class {
++        Class::L => base_level + (base_level & 1),
++        Class::R => base_level | 1,
++        Class::Number => (base_level | 1) + 1,
++        Class::NumberPunctuation(_) | Class::Neutral => unreachable!("neutrals are resolved before levels"),
++    }
++}
++
++pub(crate) fn reorder_fragments(line: &mut line_box::LineBoxData) {
++    // A line with an ellipsis was truncated in logical order, and places the ellipsis itself.
++    // FIXME: Truncate reordered lines on their visual end.
++    if line.inline_length_before_block_ellipsis.is_some()
++        || line
++            .fragments
++            .iter()
++            .any(|fragment| fragment.has_text_overflow_ellipsis || fragment.is_fully_truncated)
++    {
++        return;
++    }
++    let base_level = u8::from(line.direction == direction::RTL);
++    let indices: Vec<usize> = (0..line.fragments.len()).collect();
++    if indices.len() < 2 {
++        return;
++    }
++    let mut classes: Vec<Class> = indices
++        .iter()
++        .map(|index| classify(&line.fragments[*index]))
++        .collect();
++    // OPTIMIZATION: Without right-to-left text, a left-to-right line has nothing to reorder (W7 makes its numbers L).
++    if base_level == 0 && !classes.contains(&Class::R) {
++        return;
++    }
++
++    let count = classes.len();
++    // W4, W5: number punctuation joins the numbers next to it.
++    for index in 0..count {
++        let Class::NumberPunctuation(punctuation) = classes[index] else {
++            continue;
++        };
++        let number_before = index > 0 && classes[index - 1] == Class::Number;
++        let number_after = index + 1 < count && classes[index + 1] == Class::Number;
++        let joins = match punctuation {
++            text_chunker::NumberPunctuation::Terminators => number_before || number_after,
++            text_chunker::NumberPunctuation::Separators => number_before && number_after,
++        };
++        classes[index] = if joins { Class::Number } else { Class::Neutral };
++    }
++    // W7: a number after left-to-right text, or at the start of a left-to-right paragraph, is left to right.
++    let embedding_class = if base_level == 0 { Class::L } else { Class::R };
++    let mut last_strong = embedding_class;
++    for class in &mut classes {
++        match *class {
++            Class::L | Class::R => last_strong = *class,
++            Class::Number if last_strong == Class::L => *class = Class::L,
++            _ => {}
++        }
++    }
++    // N1, N2: neutrals between runs of one direction take it (numbers count as right to left), others the paragraph's.
++    let strong = |class: Class| match class {
++        Class::L => Some(Class::L),
++        Class::R | Class::Number => Some(Class::R),
++        Class::NumberPunctuation(_) | Class::Neutral => None,
++    };
++    let mut index = 0;
++    while index < count {
++        if strong(classes[index]).is_some() {
++            index += 1;
++            continue;
++        }
++        let start = index;
++        while index < count && strong(classes[index]).is_none() {
++            index += 1;
++        }
++        let before = if start == 0 {
++            embedding_class
++        } else {
++            strong(classes[start - 1]).unwrap()
++        };
++        let after = if index == count {
++            embedding_class
++        } else {
++            strong(classes[index]).unwrap()
++        };
++        let resolved = if before == after { before } else { embedding_class };
++        classes[start..index].fill(resolved);
++    }
++    let levels: Vec<u8> = classes.iter().map(|class| level(*class, base_level)).collect();
++
++    // The line as tokens: the space before each fragment (inline box edges, text-indent), the fragment, and the space
++    // after the last. A space between two fragments sits at the higher level of its sides, so the edges of an inline
++    // box travel with the box's run; the spaces at the line's ends stay there (they reverse with the line when it is
++    // right to left).
++    struct Token {
++        inline_size: CssPixels,
++        level: u8,
++        fragment: Option<usize>,
++    }
++    let mut tokens = Vec::with_capacity(2 * count + 1);
++    let mut end = CssPixels::default();
++    for (position, fragment_index) in indices.iter().enumerate() {
++        let fragment = &line.fragments[*fragment_index];
++        let level = if position == 0 {
++            base_level
++        } else {
++            levels[position - 1].max(levels[position])
++        };
++        tokens.push(Token {
++            inline_size: fragment.inline_offset - end,
++            level,
++            fragment: None,
++        });
++        tokens.push(Token {
++            inline_size: fragment.inline_length,
++            level: levels[position],
++            fragment: Some(*fragment_index),
++        });
++        end = fragment.inline_offset + fragment.inline_length;
++    }
++    tokens.push(Token {
++        inline_size: line.inline_length - end,
++        level: base_level,
++        fragment: None,
++    });
++
++    // L2: from the highest level down to the lowest odd one, reverse every run at that level or above.
++    let highest_level = tokens.iter().map(|token| token.level).max().unwrap();
++    let lowest_level = tokens.iter().map(|token| token.level).min().unwrap();
++    let lowest_odd_level = lowest_level | 1;
++    for reversal_level in (lowest_odd_level..=highest_level).rev() {
++        let mut index = 0;
++        while index < tokens.len() {
++            if tokens[index].level < reversal_level {
++                index += 1;
++                continue;
++            }
++            let start = index;
++            while index < tokens.len() && tokens[index].level >= reversal_level {
++                index += 1;
++            }
++            tokens[start..index].reverse();
++        }
++    }
++
++    let visual_order = tokens.iter().filter_map(|token| token.fragment);
++    if visual_order.eq(indices.iter().copied()) {
++        return;
++    }
++    let mut inline_offset = CssPixels::default();
++    for token in &tokens {
++        if let Some(fragment_index) = token.fragment {
++            line.fragments[fragment_index].inline_offset = inline_offset;
++        }
++        inline_offset += token.inline_size;
++    }
++    line.is_visually_reordered = true;
++}
+diff --git a/Libraries/LibWeb/Rust/src/layout/line_box.rs b/Libraries/LibWeb/Rust/src/layout/line_box.rs
+index 01ce53c6d5..ef3f89f9cd 100644
+--- a/Libraries/LibWeb/Rust/src/layout/line_box.rs
++++ b/Libraries/LibWeb/Rust/src/layout/line_box.rs
+@@ -45,6 +45,8 @@ pub(crate) struct LineBoxData {
+     pub(crate) static_position_markers: Vec<StaticPositionMarker>,
+     pub(crate) inline_box_baselines: Vec<InlineBoxBaseline>,
+     pub(crate) record: inline_content::LineRecord,
++    // Whether line_bidi placed the fragments in another order than their logical one.
++    pub(crate) is_visually_reordered: bool,
+ }
+ 
+ impl std::ops::Deref for LineBoxData {
+@@ -66,6 +68,7 @@ impl LineBoxData {
+             fragments: Vec::new(),
+             static_position_markers: Vec::new(),
+             inline_box_baselines: Vec::new(),
++            is_visually_reordered: false,
+             record: inline_content::LineRecord {
+                 direction,
+                 writing_mode,
+@@ -122,6 +125,7 @@ impl LineBoxData {
+                             .as_ref()
+                             .is_some_and(|last_glyphs| last_glyphs.font == glyphs.font)
+                         && last.start + last.length_in_code_units == start
++                        && last.continues_direction(glyphs.text_type)
+                 })
+         });
+         if can_merge {
+diff --git a/Libraries/LibWeb/Rust/src/layout/line_box_fragment.rs b/Libraries/LibWeb/Rust/src/layout/line_box_fragment.rs
+index 2a1e1f3908..dbea3fc69a 100644
+--- a/Libraries/LibWeb/Rust/src/layout/line_box_fragment.rs
++++ b/Libraries/LibWeb/Rust/src/layout/line_box_fragment.rs
+@@ -12,6 +12,14 @@ pub(crate) const GLYPH_TEXT_TYPE_END_PADDING: u8 = 2;
+ pub(crate) const GLYPH_TEXT_TYPE_LTR: u8 = 3;
+ pub(crate) const GLYPH_TEXT_TYPE_RTL: u8 = 4;
+ 
++fn strong_direction_of(text_type: u8) -> Option<u8> {
++    match text_type {
++        GLYPH_TEXT_TYPE_LTR => Some(direction::LTR),
++        GLYPH_TEXT_TYPE_RTL => Some(direction::RTL),
++        _ => None,
++    }
++}
++
+ pub(crate) fn is_ascii_space(code_unit: u16) -> bool {
+     matches!(code_unit, 0x09..=0x0d | 0x20)
+ }
+@@ -39,6 +47,9 @@ pub(crate) struct LineBoxFragmentData {
+     pub(crate) glyphs: Option<GlyphData>,
+     pub(crate) insert_position: f32,
+     pub(crate) current_insert_direction: u8,
++    // The direction of the fragment's first strongly directional glyph run, if any. A fragment's runs share one
++    // resolved direction (add_fragment starts a new fragment where it changes); line_bidi reorders the fragments.
++    pub(crate) strong_direction: Option<u8>,
+     pub(crate) has_trailing_whitespace: bool,
+     pub(crate) has_text_overflow_ellipsis: bool,
+     pub(crate) has_soft_wrap_opportunity_after: bool,
+@@ -124,6 +135,7 @@ impl LineBoxFragmentData {
+             glyphs,
+             insert_position: 0.0,
+             current_insert_direction: direction::LTR,
++            strong_direction: None,
+             has_trailing_whitespace: false,
+             has_text_overflow_ellipsis: false,
+             has_soft_wrap_opportunity_after: false,
+@@ -134,6 +146,7 @@ impl LineBoxFragmentData {
+         };
+         if let Some(glyphs) = &fragment.glyphs {
+             fragment.current_insert_direction = fragment.resolve_glyph_run_direction(glyphs.text_type);
++            fragment.strong_direction = strong_direction_of(glyphs.text_type);
+             if fragment.direction == direction::RTL {
+                 fragment.insert_position = fragment.inline_length.to_double() as f32;
+             }
+@@ -169,7 +182,16 @@ impl LineBoxFragmentData {
+         }
+     }
+ 
++    // Whether a glyph run of this text type continues the fragment's resolved direction. The line box merges only
++    // such runs, so that a fragment is one unit of the line's visual reordering (UAX #9 rule L2).
++    pub(crate) fn continues_direction(&self, text_type: u8) -> bool {
++        self.resolve_glyph_run_direction(text_type) == self.current_insert_direction
++    }
++
+     pub(crate) fn append_glyph_run(&mut self, run: GlyphData, run_inline_size: CssPixels) {
++        if self.strong_direction.is_none() {
++            self.strong_direction = strong_direction_of(run.text_type);
++        }
+         match self.direction {
+             direction::LTR => self.append_glyph_run_ltr(run, run_inline_size),
+             direction::RTL => self.append_glyph_run_rtl(run, run_inline_size),
+diff --git a/Libraries/LibWeb/Rust/src/layout/line_builder.rs b/Libraries/LibWeb/Rust/src/layout/line_builder.rs
+index 7f26cd9560..0280119dbe 100644
+--- a/Libraries/LibWeb/Rust/src/layout/line_builder.rs
++++ b/Libraries/LibWeb/Rust/src/layout/line_builder.rs
+@@ -829,6 +829,7 @@ impl<'builder, 'context> LineBuilder<'builder, 'context> {
+                     _ => CssPixels::default(),
+                 }
+         };
++        line_bidi::reorder_fragments(&mut self.line_mut(line_index));
+         let inline_offset = aligned_inline_offset(self.line(line_index).inline_length);
+         let mut block_offset = CssPixels::default();
+         if self.writing_mode != writing_mode::HORIZONTAL_TB {
+diff --git a/Libraries/LibWeb/Rust/src/layout/mod.rs b/Libraries/LibWeb/Rust/src/layout/mod.rs
+index 6ff86f0804..cd1e29ec99 100644
+--- a/Libraries/LibWeb/Rust/src/layout/mod.rs
++++ b/Libraries/LibWeb/Rust/src/layout/mod.rs
+@@ -31,6 +31,7 @@ mod intrinsic_sizing;
+ pub(crate) mod layout_changes;
+ mod layout_node_arena;
+ mod layout_pass;
++pub(crate) mod line_bidi;
+ pub(crate) mod line_box;
+ pub(crate) mod line_box_fragment;
+ pub(crate) mod line_builder;

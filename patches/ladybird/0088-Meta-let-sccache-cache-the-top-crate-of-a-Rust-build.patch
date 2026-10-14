@@ -1,0 +1,12 @@
+diff --git a/Meta/CMake/rust_crate.cmake b/Meta/CMake/rust_crate.cmake
+index 65976f169f..966c4009cd 100644
+--- a/Meta/CMake/rust_crate.cmake
++++ b/Meta/CMake/rust_crate.cmake
+@@ -312,7 +312,6 @@ function(_rust_crate_common_setup)
+         --
+         -Cdefault-linker-libraries=yes
+         -D warnings
+-        --emit=dep-info
+     )
+ 
+     # Populate the variable names used by the public helpers below.

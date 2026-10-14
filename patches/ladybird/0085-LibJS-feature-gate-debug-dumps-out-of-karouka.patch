@@ -1,0 +1,293 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibJS: feature-gate the debug dumps out of karouka
+
+A new cargo feature, debug-dump, covers the native disassembler (iced-x86 / fARM64, now optional),
+ast_dump and the bytecode dumper with its generated per-instruction dump. LibJS/CMakeLists.txt turns
+it on unless KAROUKA_SOURCE_DIR is set. Without it rust_dump_bytecode and rust_parsed_program_ast_dump
+stay as no-op FFI entry points, so RustIntegration.cpp is unchanged and the LibJS dump flags print
+nothing.
+
+---
+diff --git a/Libraries/LibJS/CMakeLists.txt b/Libraries/LibJS/CMakeLists.txt
+index e0525777af..69afd2842a 100644
+--- a/Libraries/LibJS/CMakeLists.txt
++++ b/Libraries/LibJS/CMakeLists.txt
+@@ -301,7 +301,13 @@ endif()
+ 
+ target_link_libraries(LibJS PUBLIC JSClangPlugin)
+ 
+-import_rust_crate(MANIFEST_PATH Rust/Cargo.toml CRATE_NAME libjs_rust FFI_HEADER RustFFI.h)
++# karouka has no use for the LibJS dump flags: its libjs_rust is built without the native disassembler,
++# ast_dump and the bytecode dumper.
++set(libjs_rust_features "")
++if (NOT KAROUKA_SOURCE_DIR)
++    list(APPEND libjs_rust_features debug-dump)
++endif()
++import_rust_crate(MANIFEST_PATH Rust/Cargo.toml CRATE_NAME libjs_rust FFI_HEADER RustFFI.h FEATURES ${libjs_rust_features})
+ target_link_libraries(LibJS PRIVATE libjs_rust)
+ if ((LINUX OR BSD) AND NOT BUILD_SHARED_LIBS)
+     # Rust staticlibs each carry the same allocator shim symbols. LibJS can
+diff --git a/Libraries/LibJS/Rust/Cargo.toml b/Libraries/LibJS/Rust/Cargo.toml
+index 9b173a4df7..5f76cff052 100644
+--- a/Libraries/LibJS/Rust/Cargo.toml
++++ b/Libraries/LibJS/Rust/Cargo.toml
+@@ -18,10 +18,15 @@ indexmap = "2"
+ foldhash = "0.1"
+ 
+ [target.'cfg(target_arch = "x86_64")'.dependencies]
+-iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
++iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"], optional = true }
+ 
+ [target.'cfg(target_arch = "aarch64")'.dependencies]
+-farm64 = { package = "fARM64", version = "0.0.2", features = ["alloc"] }
++farm64 = { package = "fARM64", version = "0.0.2", features = ["alloc"], optional = true }
++
++# Bytecode and AST dumps (the LibJS dump flags): the native disassembler, ast_dump and the bytecode
++# dumper. Without it the dump entry points stay and print nothing.
++[features]
++debug-dump = ["dep:iced-x86", "dep:farm64"]
+ 
+ [build-dependencies]
+ cbindgen = "0.29"
+diff --git a/Libraries/LibJS/Rust/build.rs b/Libraries/LibJS/Rust/build.rs
+index 830a1f5af5..90b6fcd46c 100644
+--- a/Libraries/LibJS/Rust/build.rs
++++ b/Libraries/LibJS/Rust/build.rs
+@@ -390,6 +390,7 @@ fn generate_instruction_dump_from_bytes(
+ ) -> Result<(), Box<dyn std::error::Error>> {
+     let layouts = compute_layouts(ops);
+ 
++    writeln!(w, "#[cfg(feature = \"debug-dump\")]")?;
+     writeln!(w, "#[allow(unused_variables)]")?;
+     writeln!(
+         w,
+diff --git a/Libraries/LibJS/Rust/src/bytecode/dump.rs b/Libraries/LibJS/Rust/src/bytecode/dump.rs
+index 962a7cf7b2..4300c409d8 100644
+--- a/Libraries/LibJS/Rust/src/bytecode/dump.rs
++++ b/Libraries/LibJS/Rust/src/bytecode/dump.rs
+@@ -6,16 +6,23 @@
+ 
+ use std::ffi::c_void;
+ 
++#[cfg(feature = "debug-dump")]
+ use super::instruction::dump_instruction_from_bytes;
+ use super::instruction::instruction_is_terminator_from_opcode;
+ use super::instruction::instruction_length_from_bytes;
++#[cfg(feature = "debug-dump")]
+ use super::instruction::instruction_name_from_opcode;
+ use super::instruction::visit_labels_from_bytes;
++#[cfg(feature = "debug-dump")]
+ use super::native_disassembler::disassemble;
++#[cfg(feature = "debug-dump")]
+ use super::operand::Operand;
++#[cfg(feature = "debug-dump")]
+ use super::validator::read_u32;
+ use crate::abort_on_panic;
++#[cfg(feature = "debug-dump")]
+ use crate::runtime::value::EncodedValue;
++#[cfg(feature = "debug-dump")]
+ use crate::runtime::value::EncodedValueKind;
+ 
+ #[repr(C)]
+@@ -58,12 +65,14 @@ pub struct FFIBytecodeDumpMetadata {
+     pub dump_interpreter: bool,
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ struct ColdCodeRange {
+     start: *const u8,
+     end: *const u8,
+     owners: Vec<&'static str>,
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ pub struct BytecodeDumper<'a> {
+     ctx: *mut c_void,
+     callbacks: &'a FFIBytecodeDumpCallbacks,
+@@ -73,6 +82,7 @@ pub struct BytecodeDumper<'a> {
+     first_piece: bool,
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ unsafe fn native_code_from_range<'a>(start: *const u8, end: *const u8) -> &'a [u8] {
+     let start_address = start as usize;
+     let end_address = end as usize;
+@@ -83,6 +93,7 @@ unsafe fn native_code_from_range<'a>(start: *const u8, end: *const u8) -> &'a [u
+     unsafe { std::slice::from_raw_parts(start, end_address - start_address) }
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ fn append_native_code(dumper: &mut BytecodeDumper<'_>, code: &[u8]) {
+     if code.is_empty() {
+         return;
+@@ -109,6 +120,7 @@ fn append_native_code(dumper: &mut BytecodeDumper<'_>, code: &[u8]) {
+     }
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ fn record_cold_code_range(ranges: &mut Vec<ColdCodeRange>, start: *const u8, end: *const u8, owner: &'static str) {
+     if start == end {
+         return;
+@@ -126,6 +138,7 @@ fn record_cold_code_range(ranges: &mut Vec<ColdCodeRange>, start: *const u8, end
+     });
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ fn append_cold_code_ranges(dumper: &mut BytecodeDumper<'_>, ranges: &[ColdCodeRange]) {
+     if ranges.is_empty() {
+         return;
+@@ -141,6 +154,7 @@ fn append_cold_code_ranges(dumper: &mut BytecodeDumper<'_>, ranges: &[ColdCodeRa
+     }
+ }
+ 
++#[cfg(feature = "debug-dump")]
+ impl<'a> BytecodeDumper<'a> {
+     fn new(
+         ctx: *mut c_void,
+@@ -535,6 +549,7 @@ pub unsafe extern "C" fn rust_count_basic_blocks(
+ /// `metadata.interpreter_handler_ranges` must point to 256 valid entries whose
+ /// pointers delimit readable native code. `ctx` is passed through to callbacks
+ /// and must remain valid for their requirements.
++#[cfg(feature = "debug-dump")]
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn rust_dump_bytecode(
+     bytecode_ptr: *const u8,
+@@ -612,7 +627,24 @@ pub unsafe extern "C" fn rust_dump_bytecode(
+     });
+ }
+ 
+-#[cfg(test)]
++/// Without `debug-dump` there is no bytecode dumper: prints nothing.
++///
++/// # Safety
++/// None of the pointers is dereferenced.
++#[cfg(not(feature = "debug-dump"))]
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn rust_dump_bytecode(
++    _bytecode_ptr: *const u8,
++    _bytecode_len: usize,
++    _exception_handlers: *const FFIDumpExceptionHandler,
++    _exception_handler_count: usize,
++    _metadata: *const FFIBytecodeDumpMetadata,
++    _ctx: *mut c_void,
++    _callbacks: *const FFIBytecodeDumpCallbacks,
++) {
++}
++
++#[cfg(all(test, feature = "debug-dump"))]
+ mod tests {
+     use super::*;
+ 
+diff --git a/Libraries/LibJS/Rust/src/bytecode/mod.rs b/Libraries/LibJS/Rust/src/bytecode/mod.rs
+index d3832d8c74..fed6302e1e 100644
+--- a/Libraries/LibJS/Rust/src/bytecode/mod.rs
++++ b/Libraries/LibJS/Rust/src/bytecode/mod.rs
+@@ -25,6 +25,7 @@ pub mod dump;
+ pub mod ffi;
+ pub mod generator;
+ pub mod instruction;
++#[cfg(feature = "debug-dump")]
+ mod native_disassembler;
+ pub mod operand;
+ pub mod validator;
+diff --git a/Libraries/LibJS/Rust/src/lib.rs b/Libraries/LibJS/Rust/src/lib.rs
+index 0693d2fdbe..487743bc83 100644
+--- a/Libraries/LibJS/Rust/src/lib.rs
++++ b/Libraries/LibJS/Rust/src/lib.rs
+@@ -85,6 +85,7 @@ macro_rules! utf16 {
+ }
+ 
+ pub mod ast;
++#[cfg(feature = "debug-dump")]
+ pub mod ast_dump;
+ pub mod bytecode;
+ mod bytecode_cache;
+@@ -136,6 +137,7 @@ pub struct ParsedProgram {
+     is_strict_mode: bool,
+     has_top_level_await: bool,
+     errors: Vec<ParseError>,
++    #[cfg_attr(not(feature = "debug-dump"), allow(dead_code))]
+     ast_dump: Option<Vec<u8>>,
+ }
+ 
+@@ -197,6 +199,7 @@ unsafe impl Send for CompiledFunction {}
+ /// # Safety
+ /// `output_ptr` and `output_len` must either both be null (no dump requested)
+ /// or both be valid writable pointers.
++#[cfg(feature = "debug-dump")]
+ unsafe fn write_ast_dump_output(
+     program: &ast::Statement,
+     function_table: &ast::FunctionTable,
+@@ -217,6 +220,24 @@ unsafe fn write_ast_dump_output(
+     }
+ }
+ 
++/// Without `debug-dump` no AST dump is produced: the out-parameters are cleared.
++#[cfg(not(feature = "debug-dump"))]
++unsafe fn write_ast_dump_output(
++    _program: &ast::Statement,
++    _function_table: &ast::FunctionTable,
++    _arena: &ast::AstArena,
++    output_ptr: *mut *mut u8,
++    output_len: *mut usize,
++) {
++    unsafe {
++        if output_ptr.is_null() || output_len.is_null() {
++            return;
++        }
++        *output_ptr = std::ptr::null_mut();
++        *output_len = 0;
++    }
++}
++
+ /// Create a UTF-16 slice from a raw pointer, returning None if the pointer is null.
+ ///
+ /// NB: C++ Vector<u16>::data() returns nullptr when the vector is empty (no allocation),
+@@ -598,6 +619,7 @@ unsafe fn compile_program_body(
+ /// # Safety
+ /// - `source` must point to a valid UTF-16 buffer of `source_len` elements.
+ #[unsafe(no_mangle)]
++#[cfg_attr(not(feature = "debug-dump"), allow(unused_variables))]
+ pub unsafe extern "C" fn rust_parse_program(
+     source: *const u16,
+     source_len: usize,
+@@ -643,6 +665,7 @@ pub unsafe extern "C" fn rust_parse_program(
+             }
+ 
+             // Dump AST if requested (after scope analysis).
++            #[cfg(feature = "debug-dump")]
+             if dump_ast && errors.is_empty() {
+                 ast_dump::dump_program(&program, use_color, &parser.function_table, &parser.arena);
+             }
+@@ -1383,6 +1406,7 @@ pub unsafe extern "C" fn rust_free_precompiled_bytecode_executable(precompiled_e
+ /// # Safety
+ /// - `parsed` must be a valid pointer from `rust_parse_program()` with no errors.
+ /// - `output_ptr` and `output_len` must be valid writable pointers.
++#[cfg(feature = "debug-dump")]
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn rust_parsed_program_ast_dump(
+     parsed: *mut ParsedProgram,
+@@ -1399,6 +1423,23 @@ pub unsafe extern "C" fn rust_parsed_program_ast_dump(
+     }
+ }
+ 
++/// Without `debug-dump` there is no AST dump: reports an empty string.
++///
++/// # Safety
++/// `output_ptr` and `output_len` must be valid writable pointers.
++#[cfg(not(feature = "debug-dump"))]
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn rust_parsed_program_ast_dump(
++    _parsed: *mut ParsedProgram,
++    output_ptr: *mut *const u8,
++    output_len: *mut usize,
++) {
++    unsafe {
++        *output_ptr = std::ptr::null();
++        *output_len = 0;
++    }
++}
++
+ /// Compile a previously parsed script. Consumes and frees the ParsedProgram.
+ ///
+ /// Performs codegen and GDI extraction. Requires VM and GC access.

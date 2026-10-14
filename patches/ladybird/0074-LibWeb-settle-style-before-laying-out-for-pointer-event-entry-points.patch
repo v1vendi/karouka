@@ -1,0 +1,58 @@
+diff --git a/Libraries/LibWeb/Layout/UpdateLayout.cpp b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+--- a/Libraries/LibWeb/Layout/UpdateLayout.cpp
++++ b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+@@ -166,6 +166,21 @@
+         update_style_and_layout();
+ }
+ 
++// The event handler's entry points read layout to hit-test, place the caret and compute event coordinates, which
++// style that leaves layout as it was does not move.
++static bool reason_settles_style_before_layout(UpdateLayoutReason reason)
++{
++    switch (reason) {
++    case UpdateLayoutReason::EventHandlerHandleMouseDown:
++    case UpdateLayoutReason::EventHandlerHandleMouseMove:
++    case UpdateLayoutReason::EventHandlerHandleMouseUp:
++    case UpdateLayoutReason::EventHandlerRunActivationBehavior:
++        return true;
++    default:
++        return false;
++    }
++}
++
+ // An update_layout() that would find nothing to do is skipped. What it finds to do is what makes a layout geometry read
+ // unclean, plus what it does after its pass: a scroll container resnap that a commit scheduled, and the first snapshot of
+ // a scroll-state() query container. Throttled animations are sampled first, as update_layout() would for the reason.
+@@ -175,6 +190,8 @@
+     if (!navigable || navigable->active_document().ptr() != this)
+         return false;
+ 
++    bool style_alone_may_be_pending = false;
++
+     {
+         // NB: Whether the update finds style or layout pending is asked behind the style transaction that flew, which
+         //     lands for the read.
+@@ -210,6 +227,23 @@
+             && !m_scroll_state_query_containers.has_containers()
+             && embedding_document_chain_is_clean())
+             return false;
++
++        // AD-HOC: An event handler's entry point that finds only style pending, with the layout it last committed still
++        //         up to date, brings the style up to date first, as a rendering update's let_layout_fly() does. The
++        //         :active, :focus and :hover states an event dispatch sets, and the classes its listeners toggle, mostly
++        //         recolor or match nothing, and then the layout pass that would follow has nothing to lay out.
++        style_alone_may_be_pending = reason_settles_style_before_layout(reason)
++            && layout_is_up_to_date()
++            && !m_needs_scroll_container_resnap
++            && !m_scroll_state_query_containers.has_containers()
++            && embedding_document_chain_is_clean();
++    }
++
++    if (style_alone_may_be_pending) {
++        update_style();
++        Layout::ForcedReadScope read { style_computer().style_engine().render_document() };
++        if (is_clean_for_layout_geometry_read(read) && !m_needs_scroll_container_resnap && !m_scroll_state_query_containers.has_containers())
++            return false;
+     }
+ 
+     update_layout(reason);

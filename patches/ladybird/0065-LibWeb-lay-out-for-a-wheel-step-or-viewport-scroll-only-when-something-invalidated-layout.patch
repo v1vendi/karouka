@@ -1,0 +1,75 @@
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -5295,7 +5295,7 @@
+     if (!element_for_async_scroll_node_stable_id(*document, stable_node_id))
+         return false;
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::ElementScroll);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::ElementScroll);
+     auto* layout_node = layout_node_for_async_scroll_node(read, *document, stable_node_id);
+     if (!layout_node)
+         return false;
+@@ -7291,7 +7291,7 @@
+     if (trigger == ScrollTrigger::Programmatic && destination_snapping == DestinationSnapping::SelectSnapPosition) {
+         abandon_snapping_of_user_scroll_gesture(stable_node_id);
+         Layout::ForcedReadScope read { *document };
+-        document->update_layout(DOM::UpdateLayoutReason::ElementScroll);
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::ElementScroll);
+         if (auto const* snap_container = layout_node_for_async_scroll_node(read, *document, stable_node_id)) {
+             Compositing::SnapSelectionStrategy strategy;
+             if (relative_displacement.has_value() && !relative_displacement->is_zero())
+@@ -7620,8 +7620,9 @@
+         queue_scrollend_event(*doc, *vv, {}, trigger);
+ 
+     // NB: Must update layout before accessing paintables.
++    // AD-HOC: Only when something invalidated layout: a scroll of a laid-out viewport reads its scrolling area as it is.
+     Layout::ForcedReadScope read { *doc };
+-    doc->update_layout(DOM::UpdateLayoutReason::NavigableViewportScroll);
++    doc->update_layout_if_needed(DOM::UpdateLayoutReason::NavigableViewportScroll);
+ 
+     auto minimum_scroll_offset = Painting::minimum_scroll_offset(*doc->layout_node(read)).to_type<double>();
+     auto maximum_scroll_offset = Painting::maximum_scroll_offset(*doc->layout_node(read)).to_type<double>();
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -887,8 +887,11 @@
+             ? Compositing::SnapSelectionStrategy::Type::Direction
+             : Compositing::SnapSelectionStrategy::Type::EndPosition);
+ 
++    // AD-HOC: Only when something invalidated layout, here and below: a wheel step on a document that the last update
++    //         laid out (as every step but the first of a gesture finds it) would otherwise run a layout update that
++    //         finds nothing to do, three times a step with the viewport scroll's.
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;
+@@ -1003,7 +1006,7 @@
+         auto document = m_navigable->active_document();
+         if (!document || !document->is_fully_active())
+             return EventResult::Dropped;
+-        document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
+         if (!has_committed_root_box())
+             return EventResult::Dropped;
+ 
+@@ -1064,7 +1067,7 @@
+                 }
+                 // The nested navigable declined the event, and its listeners may have changed this document.
+                 if (continues_latched_gesture) {
+-                    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
++                    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
+                     wheel_event_target_layout_node = has_committed_root_box() ? validated_wheel_scroll_latch_target_layout_node(read, *document) : nullptr;
+                 } else {
+                     wheel_event_target_layout_node = hit_test_target->layout_node(read);
+@@ -1132,7 +1135,7 @@
+         return EventResult::Dropped;
+ 
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseWheel);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;

@@ -1,0 +1,95 @@
+diff --git a/Libraries/LibWeb/Platform/Timer.cpp b/Libraries/LibWeb/Platform/Timer.cpp
+index ce0779a6e4..013edfde2d 100644
+--- a/Libraries/LibWeb/Platform/Timer.cpp
++++ b/Libraries/LibWeb/Platform/Timer.cpp
+@@ -7,6 +7,7 @@
+ #include <LibCore/Timer.h>
+ #include <LibGC/Function.h>
+ #include <LibGC/Heap.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/Platform/Timer.h>
+ 
+ namespace Web::Platform {
+@@ -62,48 +63,71 @@ GC::Ref<Timer> Timer::create_single_shot(GC::Heap& heap, int interval_ms, GC::Pt
+     return timer;
+ }
+ 
++// NB: With an embedder's host clock (Embedder/HostClock.h), a timer with a nonzero interval runs on the host's time, as
++//     HTML::Timer does: it is scheduled there instead of on its Core::Timer, which then only holds its interval, kind and
++//     callback. On the wall clock, an embedder that steps its clock by a fixed amount per frame saw these timers (an
++//     animated image's frames, the event loop's 50 ms idle period, timeouts) fire after a number of frames that
++//     depended on how fast the frames ran. A zero interval stays on the Core::Timer: it fires at the event
++//     loop's next pump, whatever the clock. The host's interval is the one the timer was started with; set_interval()
++//     on a running timer takes effect when it is next started.
++static bool runs_on_host_clock(int interval_ms)
++{
++    return interval_ms > 0 && Embedder::host_clock_is_installed();
++}
++
+ void Timer::start()
+ {
+-    m_timer->start();
+-    m_activity_root.take(*this);
++    start(m_timer->interval());
+ }
+ 
+ void Timer::start(int interval_ms)
+ {
+-    m_timer->start(interval_ms);
++    if (!is_active()) {
++        if (runs_on_host_clock(interval_ms)) {
++            m_timer->set_interval(interval_ms);
++            Embedder::schedule_on_host_clock(*this, interval_ms, !m_timer->is_single_shot(), [this] {
++                if (m_timer->on_timeout)
++                    m_timer->on_timeout();
++            });
++        } else {
++            m_timer->start(interval_ms);
++        }
++    }
+     m_activity_root.take(*this);
+ }
+ 
+ void Timer::restart()
+ {
+-    m_timer->restart();
+-    m_activity_root.take(*this);
++    restart(m_timer->interval());
+ }
+ 
+ void Timer::restart(int interval_ms)
+ {
+-    m_timer->restart(interval_ms);
+-    m_activity_root.take(*this);
++    stop();
++    start(interval_ms);
+ }
+ 
+ void Timer::stop()
+ {
++    if (Embedder::host_clock_is_installed())
++        Embedder::cancel_on_host_clock(*this);
+     m_timer->stop();
+     m_activity_root.release();
+ }
+ 
+ void Timer::set_active(bool active)
+ {
+-    m_timer->set_active(active);
+     if (active)
+-        m_activity_root.take(*this);
++        start();
+     else
+-        m_activity_root.release();
++        stop();
+ }
+ 
+ bool Timer::is_active() const
+ {
+-    return m_timer->is_active();
++    if (m_timer->is_active())
++        return true;
++    return Embedder::host_clock_is_installed() && Embedder::is_scheduled_on_host_clock(*this);
+ }
+ 
+ int Timer::interval() const

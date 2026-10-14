@@ -1,0 +1,20 @@
+// Kaleidoscopic inversion-fold fractal ("Kali set" style), coloured by orbit traps.
+uniform float2 uSize;
+uniform float uTime;
+
+half4 main(float2 coord) {
+    float2 p = (coord - 0.5 * uSize) / uSize.y * 0.9;
+    float ca = cos(uTime * 0.1), sa = sin(uTime * 0.1);
+    p = float2(ca * p.x - sa * p.y, sa * p.x + ca * p.y);
+    float2 z = p;
+    float2 c = float2(-0.62 + 0.04 * sin(uTime * 0.23), -0.58 + 0.04 * cos(uTime * 0.17));
+    float trapA = 1e3, trapB = 1e3;
+    for (int i = 0; i < 9; i++) {
+        z = abs(z) / dot(z, z) + c;
+        trapA = min(trapA, abs(z.x * z.y));
+        trapB = min(trapB, abs(length(z) - 1.0));
+    }
+    float3 col = float3(0.1, 0.5, 1.0) * exp(-trapA * 8.0) + float3(1.0, 0.45, 0.15) * exp(-trapB * 10.0);
+    col = 1.0 - exp(-col * 1.6);
+    return half4(half3(col), 1);
+}

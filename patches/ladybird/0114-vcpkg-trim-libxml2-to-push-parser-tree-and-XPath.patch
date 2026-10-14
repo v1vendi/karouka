@@ -1,0 +1,273 @@
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/cxx-for-icu.diff b/Meta/CMake/vcpkg/overlay-ports/libxml2/cxx-for-icu.diff
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/cxx-for-icu.diff
+@@ -0,0 +1,13 @@
++diff --git a/CMakeLists.txt b/CMakeLists.txt
++index b952d7bf..6d43569b 100644
++--- a/CMakeLists.txt
+++++ b/CMakeLists.txt
++@@ -8,7 +8,7 @@ if(${VERSION} MATCHES [[([0-9]+)\.([0-9]+)\.([0-9]+)]])
++     set(LIBXML_MICRO_VERSION ${CMAKE_MATCH_3})
++ endif()
++ 
++-project(libxml2 VERSION ${VERSION} LANGUAGES C)
+++project(libxml2 VERSION ${VERSION} LANGUAGES C CXX)
++ 
++ set(CMAKE_C_STANDARD 11)
++ 
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/disable-xml2-config.diff b/Meta/CMake/vcpkg/overlay-ports/libxml2/disable-xml2-config.diff
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/disable-xml2-config.diff
+@@ -0,0 +1,12 @@
++diff --git a/CMakeLists.txt b/CMakeLists.txt
++index 3850f6b..8beb11e 100644
++--- a/CMakeLists.txt
+++++ b/CMakeLists.txt
++@@ -669,7 +669,6 @@ if(1)
++     set(prefix "\$(cd \"\$(dirname \"\$0\")\"; pwd -P)/..")
++ endif()
++ configure_file(xml2-config.in xml2-config @ONLY)
++-install(PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/xml2-config DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT development)
++ 
++ set(XML_INCLUDEDIR "-I${CMAKE_INSTALL_FULL_INCLUDEDIR}/libxml2")
++ set(XML_LIBDIR "-L${CMAKE_INSTALL_FULL_LIBDIR}")
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/fix_cmakelist.patch b/Meta/CMake/vcpkg/overlay-ports/libxml2/fix_cmakelist.patch
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/fix_cmakelist.patch
+@@ -0,0 +1,34 @@
++diff --git a/CMakeLists.txt b/CMakeLists.txt
++index b952d7bf..9196ebe4 100644
++--- a/CMakeLists.txt
+++++ b/CMakeLists.txt
++@@ -425,7 +425,7 @@ set_target_properties(
++     MACHO_CURRENT_VERSION "${LIBXML_MACHO_COMPAT}.${LIBXML_MICRO_VERSION}"
++ )
++ 
++-if(MSVC)
+++if(0)
++     if(BUILD_SHARED_LIBS)
++         set_target_properties(
++             LibXml2
++@@ -634,7 +634,11 @@ list(JOIN XML_PRIVATE_LIBS " " XML_PRIVATE_LIBS)
++ 
++ set(XML_INCLUDEDIR "-I\${includedir}/libxml2")
++ set(XML_LIBDIR "-L\${libdir}")
+++if(NOT MSVC)
++ set(XML_LIBS "-lxml2")
+++else()
+++set(XML_LIBS "-llibxml2")
+++endif()
++ 
++ if(BUILD_SHARED_LIBS)
++     set(XML_PC_PRIVATE ".private")
++@@ -669,7 +673,7 @@ set(includedir "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
++ configure_file(libxml-2.0.pc.in libxml-2.0.pc @ONLY)
++ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libxml-2.0.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig COMPONENT development)
++ 
++-if(WIN32)
+++if(1)
++     set(prefix "\$(cd \"\$(dirname \"\$0\")\"; pwd -P)/..")
++ endif()
++ configure_file(xml2-config.in xml2-config @ONLY)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/fix_ios_compilation.patch b/Meta/CMake/vcpkg/overlay-ports/libxml2/fix_ios_compilation.patch
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/fix_ios_compilation.patch
+@@ -0,0 +1,18 @@
++diff --git a/CMakeLists.txt b/CMakeLists.txt
++index b952d7bf..d555d25a 100644
++--- a/CMakeLists.txt
+++++ b/CMakeLists.txt
++@@ -134,7 +134,12 @@ check_c_source_compiles("
++     f(void) {}
++     int main(void) { return 0; }
++ " HAVE_FUNC_ATTRIBUTE_DESTRUCTOR)
++-check_symbol_exists(getentropy "sys/random.h" HAVE_DECL_GETENTROPY)
+++if (APPLE)
+++    # In old macOS SDKs (ex: 10.15), sys/random.h fails to include header files it needs, so add them here.
+++    check_symbol_exists(getentropy "Availability.h;stddef.h;sys/random.h" HAVE_GETENTROPY)
+++else()
+++    check_symbol_exists(getentropy sys/random.h HAVE_GETENTROPY)
+++endif()
++ check_symbol_exists(glob "glob.h" HAVE_DECL_GLOB)
++ check_symbol_exists(mmap "sys/mman.h" HAVE_DECL_MMAP)
++ check_include_files(stdint.h HAVE_STDINT_H)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/portfile.cmake b/Meta/CMake/vcpkg/overlay-ports/libxml2/portfile.cmake
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/portfile.cmake
+@@ -0,0 +1,78 @@
++vcpkg_from_github(
++    OUT_SOURCE_PATH SOURCE_PATH
++    REPO GNOME/libxml2
++    REF "v${VERSION}"
++    SHA512 f65df793fca5e46552afbaa56b04c4774829a95e012a6dc4dc3d10e6884a6118e30a426e422516e1d21e91c4a1d34cb00a5cee61af35cab03c71fb9b5c09e138
++    HEAD_REF master
++    PATCHES
++        cxx-for-icu.diff
++        disable-xml2-config.diff
++        fix_cmakelist.patch
++        fix_ios_compilation.patch
++)
++
++# karouka: only the push parser, tree building, entities and XPath, which LibXML's Parser and
++# LibWeb's XPath call. Input is UTF-8 from memory, so neither iconv nor zlib is used.
++vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
++    FEATURES
++        "iconv"     LIBXML2_WITH_ICONV
++        "icu"       LIBXML2_WITH_ICU
++        "legacy"    LIBXML2_WITH_LEGACY
++        "tools"     LIBXML2_WITH_PROGRAMS
++        "zlib"      LIBXML2_WITH_ZLIB
++)
++
++vcpkg_find_acquire_program(PKGCONFIG)
++
++vcpkg_cmake_configure(
++    SOURCE_PATH "${SOURCE_PATH}"
++    OPTIONS
++        ${FEATURE_OPTIONS}
++        -DLIBXML2_WITH_TESTS=OFF
++        -DLIBXML2_WITH_HTML=OFF
++        -DLIBXML2_WITH_C14N=OFF
++        -DLIBXML2_WITH_CATALOG=OFF
++        -DLIBXML2_WITH_DEBUG=OFF
++        -DLIBXML2_WITH_ISO8859X=OFF
++        -DLIBXML2_WITH_MODULES=OFF
++        -DLIBXML2_WITH_OUTPUT=OFF
++        -DLIBXML2_WITH_PATTERN=OFF
++        -DLIBXML2_WITH_PUSH=ON
++        -DLIBXML2_WITH_READER=OFF
++        -DLIBXML2_WITH_REGEXPS=OFF
++        -DLIBXML2_WITH_SAX1=OFF
++        -DLIBXML2_WITH_SCHEMAS=OFF
++        -DLIBXML2_WITH_THREADS=ON
++        -DLIBXML2_WITH_THREAD_ALLOC=OFF
++        -DLIBXML2_WITH_VALID=OFF
++        -DLIBXML2_WITH_WRITER=OFF
++        -DLIBXML2_WITH_XINCLUDE=OFF
++        -DLIBXML2_WITH_XPATH=ON
++        -DLIBXML2_WITH_XPTR=OFF
++        "-DPKG_CONFIG_EXECUTABLE=${PKGCONFIG}"
++    OPTIONS_DEBUG
++        -DLIBXML2_WITH_PROGRAMS=OFF
++)
++
++vcpkg_cmake_install()
++vcpkg_copy_pdbs()
++vcpkg_cmake_config_fixup(CONFIG_PATH "lib/cmake/libxml2")
++vcpkg_fixup_pkgconfig()
++
++if("tools" IN_LIST FEATURES)
++    vcpkg_copy_tools(TOOL_NAMES xmllint xmlcatalog AUTO_CLEAN)
++endif()
++
++if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
++    vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/include/libxml2/libxml/xmlexports.h" "!defined(LIBXML_STATIC)" "0 /* LIBXML_STATIC */")
++endif()
++
++file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
++file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
++
++file(COPY
++    "${CMAKE_CURRENT_LIST_DIR}/vcpkg-cmake-wrapper.cmake"
++    "${CMAKE_CURRENT_LIST_DIR}/usage"
++    DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}"
++)
++vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/Copyright")
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/usage b/Meta/CMake/vcpkg/overlay-ports/libxml2/usage
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/usage
+@@ -0,0 +1,4 @@
++The package libxml2 is compatible with built-in CMake targets:
++
++    find_package(LibXml2 REQUIRED)
++    target_link_libraries(main PRIVATE LibXml2::LibXml2)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/vcpkg-cmake-wrapper.cmake b/Meta/CMake/vcpkg/overlay-ports/libxml2/vcpkg-cmake-wrapper.cmake
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/vcpkg-cmake-wrapper.cmake
+@@ -0,0 +1,3 @@
++list(REMOVE_ITEM ARGS "NO_MODULE" "CONFIG" "MODULE")
++_find_package(${ARGS} CONFIG)
++set(LIBXML2_FOUND "${LibXml2_FOUND}") # fphsa compatibility
+diff --git a/Meta/CMake/vcpkg/overlay-ports/libxml2/vcpkg.json b/Meta/CMake/vcpkg/overlay-ports/libxml2/vcpkg.json
+new file mode 100644
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/libxml2/vcpkg.json
+@@ -0,0 +1,56 @@
++{
++  "name": "libxml2",
++  "version": "2.15.3",
++  "description": "Libxml2 is the XML C parser and toolkit developed for the Gnome project (but usable outside of the Gnome platform).",
++  "homepage": "https://gitlab.gnome.org/GNOME/libxml2/-/wikis/home",
++  "license": "MIT",
++  "dependencies": [
++    {
++      "name": "vcpkg-cmake",
++      "host": true
++    },
++    {
++      "name": "vcpkg-cmake-config",
++      "host": true
++    }
++  ],
++  "default-features": [
++    "iconv",
++    "zlib"
++  ],
++  "features": {
++    "iconv": {
++      "description": "Add ICONV support",
++      "dependencies": [
++        "libiconv"
++      ]
++    },
++    "icu": {
++      "description": "Add ICU support",
++      "dependencies": [
++        "icu"
++      ]
++    },
++    "legacy": {
++      "description": "Add deprecated APIs for compatibility",
++      "dependencies": [
++        {
++          "name": "libxml2",
++          "default-features": false,
++          "features": [
++            "zlib"
++          ]
++        }
++      ]
++    },
++    "tools": {
++      "description": "Build tools"
++    },
++    "zlib": {
++      "description": "Use ZLib",
++      "dependencies": [
++        "zlib"
++      ]
++    }
++  }
++}
+diff --git a/vcpkg.json b/vcpkg.json
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -57,7 +57,10 @@
+         "simd"
+       ]
+     },
+-    "libxml2",
++    {
++      "name": "libxml2",
++      "default-features": false
++    },
+     {
+       "name": "mman",
+       "platform": "windows"

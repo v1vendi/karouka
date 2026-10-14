@@ -1,0 +1,22 @@
+// Samples a canvas through a CRT: barrel warp, RGB split, scanlines, vignette and flicker. --res is the canvas's
+// size in pixels; the canvas covers the screen, keeping its aspect ratio, whatever size the box has.
+uniform float2 uSize;
+uniform float uTime;
+uniform shader tex;
+uniform float2 res;
+
+half4 main(float2 coord) {
+    float2 uv = coord / uSize * 2.0 - 1.0;
+    uv *= 1.0 + 0.08 * dot(uv.yx, uv.yx);
+    float2 q = (uv * 0.5 + 0.5) * uSize;
+    if (q.x < 0.0 || q.y < 0.0 || q.x > uSize.x || q.y > uSize.y) return half4(0, 0, 0, 1);
+    float scale = max(uSize.x / res.x, uSize.y / res.y);
+    float2 t = (q - 0.5 * uSize) / scale + 0.5 * res;
+    float split = (1.5 + sin(uTime * 7.0)) / scale;
+    half r = tex.eval(t + float2(split, 0)).r;
+    half g = tex.eval(t).g;
+    half b = tex.eval(t - float2(split, 0)).b;
+    half scan = half(0.75 + 0.25 * sin(q.y * 3.14159));
+    half vig = half(1.0 - 0.35 * dot(uv, uv));
+    return half4(half3(r, g, b) * scan * vig * half(0.95 + 0.05 * sin(uTime * 50.0)), 1.0);
+}

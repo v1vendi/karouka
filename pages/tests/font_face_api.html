@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^url=loaded buffer=loaded check=true$">
+<title>font face api</title>
+<style>
+  body { margin: 16px; background: #f6f8fa; color: #1f2328; font: 13px sans-serif; }
+  p { margin: 0 0 10px; }
+  .url { font-family: UrlFace, monospace; font-size: 15px; }
+  .buffer { font-family: BufferFace, monospace; font-size: 14px; color: #0969da; }
+  .big { font-size: 28px; }
+</style>
+</head>
+<body>
+<!-- Web fonts made through the CSS Font Loading API rather than @font-face. A FontFace from URLs
+     loads through LibWeb's FontLoader, as @font-face does; one from a BufferSource parses its data
+     itself (FontFace.cpp's load_vector_font). Patch 0075 tells the embedder about both typefaces,
+     so with a shader cache karouka warms the glyphs an earlier run drew in them (WebFontGlyphs.cpp;
+     KR_DEBUG logs "web font glyphs: 'KaroukaBoxes' ... made, N glyphs to warm" on a second run).
+     The buffer is a 1.7 KB TrueType font, made for this page: 0-9 and A-F as boxes of distinct
+     sizes. The title says both loaded and document.fonts.check() finds the buffer face. -->
+<p class="url">FontFace from a URL: Noto Sans, loaded with load().</p>
+<p class="url">The quick brown fox jumps over the lazy dog 0123456789</p>
+<p class="buffer">0123456789ABCDEF FEDCBA9876543210</p>
+<p class="buffer">C0FFEE 2B 1D A7 F00D BEEF 42</p>
+<p class="buffer big">ACE 1F</p>
+<script>
+const boxes =
+  "AAEAAAAKAIAAAwAgT1MvMlsfV2QAAACsAAAAYGNtYXACUQL3AAABDAAAAKxnbHlmRWVMAAAAAbgAAALgaGVhZGIRQ44AAASY" +
+  "AAAANmhoZWEF2QI9AAAE0AAAACRobXR4JWwDwAAABPQAAABEbG9jYQAAGMAAAAU4AAAASG1heHAAFAAKAAAFgAAAACBuYW1l" +
+  "EMclQwAABaAAAADocG9zdP+fADIAAAaIAAAAIAAEAfQBkAAFAAACigJYAAAASwKKAlgAAAFeADIA+gAAAAAAAAAAAAAAAAAA" +
+  "AAEAAAAAAAAAAAAAAABLUktBAEAAMABGAyD/OAAAAyAAyAAAAAEAAAAAAfQCvAAAACAAAQAAAAIAAAADAAAAFAADAAEAAAAU" +
+  "AAQAmAAAACIAIAAEAAIAMAAxADIAMwA0ADUANgA3ADgAOQBBAEIAQwBEAEUARv//AAAAMAAxADIAMwA0ADUANgA3ADgAOQBB" +
+  "AEIAQwBEAEUARv///9H/0f/R/9H/0f/R/9H/0f/R/9H/yv/K/8r/yv/K/8oAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+  "AAAAAAAAAAAAAgA8AAABQAF8AAMABwAAAQEBAQEBAQEAPAAAAQQAAP+pAAD/qQAAAAABfAAA/oQAfgB/AAD/gQABADwAAAFZ" +
+  "AZAAAwAAAQEBAQA8AAABHQAAAAABkAAA/nAAAAACADwAAAFyAaQAAwAHAAABAQEBAQEBAQA8AAABNgAA/5gAAP+ZAAAAAAGk" +
+  "AAD+XACMAIwAAP90AAEAPAAAAYsBuAADAAABAQEBADwAAAFPAAAAAAG4AAD+SAAAAAIAPAAAAaQBzAADAAcAAAEBAQEBAQEB" +
+  "ADwAAAFoAAD/iAAA/4gAAAAAAcwAAP40AJkAmQAA/2cAAQA8AAABvQHgAAMAAAEBAQEAPAAAAYEAAAAAAeAAAP4gAAAAAgA8" +
+  "AAAB1gH0AAMABwAAAQEBAQEBAQEAPAAAAZoAAP93AAD/dwAAAAAB9AAA/gwApgCnAAD/WQABADwAAAHvAggAAwAAAQEBAQA8" +
+  "AAABswAAAAACCAAA/fgAAAACADwAAAIIAhwAAwAHAAABAQEBAQEBAQA8AAABzAAA/2YAAP9nAAAAAAIcAAD95AC0ALQAAP9M" +
+  "AAEAPAAAAiECMAADAAABAQEBADwAAAHlAAAAAAIwAAD90AAAAAIAPAAAAjoCRAADAAcAAAEBAQEBAQEBADwAAAH+AAD/VgAA" +
+  "/1YAAAAAAkQAAP28AMEAwQAA/z8AAQA8AAACUwJYAAMAAAEBAQEAPAAAAhcAAAAAAlgAAP2oAAAAAgA8AAACbAJsAAMABwAA" +
+  "AQEBAQEBAQEAPAAAAjAAAP9FAAD/RQAAAAACbAAA/ZQAzgDPAAD/MQABADwAAAKFAoAAAwAAAQEBAQA8AAACSQAAAAACgAAA" +
+  "/YAAAAACADwAAAKeApQAAwAHAAABAQEBAQEBAQA8AAACYgAA/zQAAP81AAAAAAKUAAD9bADcANwAAP8kAAEAPAAAArcCqAAD" +
+  "AAABAQEBADwAAAJ7AAAAAAKoAAD9WAAAAAEAAAABAAAkTCI7Xw889QALA+gAAAAAAAAAAAAAAAAAAAAAADwAAAK3AqgAAAAI" +
+  "AAIAAQAAAAAAAQAAAyD/OAAAAvMAAAAAArcAAQAAAAAAAAAAAAAAAAAAABEB9AAAAXwAPAGVADwBrgA8AccAPAHgADwB+QA8" +
+  "AhIAPAIrADwCRAA8Al0APAJ2ADwCjwA8AqgAPALBADwC2gA8AvMAPAAAAAAAAAAAAAAAOAAAAFwAAACUAAAAuAAAAPAAAAEU" +
+  "AAABTAAAAXAAAAGoAAABzAAAAgQAAAIoAAACYAAAAoQAAAK8AAAC4AABAAAAEQAIAAIAAAAAAAIAAAAAAAAAAAAAAAAAAAAA" +
+  "AAAABQBCAAMAAQQJAAEAGAAAAAMAAQQJAAIADgAYAAMAAQQJAAMAMAAmAAMAAQQJAAQAKABWAAMAAQQJAAYAKAB+AEsAYQBy" +
+  "AG8AdQBrAGEAQgBvAHgAZQBzAFIAZQBnAHUAbABhAHIASwBhAHIAbwB1AGsAYQBCAG8AeABlAHMALQBSAGUAZwB1AGwAYQBy" +
+  "AC0AMQAuADAASwBhAHIAbwB1AGsAYQBCAG8AeABlAHMAIABSAGUAZwB1AGwAYQByAEsAYQByAG8AdQBrAGEAQgBvAHgAZQBz" +
+  "AC0AUgBlAGcAdQBsAGEAcgADAAAAAAAA/5wAMgAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const url = new FontFace("UrlFace", "url(../fonts/NotoSans-Regular.ttf)");
+const buffer = new FontFace("BufferFace", Uint8Array.from(atob(boxes), c => c.charCodeAt(0)));
+document.fonts.add(url);
+document.fonts.add(buffer);
+Promise.all([url.load(), buffer.load()]).then(
+  () => { document.title = `url=${url.status} buffer=${buffer.status} check=${document.fonts.check("14px BufferFace", "ACE")}`; },
+  error => { document.title = `failed: ${error} url=${url.status} buffer=${buffer.status}`; });
+</script>
+</body>
+</html>

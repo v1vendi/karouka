@@ -1,0 +1,620 @@
+diff --git a/Libraries/LibWeb/Rust/src/painting/record/mod.rs b/Libraries/LibWeb/Rust/src/painting/record/mod.rs
+index 9fcd608495..70c161d848 100644
+--- a/Libraries/LibWeb/Rust/src/painting/record/mod.rs
++++ b/Libraries/LibWeb/Rust/src/painting/record/mod.rs
+@@ -496,7 +496,7 @@ impl<O: Observer> PaintRecorder<'_, O> {
+             && crate::painting::paint_order::first_paint_child(self.source, paintable).is_none();
+         let has_backdrop_filter = effects.backdrop_filter.operations.length != 0;
+         let paints_border_image = crate::painting::style_queries::handle_value(&style.border().border_image_source)
+-            .is_some_and(|source| matches!(source, crate::css::style_value::StyleValueData::Image { .. }));
++            .is_some_and(crate::painting::record::paint::border_image::is_border_image_source_painted);
+         let mut facts = BasePaintFacts {
+             is_visible,
+             empty_cells_property_applies,
+diff --git a/Libraries/LibWeb/Rust/src/painting/record/paint/border_image.rs b/Libraries/LibWeb/Rust/src/painting/record/paint/border_image.rs
+index 57decbaa34..0a343def77 100644
+--- a/Libraries/LibWeb/Rust/src/painting/record/paint/border_image.rs
++++ b/Libraries/LibWeb/Rust/src/painting/record/paint/border_image.rs
+@@ -13,13 +13,18 @@ use crate::css::css_pixels::{CssPixelFraction, CssPixels};
+ use crate::css::css_pixels::{CssPixelRect, CssPixelSize};
+ use crate::css::style_value::StyleValueData;
+ use crate::layout::node_data::NodeSlotId;
+-use crate::painting::display_list::commands::ImageFrameResourceId;
++use crate::painting::display_list::builder::PendingInlineClip;
++use crate::painting::display_list::commands::{DisplayListResourceId, ImageFrameResourceId, Repeat};
+ use crate::painting::force_dark::ForceDarkRole;
+ use crate::painting::host::FfiLayerImageList;
++use crate::painting::image_content::ImageContent;
+ use crate::painting::record::PaintRecorder;
+ use crate::painting::record::paint::background::to_gfx_scaling_mode;
++use crate::painting::record::paint::gradient_resolution::{ResolvedGradientPaint, record_resolved_gradient_fill};
++use crate::painting::record::paint::replaced::run_default_sizing_algorithm;
++use crate::painting::record::vector_images::{VectorImageRenderRequest, VectorImageSource, vector_image_render_geometry};
+ use crate::painting::style_queries;
+-use libgfx_rust::{FloatRect, FloatSize, IntRect};
++use libgfx_rust::{CompositingAndBlendingOperator, FloatRect, FloatSize, IntRect, IntSize, ScalingMode};
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum Track {
+@@ -91,31 +96,30 @@ fn rounded_repeated_border_image_tile_size(
+     tile_size
+ }
+ 
+-#[allow(clippy::too_many_arguments)]
+-fn paint_border_image_slice<O: Observer>(
+-    recorder: &mut PaintRecorder<'_, O>,
+-    frame_id: ImageFrameResourceId,
+-    source_rect: FloatRect,
++/// Where the tiles of one slice go: the first tile, the step to the next, and how many fit on each axis
++/// (`None` repeats until the destination is covered).
++struct SliceTiling {
++    first_tile: FloatRect,
++    tile_step: FloatSize,
++    tile_count_x: Option<u32>,
++    tile_count_y: Option<u32>,
++}
++
++fn border_image_slice_tiling(
+     dest_rect: IntRect,
+     device_tile_size: FloatSize,
+-    image_rendering: u8,
+     repeat_x: u8,
+     repeat_y: u8,
+-) {
+-    if source_rect.is_empty() || dest_rect.is_empty() {
+-        return;
++) -> Option<SliceTiling> {
++    if dest_rect.is_empty() {
++        return None;
+     }
+ 
+     let device_tile_size = rounded_repeated_border_image_tile_size(device_tile_size, dest_rect, repeat_x, repeat_y);
+     if device_tile_size.width <= 0.0 || device_tile_size.height <= 0.0 {
+-        return;
++        return None;
+     }
+ 
+-    let source_size = (
+-        source_rect.width.round_ties_even() as i32,
+-        source_rect.height.round_ties_even() as i32,
+-    );
+-
+     let mut start_x = dest_rect.x as f32;
+     let mut start_y = dest_rect.y as f32;
+     let mut tile_step = device_tile_size;
+@@ -141,7 +145,7 @@ fn paint_border_image_slice<O: Observer>(
+             1
+         };
+         if whole_tiles_x <= 0 || whole_tiles_y <= 0 {
+-            return;
++            return None;
+         }
+ 
+         let gap_x = if repeat_x == border_image_repeat::SPACE {
+@@ -185,6 +189,30 @@ fn paint_border_image_slice<O: Observer>(
+         }
+     }
+ 
++    Some(SliceTiling {
++        first_tile: FloatRect::new(start_x, start_y, device_tile_size.width, device_tile_size.height),
++        tile_step,
++        tile_count_x,
++        tile_count_y,
++    })
++}
++
++fn paint_raster_border_image_slice<O: Observer>(
++    recorder: &mut PaintRecorder<'_, O>,
++    frame_id: ImageFrameResourceId,
++    source_rect: FloatRect,
++    dest_rect: IntRect,
++    tiling: &SliceTiling,
++    image_rendering: u8,
++) {
++    let source_size = (
++        source_rect.width.round_ties_even() as i32,
++        source_rect.height.round_ties_even() as i32,
++    );
++    let device_tile_size = FloatSize {
++        width: tiling.first_tile.width,
++        height: tiling.first_tile.height,
++    };
+     let tile_size_for_scaling = (
+         1.max(device_tile_size.width.round_ties_even() as i32),
+         1.max(device_tile_size.height.round_ties_even() as i32),
+@@ -198,18 +226,170 @@ fn paint_border_image_slice<O: Observer>(
+         source_size,
+     );
+     recorder.recorder.draw_tiled_decoded_image_frame(
+-        FloatRect::new(start_x, start_y, device_tile_size.width, device_tile_size.height),
++        tiling.first_tile,
+         dest_rect,
+         source_rect,
+-        tile_step,
++        tiling.tile_step,
+         frame_id,
+         scaling_mode,
+-        tile_count_x,
+-        tile_count_y,
++        tiling.tile_count_x,
++        tiling.tile_count_y,
+         force_dark_role,
+     );
+ }
+ 
++fn intersect_float_rects(a: FloatRect, b: FloatRect) -> FloatRect {
++    let left = a.x.max(b.x);
++    let top = a.y.max(b.y);
++    let right = a.right().min(b.right());
++    let bottom = a.bottom().min(b.bottom());
++    if left >= right || top >= bottom {
++        return FloatRect::default();
++    }
++    FloatRect::new(left, top, right - left, bottom - top)
++}
++
++// A gradient or vector source larger than this on a side is rasterized smaller and scaled up.
++const MAXIMUM_CONTENT_RASTER_DIMENSION: i32 = 4096;
++
++/// A border image source with no frame to sample: it is recorded once at its source size, and every slice
++/// draws that one recording, so content runs continuously across the slices.
++enum ContentSource {
++    Vector {
++        display_list_id: DisplayListResourceId,
++        list_size: IntSize,
++    },
++    Gradient {
++        paint: ResolvedGradientPaint,
++        raster_size: IntSize,
++    },
++}
++
++/// Draws the part `source_rect` (CSS px of a source `source_size` CSS px large) of `content` onto
++/// `target` (device px), clipped to `clip`.
++fn draw_content_source_region(
++    recorder: &mut crate::painting::display_list::recorder::DisplayListRecorder,
++    converter: crate::painting::display_list::device_pixels::DevicePixelConverter,
++    content: &ContentSource,
++    source_size: CssPixelSize,
++    source_rect: FloatRect,
++    target: FloatRect,
++    clip: FloatRect,
++) {
++    if source_rect.is_empty() || target.is_empty() || clip.is_empty() {
++        return;
++    }
++    let scale_x = target.width / source_rect.width;
++    let scale_y = target.height / source_rect.height;
++    let placement = FloatRect::new(
++        target.x - source_rect.x * scale_x,
++        target.y - source_rect.y * scale_y,
++        source_size.width.to_float() * scale_x,
++        source_size.height.to_float() * scale_y,
++    );
++    if placement.is_empty() {
++        return;
++    }
++    recorder.record_with_inline_clips(&[PendingInlineClip::intersecting_float_rect(clip)], |recorder| {
++        match content {
++            ContentSource::Vector {
++                display_list_id,
++                list_size,
++            } => recorder.paint_nested_display_list(*display_list_id, placement, *list_size),
++            ContentSource::Gradient { paint, raster_size } => {
++                let clip_rect = libgfx_rust::enclosing_int_rect(clip);
++                if clip_rect.is_empty() {
++                    return;
++                }
++                // The gradient is rasterized once at its source size; each slice draws a scaled part of that raster.
++                let group = recorder.begin_repeated_tile();
++                record_resolved_gradient_fill(
++                    recorder,
++                    converter,
++                    paint,
++                    FloatRect::new(0.0, 0.0, raster_size.width as f32, raster_size.height as f32),
++                    CompositingAndBlendingOperator::Normal,
++                    ForceDarkRole::Border,
++                );
++                recorder.finish_repeated_tile(
++                    group,
++                    placement,
++                    clip_rect,
++                    *raster_size,
++                    FloatSize {
++                        width: placement.width,
++                        height: placement.height,
++                    },
++                    ScalingMode::Bilinear,
++                    CompositingAndBlendingOperator::Normal,
++                    Repeat { x: false, y: false },
++                );
++            }
++        }
++    });
++}
++
++#[allow(clippy::too_many_arguments)]
++fn paint_content_border_image_slice<O: Observer>(
++    recorder: &mut PaintRecorder<'_, O>,
++    content: &ContentSource,
++    source_size: CssPixelSize,
++    source_rect: FloatRect,
++    dest_rect: IntRect,
++    tiling: &SliceTiling,
++    image_rendering: u8,
++) {
++    let converter = recorder.converter;
++    if tiling.tile_count_x == Some(1) && tiling.tile_count_y == Some(1) {
++        let clip = intersect_float_rects(tiling.first_tile, dest_rect.to_float());
++        draw_content_source_region(
++            &mut recorder.recorder,
++            converter,
++            content,
++            source_size,
++            source_rect,
++            tiling.first_tile,
++            clip,
++        );
++        return;
++    }
++
++    // Record the slice once as a tile and let the player repeat its raster over the destination.
++    let tile_size = IntSize {
++        width: 1.max(tiling.first_tile.width.round_ties_even() as i32),
++        height: 1.max(tiling.first_tile.height.round_ties_even() as i32),
++    };
++    let tile_rect = FloatRect::new(0.0, 0.0, tile_size.width as f32, tile_size.height as f32);
++    let group = recorder.recorder.begin_repeated_tile();
++    draw_content_source_region(
++        &mut recorder.recorder,
++        converter,
++        content,
++        source_size,
++        source_rect,
++        tile_rect,
++        tile_rect,
++    );
++    let scaling_mode = to_gfx_scaling_mode(
++        image_rendering,
++        (tile_size.width, tile_size.height),
++        (tile_size.width, tile_size.height),
++    );
++    recorder.recorder.finish_repeated_tile(
++        group,
++        tiling.first_tile,
++        dest_rect,
++        tile_size,
++        tiling.tile_step,
++        scaling_mode,
++        CompositingAndBlendingOperator::Normal,
++        Repeat {
++            x: tiling.tile_count_x != Some(1),
++            y: tiling.tile_count_y != Some(1),
++        },
++    );
++}
++
+ fn component_items(value: &StyleValueData) -> Vec<&StyleValueData> {
+     if let StyleValueData::ValueList { values, .. } = value {
+         return values.as_slice().iter().map(|item| item.data()).collect();
+@@ -295,17 +475,38 @@ struct ResolvedBorderImageGeometry {
+     widths: [CssPixels; 4],
+ }
+ 
++// https://drafts.csswg.org/css-backgrounds-3/#border-image-area
++fn border_image_area(
++    outset_items: &[&StyleValueData],
++    border_box_rect: CssPixelRect,
++    border_width: [CssPixels; 4],
++) -> CssPixelRect {
++    let resolved_outset = [
++        resolve_outset_px(outset_items[0], border_width[0]),
++        resolve_outset_px(outset_items[1 % outset_items.len()], border_width[1]),
++        resolve_outset_px(outset_items[2 % outset_items.len()], border_width[2]),
++        resolve_outset_px(outset_items[3 % outset_items.len()], border_width[3]),
++    ];
++
++    let mut border_image_rect = border_box_rect;
++    border_image_rect.inflate(
++        resolved_outset[0],
++        resolved_outset[1],
++        resolved_outset[2],
++        resolved_outset[3],
++    );
++    border_image_rect
++}
++
+ fn resolve_border_image_geometry(
+     slice_values: [&StyleValueData; 4],
+     width_items: Vec<&StyleValueData>,
+-    outset_items: Vec<&StyleValueData>,
+-    source_size: (i32, i32),
+-    border_box_rect: CssPixelRect,
++    source_size: CssPixelSize,
++    border_image_rect: CssPixelRect,
+     border_width: [CssPixels; 4],
+ ) -> ResolvedBorderImageGeometry {
+-    let (source_width, source_height) = source_size;
+-    let source_width = CssPixels::from_integer(source_width as i64);
+-    let source_height = CssPixels::from_integer(source_height as i64);
++    let source_width = source_size.width;
++    let source_height = source_size.height;
+ 
+     let [slice_top, slice_right, slice_bottom, slice_left] = slice_values;
+     let mut source_slices = [
+@@ -320,21 +521,6 @@ fn resolve_border_image_geometry(
+         shrink_opposite_sides_to_fit(top, bottom, source_height);
+     }
+ 
+-    let resolved_outset = [
+-        resolve_outset_px(outset_items[0], border_width[0]),
+-        resolve_outset_px(outset_items[1 % outset_items.len()], border_width[1]),
+-        resolve_outset_px(outset_items[2 % outset_items.len()], border_width[2]),
+-        resolve_outset_px(outset_items[3 % outset_items.len()], border_width[3]),
+-    ];
+-
+-    let mut border_image_rect = border_box_rect;
+-    border_image_rect.inflate(
+-        resolved_outset[0],
+-        resolved_outset[1],
+-        resolved_outset[2],
+-        resolved_outset[3],
+-    );
+-
+     // https://drafts.csswg.org/css-backgrounds-3/#border-image-process
+     let mut widths = [
+         resolve_width_px(
+@@ -389,6 +575,26 @@ fn resolve_border_image_geometry(
+     }
+ }
+ 
++fn is_gradient_source(source: &StyleValueData) -> bool {
++    matches!(
++        source,
++        StyleValueData::LinearGradient { .. } | StyleValueData::ConicGradient { .. } | StyleValueData::RadialGradient { .. }
++    )
++}
++
++/// Whether paint_border_image takes this computed border-image-source: an image, whose content may be raster
++/// or vector, or a gradient.
++// FIXME: Paint image-set() sources. NodeWithStyle loads and observes them, but this path doesn't take them yet.
++pub(crate) fn is_border_image_source_painted(source: &StyleValueData) -> bool {
++    matches!(source, StyleValueData::Image { .. }) || is_gradient_source(source)
++}
++
++enum BorderImageSourcePaint {
++    Raster { frame_id: ImageFrameResourceId },
++    PendingVector { has_active_view_box: bool },
++    Content(ContentSource),
++}
++
+ pub(crate) fn paint_border_image<O: Observer>(
+     recorder: &mut PaintRecorder<'_, O>,
+     paintable: NodeSlotId,
+@@ -403,21 +609,11 @@ pub(crate) fn paint_border_image<O: Observer>(
+     let Some(source) = style_queries::handle_value(&border.border_image_source) else {
+         return false;
+     };
+-    // FIXME: Support all abstract image sources here. NodeWithStyle loads and observes gradients and
+-    // image-set(), but this painting path currently only handles raster images.
+-    if !matches!(source, StyleValueData::Image { .. }) {
++    if !is_border_image_source_painted(source) {
+         return false;
+     }
++    let is_gradient = is_gradient_source(source);
+     let image_rendering = style.image_rendering();
+-    let Some(crate::painting::image_content::ImageContent::Raster(Some(frame))) = recorder
+-        .source
+-        .layer_image_paint_facts(paintable, FfiLayerImageList::BorderImageSource, 0)
+-        .map(|facts| facts.content)
+-    else {
+-        return false;
+-    };
+-    let frame_id = recorder.register_image_frame(&frame);
+-    let frame_size = (frame.width(), frame.height());
+ 
+     let Some(StyleValueData::BorderImageSlice {
+         top: slice_top,
+@@ -445,6 +641,66 @@ pub(crate) fn paint_border_image<O: Observer>(
+     let repeat_x = repeat_keyword(repeat_items[0]);
+     let repeat_y = repeat_keyword(repeat_items[1 % repeat_items.len()]);
+ 
++    let border_image_rect = border_image_area(&component_items(outset_value), border_box_rect, css_border_widths);
++    let converter = recorder.converter;
++
++    // A source with no natural size takes the border image area as its size.
++    // https://drafts.csswg.org/css-backgrounds-3/#border-image-source
++    let (mut source_paint, source_size) = if is_gradient {
++        let source_size = border_image_rect.size();
++        let gradient_style = layout_arena
++            .node_style_if_live(paintable)
++            .expect("a painted border's layout node is live");
++        let paint = crate::painting::record::paint::gradient_resolution::resolve_gradient_paint(
++            gradient_style,
++            source,
++            source_size,
++        );
++        let device_size = converter.rounded_device_size(source_size);
++        let raster_size = IntSize {
++            width: device_size.width.clamp(1, MAXIMUM_CONTENT_RASTER_DIMENSION),
++            height: device_size.height.clamp(1, MAXIMUM_CONTENT_RASTER_DIMENSION),
++        };
++        (
++            BorderImageSourcePaint::Content(ContentSource::Gradient { paint, raster_size }),
++            source_size,
++        )
++    } else {
++        let Some(facts) = recorder
++            .source
++            .layer_image_paint_facts(paintable, FfiLayerImageList::BorderImageSource, 0)
++        else {
++            return false;
++        };
++        match facts.content {
++            ImageContent::Raster(Some(frame)) => {
++                let frame_id = recorder.register_image_frame(&frame);
++                (
++                    BorderImageSourcePaint::Raster { frame_id },
++                    CssPixelSize::new(
++                        CssPixels::from_integer(i64::from(frame.width())),
++                        CssPixels::from_integer(i64::from(frame.height())),
++                    ),
++                )
++            }
++            ImageContent::Vector {
++                has_active_view_box, ..
++            } => {
++                // The list is recorded once the slices are known, at the scale of the most magnified one.
++                (
++                    BorderImageSourcePaint::PendingVector { has_active_view_box },
++                    run_default_sizing_algorithm(None, None, &facts.natural, border_image_rect.size()),
++                )
++            }
++            ImageContent::None | ImageContent::Raster(None) => return false,
++        }
++    };
++    let zero = CssPixels::from_raw(0);
++    if source_size.width <= zero || source_size.height <= zero {
++        // An empty source paints nothing, but still replaces the border styles.
++        return true;
++    }
++
+     let geometry = resolve_border_image_geometry(
+         [
+             slice_top.data(),
+@@ -453,9 +709,8 @@ pub(crate) fn paint_border_image<O: Observer>(
+             slice_left.data(),
+         ],
+         component_items(width_value),
+-        component_items(outset_value),
+-        frame_size,
+-        border_box_rect,
++        source_size,
++        border_image_rect,
+         css_border_widths,
+     );
+     let fill = *fill;
+@@ -465,7 +720,7 @@ pub(crate) fn paint_border_image<O: Observer>(
+     let destination_rows = geometry.destination_rows;
+     let source_slices = geometry.source_slices;
+     let widths = geometry.widths;
+-    let scale = recorder.converter.device_pixels_per_css_pixel() as f32;
++    let scale = converter.device_pixels_per_css_pixel() as f32;
+ 
+     // A tile keeps the source region's aspect ratio at the scale forced by the border thickness.
+     let natural_tile_size = |column: Track, row: Track, destination_rect: CssPixelRect| -> CssPixelSize {
+@@ -485,6 +740,7 @@ pub(crate) fn paint_border_image<O: Observer>(
+         CssPixelSize::new(tile_width, tile_height)
+     };
+ 
++    let mut slices = Vec::with_capacity(9);
+     for row in TRACKS {
+         for column in TRACKS {
+             if column == Track::Center && row == Track::Center && !fill {
+@@ -498,13 +754,16 @@ pub(crate) fn paint_border_image<O: Observer>(
+                 source_columns.track_size(column).to_float(),
+                 source_rows.track_size(row).to_float(),
+             );
++            if source_rect.is_empty() {
++                continue;
++            }
+             let destination_rect = CssPixelRect::new(
+                 destination_columns.track_start(column),
+                 destination_rows.track_start(row),
+                 destination_columns.track_size(column),
+                 destination_rows.track_size(row),
+             );
+-            let destination_device_rect = recorder.converter.rounded_device_rect(destination_rect);
++            let destination_device_rect = converter.rounded_device_rect(destination_rect);
+             let tile_size = natural_tile_size(column, row, destination_rect);
+             let tile_device_size = FloatSize {
+                 width: tile_size.width.to_float() * scale,
+@@ -520,16 +779,82 @@ pub(crate) fn paint_border_image<O: Observer>(
+             } else {
+                 border_image_repeat::STRETCH
+             };
+-            paint_border_image_slice(
+-                recorder,
+-                frame_id,
+-                source_rect,
++            let Some(tiling) = border_image_slice_tiling(
+                 destination_device_rect,
+                 tile_device_size,
+-                image_rendering,
+                 horizontal_repeat,
+                 vertical_repeat,
+-            );
++            ) else {
++                continue;
++            };
++            slices.push((source_rect, destination_device_rect, tiling));
++        }
++    }
++
++    if let BorderImageSourcePaint::PendingVector { has_active_view_box } = source_paint {
++        // Record the list at the device scale of the most magnified slice, so no slice is drawn from an upscaled
++        // raster, but never larger than MAXIMUM_CONTENT_RASTER_DIMENSION on a side. When every slice shrinks the
++        // source, the list is smaller than the source's device size.
++        let mut magnification = FloatSize {
++            width: 0.0,
++            height: 0.0,
++        };
++        for (source_rect, _, tiling) in &slices {
++            magnification.width = magnification.width.max(tiling.first_tile.width / source_rect.width);
++            magnification.height = magnification.height.max(tiling.first_tile.height / source_rect.height);
++        }
++        let accumulated_scale =
++            recorder.accumulated_2d_scale_at(recorder.recorder.accumulated_visual_context().spatial);
++        let largest_side = source_size.width.max(source_size.height).to_float();
++        let raster_scale_limit = MAXIMUM_CONTENT_RASTER_DIMENSION as f32 / largest_side;
++        // One scale for both axes: a list of another aspect ratio would letterbox an SVG with a viewBox.
++        let raster_scale = (magnification.width * accumulated_scale.width)
++            .max(magnification.height * accumulated_scale.height)
++            .min(raster_scale_limit);
++        let geometry = vector_image_render_geometry(
++            FloatRect::new(0.0, 0.0, source_size.width.to_float(), source_size.height.to_float()),
++            FloatSize {
++                width: raster_scale,
++                height: raster_scale,
++            },
++            has_active_view_box,
++        );
++        let display_list_id = recorder.resources.vector_image_placeholder(VectorImageRenderRequest::new(
++            VectorImageSource::Layer {
++                owner: paintable,
++                list: FfiLayerImageList::BorderImageSource,
++                computed_index: 0,
++            },
++            geometry.css_width,
++            geometry.css_height,
++            geometry.raster_scale,
++        ));
++        source_paint = BorderImageSourcePaint::Content(ContentSource::Vector {
++            display_list_id,
++            list_size: geometry.list_size,
++        });
++    }
++
++    for (source_rect, destination_device_rect, tiling) in slices {
++        match &source_paint {
++            BorderImageSourcePaint::Raster { frame_id } => paint_raster_border_image_slice(
++                recorder,
++                *frame_id,
++                source_rect,
++                destination_device_rect,
++                &tiling,
++                image_rendering,
++            ),
++            BorderImageSourcePaint::Content(content) => paint_content_border_image_slice(
++                recorder,
++                content,
++                source_size,
++                source_rect,
++                destination_device_rect,
++                &tiling,
++                image_rendering,
++            ),
++            BorderImageSourcePaint::PendingVector { .. } => unreachable!("the vector list was recorded above"),
+         }
+     }
+     true

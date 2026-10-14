@@ -1,0 +1,142 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibThreading+LibWeb: let an embedder wait for off-thread
+ compiles
+
+An external script compiles on a pool thread and comes back to the main
+thread's event loop when that thread is done, on the wall clock. An
+embedder that runs the event loop on its own clock (a frame a pump)
+then runs the script at whichever pump comes after the compile ends,
+which depends on machine load. Add ThreadPool::submit_awaitable() for
+work that only computes and posts back, and wait_for_awaitable_work()
+to wait for it, and submit the script compiles, the bytecode cache
+preparation, the stylesheet parses and the web font preparation that
+way.
+
+---
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index 24c211ef6582d96c7ac2e5138981499822aa28b4..fe71adc201d199d55434c0dc080be4d9a9d1b208 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -117,4 +117,31 @@ void ThreadPool::submit(Function<void()> work)
+     m_condition.signal();
+ }
+ 
++void ThreadPool::submit_awaitable(Function<void()> work)
++{
++    MutexLocker locker(m_mutex);
++    ++m_awaitable;
++    m_work_queue.enqueue([this, work = move(work)]() mutable {
++        work();
++        // What the work captured goes before a waiter returns, as it would with submit().
++        work = {};
++        MutexLocker locker(m_mutex);
++        if (--m_awaitable == 0)
++            m_awaitable_done.broadcast();
++    });
++    start_thread_if_needed();
++    m_condition.signal();
++}
++
++void ThreadPool::wait_for_awaitable_work()
++{
++    auto* pool = s_started_pool.load();
++    if (!pool)
++        return;
++    MutexLocker locker(pool->m_mutex);
++    // A halted pool runs no more of its queue.
++    while (pool->m_awaitable > 0 && !pool->m_halted)
++        pool->m_awaitable_done.wait();
++}
++
+ }
+diff --git a/Libraries/LibThreading/ThreadPool.h b/Libraries/LibThreading/ThreadPool.h
+index fa3203d66054c7fa723aed7ae9aa4606f51e89ea..53dd1ab700a7e305e69a869216d002c8b6b8b69d 100644
+--- a/Libraries/LibThreading/ThreadPool.h
++++ b/Libraries/LibThreading/ThreadPool.h
+@@ -24,6 +24,17 @@ public:
+ 
+     void submit(Function<void()>);
+ 
++    // submit() for work an embedder may wait for (wait_for_awaitable_work()): work that only computes and posts
++    // its result to another thread's event loop, and never waits on another thread itself (a script compile, a
++    // stylesheet parse).
++    void submit_awaitable(Function<void()>);
++
++    // Waits until the work submit_awaitable() queued is done, so what it posted is in its event loop's queue.
++    // For an embedder that runs the main thread's event loop on its own clock: what such work posts back then
++    // arrives at the same pump on every run, not after however much wall time the work took. Returns at once
++    // if the pool never started or was halted. Never from a pool thread.
++    static void wait_for_awaitable_work();
++
+     // Waits until the work submitted before is done, then runs no work submitted after, for the rest of the
+     // process. For an embedder that is done with LibWeb for good, so that no work (an off-thread script compile
+     // posting back to a destroyed event loop) races its teardown or exit()'s static destructors.
+@@ -43,6 +54,8 @@ private:
+     Mutex m_mutex;
+     ConditionVariable m_condition { m_mutex };
+     ConditionVariable m_idle { m_mutex };
++    ConditionVariable m_awaitable_done { m_mutex };
++    size_t m_awaitable { 0 };
+     size_t m_running { 0 };
+     size_t m_idle_threads { 0 };
+     bool m_halted { false };
+diff --git a/Libraries/LibWeb/CSS/FontLoading.cpp b/Libraries/LibWeb/CSS/FontLoading.cpp
+index 103522d5c4c1ecdcd01597d9b1cddde1d9ed6769..6777ced8e07c08435fabe9a7d97f5608af40dc8b 100644
+--- a/Libraries/LibWeb/CSS/FontLoading.cpp
++++ b/Libraries/LibWeb/CSS/FontLoading.cpp
+@@ -85,7 +85,9 @@ void prepare_vector_font_data_off_thread(ByteBuffer data, Function<void(ErrorOr<
+     auto* callback = new Function<void(ErrorOr<Core::AnonymousBuffer>)>(move(on_complete));
+     auto& origin_event_loop = Core::EventLoop::current();
+ 
+-    Threading::ThreadPool::the().submit(
++    // Awaitable: an embedder that runs the event loop on its own clock can have the font load at the same pump on
++    // every run (ThreadPool::wait_for_awaitable_work).
++    Threading::ThreadPool::the().submit_awaitable(
+         [data = move(data), callback, &origin_event_loop]() mutable {
+             auto result = WOFF2::convert_to_ttf(data);
+ 
+diff --git a/Libraries/LibWeb/CSS/Parser/RustSyntaxParsing.cpp b/Libraries/LibWeb/CSS/Parser/RustSyntaxParsing.cpp
+index c3ad1e1d02b9c46a12d1f09fa0d6566f4244abf1..67612dcaddc56ee940b0241991fab69c15fbacc8 100644
+--- a/Libraries/LibWeb/CSS/Parser/RustSyntaxParsing.cpp
++++ b/Libraries/LibWeb/CSS/Parser/RustSyntaxParsing.cpp
+@@ -186,7 +186,9 @@ void Parser::parse_stylesheet_off_thread(ParsingParams const& params, Utf16Strin
+             on_complete(move(result));
+         });
+     auto& main_thread_event_loop = Core::EventLoop::current();
+-    Threading::ThreadPool::the().submit([input, parse_context, callback, &main_thread_event_loop] {
++    // Awaitable: an embedder that runs the event loop on its own clock can have the sheet apply at the same pump on
++    // every run (ThreadPool::wait_for_awaitable_work).
++    Threading::ThreadPool::the().submit_awaitable([input, parse_context, callback, &main_thread_event_loop] {
+         RustStyleSheetParse result { rust_parse_css_stylesheet_syntax(input, parse_context) };
+         main_thread_event_loop.deferred_invoke([result = move(result), callback]() mutable {
+             (*callback)(move(result));
+diff --git a/Libraries/LibWeb/HTML/Scripting/Fetching.cpp b/Libraries/LibWeb/HTML/Scripting/Fetching.cpp
+index 90021d6e9d74ef1dfde601fcb33b26dc86b20415..682a5506b22f99bdd770d086cde358e7b19c50af 100644
+--- a/Libraries/LibWeb/HTML/Scripting/Fetching.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/Fetching.cpp
+@@ -252,7 +252,9 @@ static void prepare_bytecode_cache_off_thread(EnvironmentSettingsObject& setting
+         } };
+     auto& main_thread_event_loop = Core::EventLoop::current();
+ 
+-    Threading::ThreadPool::the().submit([preparation, type, source_length, source_hash, &main_thread_event_loop]() mutable {
++    // Awaitable: an embedder that runs the event loop on its own clock can have the script run at the same pump on
++    // every run (ThreadPool::wait_for_awaitable_work).
++    Threading::ThreadPool::the().submit_awaitable([preparation, type, source_length, source_hash, &main_thread_event_loop]() mutable {
+         auto bytecode_cache = JS::decode_and_validate_bytecode_cache(move(preparation->bytecode), type, source_hash.bytes(), source_length, main_thread_event_loop);
+ 
+         main_thread_event_loop.deferred_invoke([bytecode_cache = move(bytecode_cache), preparation]() mutable {
+@@ -287,9 +289,11 @@ static void compile_off_thread(EnvironmentSettingsObject& settings_object, Nonnu
+ 
+     auto& main_thread_event_loop = Core::EventLoop::current();
+ 
+-    Threading::ThreadPool::the().submit([source_text, type, line_number_offset, retain_parse_for_cache,
+-                                            callback,
+-                                            &main_thread_event_loop]() {
++    // Awaitable: an embedder that runs the event loop on its own clock can have the script run at the same pump on
++    // every run (ThreadPool::wait_for_awaitable_work).
++    Threading::ThreadPool::the().submit_awaitable([source_text, type, line_number_offset, retain_parse_for_cache,
++                                                      callback,
++                                                      &main_thread_event_loop]() {
+         OffThreadCompiledProgram result { .parsed = JS::ParsedProgram::parse(source_text, type, line_number_offset) };
+         if (result.parsed && !result.parsed.has_errors()) {
+             if (retain_parse_for_cache)

@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-animated" content="the caret blinks on the host clock: shown at frame 30, hidden at frame 60">
+<meta name="karouka-check-title" content="^focused$">
+<style>
+  /* The caret blinks on the host clock. A timer focuses the field at 250 ms of host
+     time, which starts the caret's blink cycle there; the caret shows for 500 ms, then hides for
+     500 ms. Frame 30 (500 ms) is 250 ms into the shown half and frame 60 (1000 ms) is 250 ms into
+     the hidden half, so the two captures differ by the caret alone, whatever the frames cost.
+     On the real monotonic clock, the cycle's start and the player's reading would follow
+     headless frames that take microseconds, so the caret would show at both frames on an idle
+     machine and at either under load. Text-free: the field is empty, and its border is the only other ink. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #field {
+    position: absolute;
+    left: 20px;
+    top: 20px;
+    width: 200px;
+    height: 60px;
+    font-size: 48px;
+    border: 2px solid rgb(0, 0, 0);
+    outline: none;
+    padding: 0 8px;
+    color: rgb(0, 0, 0);
+    caret-color: rgb(208, 0, 0);
+    background: rgb(255, 255, 255);
+  }
+</style>
+</head>
+<body>
+<input id="field" type="text">
+<script>
+  const field = document.getElementById("field");
+  setTimeout(() => {
+    field.focus();
+    document.title = document.activeElement === field ? "focused" : "not focused";
+  }, 250);
+</script>
+</body>
+</html>

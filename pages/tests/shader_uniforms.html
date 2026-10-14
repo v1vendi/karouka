@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content='^shader\(url\("file:///[^"]*/tint\.sksl"\), --tint rgb\(255, 128, 0\), --level 1\) \| shader\(url\("file:///[^"]*/tint\.sksl"\), --tint rgb\(0, 128, 255\), --level 50%\) \| shader\(url\("file:///[^"]*/tint\.sksl"\), --tint rgb\(0, 255, 0\), --level 1px\) \| shader\(url\("file:///[^"]*/tint\.sksl"\), --tint rgb\(255, 0, 0\), --level 1\)$'>
+<meta name="karouka-check-pixels" content="50,40=#ff8000~2 150,40=#004080~2 250,40=#00ff00~2 350,40=#222222 450,40=#222222 550,40=#ff0000~2 650,40=#ffff00~2 100,40=#ffffff">
+<title>shader uniforms pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 16px sans-serif; }
+  .box { position: absolute; top: 10px; width: 80px; height: 64px; background-color: #222; }
+  #literal { left: 10px; background-image: shader(url(tint.sksl), --tint #ff8000, --level 1); }
+  #var { left: 110px; --c: #0080ff; --lvl: 50%; background-image: shader(url(tint.sksl), --tint var(--c), --level var(--lvl)); }
+  #length { left: 210px; background-image: shader(url(tint.sksl), --tint rgb(0 255 0), --level 0.0625em); }
+  #mismatch { left: 310px; background-image: shader(url(tint.sksl), --tint 7, --level 1); }
+  #missing { left: 410px; background-image: shader(url(tint.sksl), --tint #ff8000); }
+  #script { left: 510px; --lvl: 0; background-image: shader(url(tint.sksl), --tint #ff0000, --level var(--lvl)); }
+  #extra { left: 610px; background-image: shader(url(tint.sksl), --tint #ffff00, --level 1, --speed 2); }
+</style>
+</head>
+<body>
+<!-- shader() uniform arguments (docs/ENGINE.md, ShaderImage row). tint.sksl paints tint.rgb * level, opaque.
+     Each box is 80x64 on #222: a literal color and number (orange); var() arguments, a color and 50%
+     (half of rgb(0, 128, 255)); an em length, absolutized to 1px (green); a <number> for the half4 tint and a
+     missing --level, which paint nothing and log one line each (the #222 shows); a var() the script changes
+     from 0 to 1 after the first frame (red); an argument no uniform takes, ignored with one line (yellow). -->
+<div class="box" id="literal"></div>
+<div class="box" id="var"></div>
+<div class="box" id="length"></div>
+<div class="box" id="mismatch"></div>
+<div class="box" id="missing"></div>
+<div class="box" id="script"></div>
+<div class="box" id="extra"></div>
+<script>
+  requestAnimationFrame(() => {
+    document.getElementById("script").style.setProperty("--lvl", "1");
+    document.title = ["literal", "var", "length", "script"]
+      .map(id => getComputedStyle(document.getElementById(id)).backgroundImage).join(" | ");
+  });
+</script>
+</body>
+</html>

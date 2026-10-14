@@ -1,0 +1,22 @@
+diff --git a/Libraries/LibWeb/HTML/HTMLImageElement.cpp b/Libraries/LibWeb/HTML/HTMLImageElement.cpp
+index 836f9dae89..130b2e1e6f 100644
+--- a/Libraries/LibWeb/HTML/HTMLImageElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLImageElement.cpp
+@@ -59,12 +59,14 @@
+ namespace Web::HTML {
+ 
+ // We batch handling of successfully fetched images to avoid interleaving 1 image, 1 layout, 1 image, 1 layout, etc.
+-// The processing timer is 1ms instead of 0ms, since layout is driven by a 0ms timer, and if we use 0ms here,
+-// the event loop will process them in insertion order. This is a bit of a hack, but it works.
++// karouka: the processing timer is 0ms, so the batch runs at the next event loop pump. Upstream's 1ms (to order it
++// after a 0ms layout timer, which nothing here drives layout with) is a wall-clock wait: an embedder that steps its
++// clock by a fixed amount per frame and pumps faster than 1ms per frame saw an image appear after a number of frames
++// that depended on how fast the frames ran.
+ struct BatchingDispatcher {
+ public:
+     BatchingDispatcher()
+-        : m_timer(Core::Timer::create_single_shot(1, [this] { process(); }))
++        : m_timer(Core::Timer::create_single_shot(0, [this] { process(); }))
+     {
+     }
+ 

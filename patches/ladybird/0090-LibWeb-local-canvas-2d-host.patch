@@ -1,0 +1,143 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: let an embedder host canvas 2D without a compositor
+
+A canvas 2D context records its drawing into a command stream that a
+RemoteCanvas2DTransport replays; the only transport LibWeb makes comes
+from the page's CompositorHost. On a page without one the context never
+gets backing storage: drawing is dropped, getImageData reads zeros and
+the canvas paints nothing.
+
+Embedder/LocalCanvas lets the embedder set a LocalCanvas2DHost. A
+context on a page without a CompositorHost takes its transport from it,
+and Page::prepare_canvas_contexts_for_compositing flushes each rendering
+update's present markers to it, as it would to the compositor. Unset by
+default; pages with a CompositorHost are unchanged.
+---
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 9675e86213..c02dd59e0c 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -283,6 +283,7 @@ set(SOURCES
+     DOM/DocumentLoading.cpp
+     Embedder/HostClock.cpp
+     Embedder/InPlaceLoad.cpp
++    Embedder/LocalCanvas.cpp
+     Embedder/StageThreads.cpp
+     Embedder/SystemFonts.cpp
+     Embedder/WebFonts.cpp
+diff --git a/Libraries/LibWeb/Embedder/LocalCanvas.cpp b/Libraries/LibWeb/Embedder/LocalCanvas.cpp
+new file mode 100644
+index 0000000000..20909124f0
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/LocalCanvas.cpp
+@@ -0,0 +1,23 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibWeb/Embedder/LocalCanvas.h>
++
++namespace Web::Embedder {
++
++static LocalCanvas2DHost* s_local_canvas_2d_host = nullptr;
++
++void set_local_canvas_2d_host(LocalCanvas2DHost* host)
++{
++    s_local_canvas_2d_host = host;
++}
++
++LocalCanvas2DHost* local_canvas_2d_host()
++{
++    return s_local_canvas_2d_host;
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/LocalCanvas.h b/Libraries/LibWeb/Embedder/LocalCanvas.h
+new file mode 100644
+index 0000000000..68cbbd9d7e
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/LocalCanvas.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/RefPtr.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
++
++namespace Web::Embedder {
++
++// A canvas 2D context records its drawing into a command stream that a RemoteCanvas2DTransport
++// replays elsewhere; the only transport LibWeb makes comes from the page's CompositorHost, so a
++// page without one has no backing storage: drawing is dropped and getImageData reads zeros. An
++// embedder with no compositor sets a LocalCanvas2DHost: contexts on pages without a
++// CompositorHost then take their transport from it, and each rendering update's present markers
++// are flushed to it (flush_canvas_2d_stream) as they would be to the compositor.
++class WEB_API LocalCanvas2DHost {
++public:
++    virtual ~LocalCanvas2DHost() = default;
++
++    virtual RefPtr<HTML::RemoteCanvas2DTransport> create_canvas_2d_transport() = 0;
++    virtual void flush_canvas_2d_stream() = 0;
++};
++
++// Not owned; null (the default) leaves canvases without a CompositorHost unbacked.
++WEB_API void set_local_canvas_2d_host(LocalCanvas2DHost*);
++WEB_API LocalCanvas2DHost* local_canvas_2d_host();
++
++}
+diff --git a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+index 4bec1efa0e..1951923a92 100644
+--- a/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/Canvas2DContextBase.cpp
+@@ -33,6 +33,7 @@
+ #include <LibWeb/CSS/StyleValues/URLStyleValue.h>
+ #include <LibWeb/Compositor/CompositorHost.h>
+ #include <LibWeb/DOM/Event.h>
++#include <LibWeb/Embedder/LocalCanvas.h>
+ #include <LibWeb/HTML/Canvas/Canvas2DContextBase.h>
+ #include <LibWeb/HTML/Canvas/RemoteCanvas2DTransport.h>
+ #include <LibWeb/HTML/DecodedImageData.h>
+@@ -316,9 +317,11 @@ bool Canvas2DContextBase::ensure_remote_canvas_context()
+         return true;
+ 
+     auto& page = canvas_host().canvas_page();
+-    if (!page.has_compositor_host())
+-        return false;
+-    auto transport = page.compositor_host().create_canvas_2d_transport();
++    RefPtr<RemoteCanvas2DTransport> transport;
++    if (page.has_compositor_host())
++        transport = page.compositor_host().create_canvas_2d_transport();
++    else if (auto* local_host = Embedder::local_canvas_2d_host())
++        transport = local_host->create_canvas_2d_transport();
+     if (!transport)
+         return false;
+ 
+diff --git a/Libraries/LibWeb/Page/Page.cpp b/Libraries/LibWeb/Page/Page.cpp
+index 0efae9a3f3..9e40450f23 100644
+--- a/Libraries/LibWeb/Page/Page.cpp
++++ b/Libraries/LibWeb/Page/Page.cpp
+@@ -19,6 +19,7 @@
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Element.h>
+ #include <LibWeb/DOM/Range.h>
++#include <LibWeb/Embedder/LocalCanvas.h>
+ #include <LibWeb/HTML/BrowsingContext.h>
+ #include <LibWeb/HTML/EventLoop/EventLoop.h>
+ #include <LibWeb/HTML/EventNames.h>
+@@ -1469,6 +1470,8 @@ void Page::prepare_canvas_contexts_for_compositing()
+     // even when nothing else repaints this rendering update.
+     if (has_compositor_host())
+         compositor_host().flush_canvas_2d_stream();
++    else if (auto* local_host = Embedder::local_canvas_2d_host())
++        local_host->flush_canvas_2d_stream();
+ 
+     GC::RootVector<GC::Ref<HTML::OffscreenCanvas>> offscreen_canvases { m_offscreen_canvases_pending_placeholder_commit.span() };
+     m_offscreen_canvases_pending_placeholder_commit.clear();

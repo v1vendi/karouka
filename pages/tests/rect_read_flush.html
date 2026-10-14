@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  #target { width: 40px; height: 20px; background: red; }
+  .wide { width: 80px !important; }
+</style>
+</head>
+<body>
+<div id="target"></div>
+<script>
+// rAF runs after parsing and before the ordinary layout stage.
+// Green is reached only when same-turn rect reads return the new geometry.
+requestAnimationFrame(function () {
+  var target = document.getElementById('target');
+  target.className = 'wide';
+  var first = target.getBoundingClientRect();
+  var ok = first.width === 80 && first.height === 20;
+  ok = ok && target.getBoundingClientRect().width === 80;
+  target.style.height = '60px';
+  ok = ok && target.getBoundingClientRect().height === 60;
+  ok = ok && first.height === 20;
+  target.style.display = 'none';
+  ok = ok && target.getBoundingClientRect().width === 0;
+  target.style.display = 'block';
+  ok = ok && target.getBoundingClientRect().width === 80;
+  target.style.backgroundColor = ok ? 'rgb(0, 160, 0)' : 'rgb(255, 0, 0)';
+  console.log(ok ? 'rect read flush PASS' : 'rect read flush FAIL');
+});
+</script>
+</body>
+</html>

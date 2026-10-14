@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>font size churn</title>
+<meta name="karouka-check-animated" content="four labels step through 100 font sizes, four sizes a frame">
+<meta name="karouka-check-title" content="^font size churn ok compared [1-9][0-9]* of [0-9]+$">
+<style>
+  body { margin: 0; background: #202830; color: #e8eef4; font-family: sans-serif; }
+  p { margin: 4px 16px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<!-- Every frame resolves four new font sizes, so the document's font cascade memo passes 64 entries
+     within the first 20 frames and forgets the ones no element holds (patch 0091). A size comes
+     back each lap through the 100, resolved again after its cascade was forgotten: its label must
+     measure as wide as it did the first time. Memory: a fractional size every frame without laps,
+     under `tools/dev.sh run PAGE --headless --frames 2400 --memory-stats` (docs/MEMORY.md). -->
+<p>churn 0</p>
+<p>churn 1</p>
+<p>churn 2</p>
+<p>churn 3</p>
+<script>
+  const labels = Array.from(document.querySelectorAll("p"));
+  const sizes = 100;
+  const widths = new Map();
+  let frame = 0;
+  let compared = 0;
+  let mismatch = null;
+  function step() {
+    labels.forEach((label, index) => {
+      const size = (frame * labels.length + index) % sizes;
+      label.textContent = `churn ${size}`;
+      label.style.fontSize = `${12 + size * 0.5}px`;
+      const width = label.getBoundingClientRect().width;
+      if (!widths.has(size)) {
+        widths.set(size, width);
+      } else {
+        ++compared;
+        if (widths.get(size) !== width && !mismatch)
+          mismatch = `size ${size}: ${widths.get(size)} then ${width}`;
+      }
+    });
+    ++frame;
+    document.title = mismatch ? `font size churn mismatch ${mismatch}` : `font size churn ok compared ${compared} of ${frame * labels.length}`;
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

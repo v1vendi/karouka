@@ -1,0 +1,283 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 2d50a07a73..ca76d6d47c 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -1129,6 +1129,33 @@ set(SOURCES
+     XPath/XPathResult.cpp
+ )
+ 
++# karouka: embedders that render pages into textures can leave out browser-only Web API families.
++# Each Embedder/Prune/<Family>.cmake appends its directory name to LIBWEB_PRUNED_FAMILIES. The
++# family's sources and IDL files are then not built, and the call sites outside the family are
++# guarded by LIBWEB_PRUNE_<FAMILY>. That definition is PUBLIC: some guards change the layout of
++# classes (Navigator, WindowOrWorkerGlobalScopeMixin) whose headers embedders include. The bindings
++# generator drops the members of other interfaces that use a pruned family's definitions
++# (navigator.serial, Window.cookieStore, ...). A family with files outside its directory filters
++# them from SOURCES itself and lists their IDL in LIBWEB_PRUNED_IDL. Services that use a pruned family (WebContent uses WebDriver, for one) do not
++# build with this option on.
++if (KAROUKA_SOURCE_DIR)
++    set(LIBWEB_PRUNE_WEB_APIS_DEFAULT ON)
++else()
++    set(LIBWEB_PRUNE_WEB_APIS_DEFAULT OFF)
++endif()
++option(LIBWEB_PRUNE_WEB_APIS "Leave browser-only Web API families out of LibWeb" ${LIBWEB_PRUNE_WEB_APIS_DEFAULT})
++set(LIBWEB_PRUNED_FAMILIES)
++set(LIBWEB_PRUNED_IDL)
++if (LIBWEB_PRUNE_WEB_APIS)
++    file(GLOB libweb_prune_files CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Embedder/Prune/*.cmake")
++    foreach (libweb_prune_file IN LISTS libweb_prune_files)
++        include("${libweb_prune_file}")
++    endforeach()
++    foreach (libweb_pruned_family IN LISTS LIBWEB_PRUNED_FAMILIES)
++        list(FILTER SOURCES EXCLUDE REGEX "^${libweb_pruned_family}/")
++    endforeach()
++endif()
++
+ 
+ invoke_py_generator(
+     "AriaRoles.cpp"
+@@ -1260,3 +1287,8 @@ if (HAS_FONTCONFIG)
+ endif()
+ 
+ generate_js_bindings(LibWeb)
++
++foreach (libweb_pruned_family IN LISTS LIBWEB_PRUNED_FAMILIES)
++    string(TOUPPER "${libweb_pruned_family}" libweb_pruned_family_upper)
++    target_compile_definitions(LibWeb PUBLIC "LIBWEB_PRUNE_${libweb_pruned_family_upper}")
++endforeach()
+diff --git a/Meta/CMake/libweb_generators.cmake b/Meta/CMake/libweb_generators.cmake
+index c14797f392..c3005e08ac 100644
+--- a/Meta/CMake/libweb_generators.cmake
++++ b/Meta/CMake/libweb_generators.cmake
+@@ -273,6 +273,22 @@ function (generate_js_bindings target)
+     endmacro()
+ 
+     function(libweb_js_bindings class)
++        # karouka: the IDL files of families an embedder build leaves out (LibWeb/CMakeLists.txt) generate
++        # nothing. The generator still reads them, to drop the members of other interfaces that use them.
++        set(idl_pruned FALSE)
++        foreach (pruned_family IN LISTS LIBWEB_PRUNED_FAMILIES)
++            if ("${class}" MATCHES "^${pruned_family}/")
++                set(idl_pruned TRUE)
++            endif()
++        endforeach()
++        if ("${class}" IN_LIST LIBWEB_PRUNED_IDL)
++            set(idl_pruned TRUE)
++        endif()
++        if (idl_pruned)
++            list(APPEND LIBWEB_PRUNED_IDL_FILES "${LIBWEB_INPUT_FOLDER}/${class}.idl")
++            set(LIBWEB_PRUNED_IDL_FILES ${LIBWEB_PRUNED_IDL_FILES} PARENT_SCOPE)
++            return()
++        endif()
+         get_filename_component(basename "${class}" NAME)
+         set(idl_path "${LIBWEB_INPUT_FOLDER}/${class}.idl")
+         if ("${basename}.idl" IN_LIST LIBWEB_ALL_GENERATED_IDL)
+@@ -311,6 +327,7 @@ function (generate_js_bindings target)
+         "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/named_and_indexed_properties.py"
+         "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/namespaces.py"
+         "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/operations.py"
++        "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/pruning.py"
+         "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/overload_resolution.py"
+         "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/realms.py"
+         "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/security_checks.py"
+@@ -361,6 +378,8 @@ function (generate_js_bindings target)
+     target_sources(${target} PRIVATE ${STRUCTURED_SERIALIZE_BINDINGS_SOURCE})
+     list(APPEND LIBWEB_ALL_BINDINGS_SOURCES ${STRUCTURED_SERIALIZE_BINDINGS_SOURCE})
+ 
++    set(LIBWEB_PRUNED_IDL_FILES_ARGUMENT ${LIBWEB_PRUNED_IDL_FILES})
++    list(TRANSFORM LIBWEB_PRUNED_IDL_FILES_ARGUMENT PREPEND "--pruned-idl-file=")
+     set(LIBWEB_ALL_IDL_FILES_ARGUMENT ${LIBWEB_ALL_IDL_FILES})
+     set(LIBWEB_ALL_PARSED_IDL_FILES_ARGUMENT ${LIBWEB_ALL_PARSED_IDL_FILES})
+     set(LIBWEB_BINDINGS_DEPFILE "${CMAKE_CURRENT_BINARY_DIR}/Bindings/LibWebBindings.d")
+@@ -380,11 +399,12 @@ function (generate_js_bindings target)
+         COMMAND "${Python3_EXECUTABLE}" "${bindings_generator}" -o "Bindings"
+                 --common-output-path "${LIBWEB_COMMON_BINDINGS_DIRECTORY}"
+                 --depfile "${LIBWEB_BINDINGS_DEPFILE}"
++                ${LIBWEB_PRUNED_IDL_FILES_ARGUMENT}
+                 ${LIBWEB_ALL_PARSED_IDL_FILES_ARGUMENT}
+         VERBATIM
+         COMMENT "Generating LibWeb bindings"
+         DEPFILE "${LIBWEB_BINDINGS_DEPFILE}"
+-        DEPENDS ${bindings_generator_dependencies} ${LIBWEB_ALL_IDL_FILES} ${LIBWEB_ALL_PARSED_IDL_FILES}
++        DEPENDS ${bindings_generator_dependencies} ${LIBWEB_ALL_IDL_FILES} ${LIBWEB_ALL_PARSED_IDL_FILES} ${LIBWEB_PRUNED_IDL_FILES}
+     )
+ 
+     add_custom_target(generate_bindings DEPENDS ${LIBWEB_ALL_BINDINGS_SOURCES} ${LIBWEB_ALL_COMMON_BINDINGS_HEADERS})
+diff --git a/Meta/Generators/generate_libweb_bindings.py b/Meta/Generators/generate_libweb_bindings.py
+index aa92527dd6..d5633c1f21 100644
+--- a/Meta/Generators/generate_libweb_bindings.py
++++ b/Meta/Generators/generate_libweb_bindings.py
+@@ -26,6 +26,9 @@ from Generators.libweb_bindings.intrinsics import write_exposed_interface_implem
+ from Generators.libweb_bindings.intrinsics import write_intrinsic_definitions_header
+ from Generators.libweb_bindings.intrinsics import write_intrinsic_definitions_implementation
+ from Generators.libweb_bindings.intrinsics import write_wrapper_factory_implementation
++from Generators.libweb_bindings.pruning import close_over_aliases
++from Generators.libweb_bindings.pruning import prune_module
++from Generators.libweb_bindings.pruning import pruned_definition_names
+ from Generators.libweb_bindings.structured_serialize import write_structured_serialize_bindings_implementation
+ from Generators.libweb_bindings.to_idl_value import dictionaries_in_dependency_order
+ from Generators.libweb_bindings.to_idl_value import write_dictionary_conversion
+@@ -62,6 +65,13 @@ def parse_arguments() -> argparse.Namespace:
+         type=Path,
+         help="Path to write dependency file to",
+     )
++    argument_parser.add_argument(
++        "--pruned-idl-file",
++        action="append",
++        default=[],
++        type=Path,
++        help="IDL file of a Web API family left out of this build; members that use its definitions are dropped",
++    )
+     argument_parser.add_argument("paths", nargs="+", type=Path, help="Paths of every IDL file that could be Exposed")
+     return argument_parser.parse_args()
+ 
+@@ -257,6 +267,13 @@ def main() -> int:
+         modules.append(module)
+         dependency_paths.append(path)
+ 
++    pruned_modules: List[Module] = []
++    for path in arguments.pruned_idl_file:
++        pruned_modules.append(parse_module(path, path.read_text(encoding="utf-8")))
++        dependency_paths.append(path)
++    pruned_names = close_over_aliases(pruned_definition_names(pruned_modules), modules)
++    modules = [prune_module(module, pruned_names) for module in modules]
++
+     context = GenerationContext(modules)
+     modules = context.modules
+ 
+diff --git a/Meta/Generators/libweb_bindings/pruning.py b/Meta/Generators/libweb_bindings/pruning.py
+new file mode 100644
+index 0000000000..1b3b2f83b6
+--- /dev/null
++++ b/Meta/Generators/libweb_bindings/pruning.py
+@@ -0,0 +1,130 @@
++# karouka: embedder builds can leave whole Web API families out of LibWeb (LibWeb/CMakeLists.txt,
++# LIBWEB_PRUNE_WEB_APIS). The IDL files of a pruned family are parsed but generate nothing, and the
++# members of the remaining IDL files that name one of the family's definitions are dropped: an
++# attribute, operation or constant whose type mentions it, a dictionary member, an `includes` of one
++# of its mixins. `navigator.serial` then simply does not exist, the same as in a browser without it.
++
++from dataclasses import replace
++from typing import Iterable
++from typing import List
++from typing import Optional
++from typing import Set
++
++from Utils.webidl_parser import Dictionary
++from Utils.webidl_parser import IDLType
++from Utils.webidl_parser import Interface
++from Utils.webidl_parser import Module
++from Utils.webidl_parser import OperationParameter
++
++
++def pruned_definition_names(pruned_modules: Iterable[Module]) -> Set[str]:
++    # Only the definitions a pruned module owns. Its partial interfaces, mixins and dictionaries
++    # extend definitions that stay (Window, Navigator, ...); they just disappear with the module.
++    names: Set[str] = set()
++    for module in pruned_modules:
++        if module.interface is not None:
++            names.add(module.interface.name)
++        names.update(mixin.name for mixin in module.mixins)
++        names.update(dictionary.name for dictionary in module.dictionaries)
++        names.update(enumeration.name for enumeration in module.enumerations)
++        names.update(callback_function.name for callback_function in module.callback_functions)
++        names.update(typedef.name for typedef in module.typedefs)
++    return names
++
++
++def _names_pruned(type_: Optional[IDLType], pruned: Set[str]) -> bool:
++    if type_ is None:
++        return False
++    return any(nested_type.name in pruned for nested_type in type_.nested_types())
++
++
++def _parameters_pruned(parameters: List[OperationParameter], pruned: Set[str]) -> bool:
++    return any(_names_pruned(parameter.type, pruned) for parameter in parameters)
++
++
++def _prune_interface(interface: Interface, pruned: Set[str]) -> Interface:
++    for declaration in (interface.iterable, interface.async_iterable, interface.maplike, interface.setlike):
++        if declaration is not None and any(
++            _names_pruned(getattr(declaration, field, None), pruned) for field in ("key_type", "value_type")
++        ):
++            raise RuntimeError(f"{interface.name} iterates over a pruned type; prune it too")
++    return replace(
++        interface,
++        constants=[constant for constant in interface.constants if not _names_pruned(constant.type, pruned)],
++        regular_attributes=[
++            attribute for attribute in interface.regular_attributes if not _names_pruned(attribute.type, pruned)
++        ],
++        static_attributes=[
++            attribute for attribute in interface.static_attributes if not _names_pruned(attribute.type, pruned)
++        ],
++        regular_operations=[
++            operation
++            for operation in interface.regular_operations
++            if not _names_pruned(operation.return_type, pruned)
++            and not _parameters_pruned(operation.parameters, pruned)
++        ],
++        static_operations=[
++            operation
++            for operation in interface.static_operations
++            if not _names_pruned(operation.return_type, pruned)
++            and not _parameters_pruned(operation.parameters, pruned)
++        ],
++        constructors=[
++            constructor
++            for constructor in interface.constructors
++            if not _parameters_pruned(constructor.parameters, pruned)
++        ],
++    )
++
++
++def _prune_dictionary(dictionary: Dictionary, pruned: Set[str]) -> Dictionary:
++    return replace(
++        dictionary,
++        members=[member for member in dictionary.members if not _names_pruned(member.type, pruned)],
++    )
++
++
++def prune_module(module: Module, pruned: Set[str]) -> Module:
++    if not pruned:
++        return module
++    return replace(
++        module,
++        interface=_prune_interface(module.interface, pruned) if module.interface is not None else None,
++        partial_interfaces=[_prune_interface(interface, pruned) for interface in module.partial_interfaces],
++        mixins=[_prune_interface(mixin, pruned) for mixin in module.mixins],
++        partial_mixins=[_prune_interface(mixin, pruned) for mixin in module.partial_mixins],
++        included_mixins=[
++            included_mixin for included_mixin in module.included_mixins if included_mixin.mixin_name not in pruned
++        ],
++        callback_functions=[
++            callback_function
++            for callback_function in module.callback_functions
++            if not _names_pruned(callback_function.return_type, pruned)
++            and not _parameters_pruned(callback_function.parameters, pruned)
++        ],
++        dictionaries=[_prune_dictionary(dictionary, pruned) for dictionary in module.dictionaries],
++        partial_dictionaries=[_prune_dictionary(dictionary, pruned) for dictionary in module.partial_dictionaries],
++        typedefs=[typedef for typedef in module.typedefs if not _names_pruned(typedef.type, pruned)],
++    )
++
++
++def close_over_aliases(pruned: Set[str], modules: Iterable[Module]) -> Set[str]:
++    # A typedef or callback that names a pruned definition goes too, and so does whatever names it.
++    modules = list(modules)
++    closed = set(pruned)
++    while True:
++        added = False
++        for module in modules:
++            for typedef in module.typedefs:
++                if typedef.name not in closed and _names_pruned(typedef.type, closed):
++                    closed.add(typedef.name)
++                    added = True
++            for callback_function in module.callback_functions:
++                if callback_function.name not in closed and (
++                    _names_pruned(callback_function.return_type, closed)
++                    or _parameters_pruned(callback_function.parameters, closed)
++                ):
++                    closed.add(callback_function.name)
++                    added = True
++        if not added:
++            return closed

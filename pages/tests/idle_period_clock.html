@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-animated" content="the bar grows one idle period every 3 frames">
+<meta name="karouka-check-title" content="^bar=100px$">
+<style>
+  /* An idle callback that asks for the next idle period, counted as a
+     bar 10px wide per period. LibWeb starts the next idle period 50 ms after
+     the last one, on a Platform::Timer. That timer runs on the host clock
+     (patch 0025), so a headless run that steps the clock 16.67 ms per frame
+     gets one idle period every 50 ms of host time however fast the frames
+     run: the bar is 100px at --frames 30, alone and four views to a system.
+     (It would be 90px, one period every 3 frames, if the host clock moved
+     only at frame boundaries; kr_view_advance_time steps it between them.)
+     On the wall clock, 600 headless frames took ~160 ms alone and ~290 ms
+     with four views, so the bar was 10px or 20px depending on the machine.
+     dev.sh check compares views with each other, not with an expected
+     image, so the title carries the bar's width and the karouka-check-title
+     meta pins it at 100px: check fails if the idle period rate changes (the
+     meta assumes check's --frames 30).
+     Text-free, so the capture does not depend on a font. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 40px;
+    background: rgb(0, 96, 192);
+  }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<script>
+  let periods = 0;
+  const bar = document.getElementById("bar");
+  function onIdle() {
+    periods++;
+    bar.style.width = (periods * 10) + "px";
+    document.title = "bar=" + bar.style.width;
+    requestIdleCallback(onIdle);
+  }
+  requestIdleCallback(onIdle);
+</script>
+</body>
+</html>

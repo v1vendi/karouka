@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^bidi reorder ok$">
+<title>bidi reorder</title>
+<style>
+  /* karouka's own. Line-level bidi reordering (UAX #9 rule L2)
+     of runs in different elements and fonts: each row's numbered spans must
+     sit right to left in the order of their numbers (1 rightmost), or left
+     to right where the row says "ltr". The script reads the spans' client
+     rects and puts the rows that fail in the title. Read the capture against
+     bidi_text.html, whose rows are one text node each. */
+  @font-face { font-family: "Arabic"; src: url("../fonts/NotoSansArabic-Regular.ttf"); }
+  @font-face { font-family: "Latin"; src: url("../fonts/NotoSans-Regular.ttf"); }
+  body { margin: 8px; font: 22px "Arabic", sans-serif; background: white; color: black; }
+  p { margin: 0; height: 34px; white-space: nowrap; }
+  .l { font-family: "Latin"; }
+  .r { color: #c00; }
+  .box { background: #fd8; padding: 0 4px; }
+</style>
+</head>
+<body>
+<!-- Two Arabic words in two elements, in a left-to-right paragraph. -->
+<p data-order="rtl"><span>&#1605;&#1585;&#1581;&#1576;&#1575;</span> <span class="r">&#1576;&#1603;&#1605;</span></p>
+<!-- A span inside an Arabic word. -->
+<p data-order="rtl"><span>&#1605;&#1585;</span><span class="r">&#1581;&#1576;</span><span>&#1575;</span> &#1576;&#1603;&#1605;</p>
+<!-- A number in another font between Arabic words: the number is one unit, its digits left to right. -->
+<p data-order="rtl"><span>&#1605;&#1585;&#1581;&#1576;&#1575;</span> <span class="l r">50%</span> <span>&#1576;&#1603;&#1605;</span></p>
+<p data-order="ltr-inside"><span>&#1605;&#1585;&#1581;&#1576;&#1575;</span> <span class="l r">12</span><span>.</span><span class="l r">50</span> <span>&#1576;&#1603;&#1605;</span></p>
+<!-- A right-to-left block: Arabic words in elements, a trailing number in another font, Latin in elements. -->
+<p dir="rtl" data-order="rtl"><span>&#1605;&#1585;&#1581;&#1576;&#1575;</span> <span class="r">&#1576;&#1603;&#1605;</span></p>
+<p dir="rtl" data-order="rtl"><span>&#1605;&#1585;&#1581;&#1576;&#1575; &#1576;&#1603;&#1605;</span> <span class="l r">2026</span></p>
+<p dir="rtl" data-order="ltr"><span class="l">abc</span> <span class="l r">def</span></p>
+<!-- Latin with an Arabic phrase in two elements inside it. -->
+<p data-order="mixed"><span class="l">one</span> <span class="box">&#1605;&#1585;&#1581;&#1576;&#1575;</span> <span class="r">&#1576;&#1603;&#1605;</span> <span class="l">two</span></p>
+<script>
+  // Each row's spans, by the side they must sit on.
+  const rows = [...document.querySelectorAll("p")];
+  const failures = [];
+  rows.forEach((row, index) => {
+    const spans = [...row.querySelectorAll("span")].map(span => span.getBoundingClientRect());
+    const order = row.dataset.order;
+    let expected;
+    if (order === "rtl") expected = spans.map((_, i) => i).reverse();
+    else if (order === "ltr") expected = spans.map((_, i) => i);
+    else if (order === "ltr-inside") expected = [4, 1, 2, 3, 0];
+    else expected = [0, 2, 1, 3];
+    for (let i = 1; i < expected.length; ++i) {
+      const left = spans[expected[i - 1]], right = spans[expected[i]];
+      if (!(left.right <= right.left + 0.5)) { failures.push(index + 1); break; }
+    }
+  });
+  document.title = failures.length ? "bidi reorder wrong rows " + failures.join(",") : "bidi reorder ok";
+</script>
+</body>
+</html>

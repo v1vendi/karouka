@@ -1,0 +1,8 @@
+// The shader_uniforms.html test page's shader: the tint uniform (a CSS <color>, unpremultiplied) scaled by
+// level (a <number>, <percentage> or <length>), opaque.
+uniform half4 tint;
+uniform float level;
+
+half4 main(float2 coord) {
+    return half4(tint.rgb * half(level), 1.0);
+}

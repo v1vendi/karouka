@@ -1,0 +1,42 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibGfx: cap a typeface's cached fonts at 32, evicting unused ones first
+
+Gfx::Typeface kept up to 129 fonts, one per size, variation and feature
+set, each with its HarfBuzz font and, on a variable font with an optical
+size axis, a typeface clone. A font-size transition asks for a new size
+every frame, so the cache stayed full of sizes nothing used, and the
+eviction picked whichever entry came first in the hash table, in use or
+not. karouka's pages use at most ~20 sizes of one typeface. Cap the cache
+at 32 and evict a font only the cache holds before one still in use.
+
+diff --git a/Libraries/LibGfx/Font/Typeface.cpp b/Libraries/LibGfx/Font/Typeface.cpp
+index cf48a7290c..80d660af5b 100644
+--- a/Libraries/LibGfx/Font/Typeface.cpp
++++ b/Libraries/LibGfx/Font/Typeface.cpp
+@@ -98,9 +98,23 @@ NonnullRefPtr<Font> Typeface::font(float point_size, FontVariationSettings const
+ 
+     // FIXME: It might be nice to have a global cap on the number of fonts we cache
+     //        instead of doing it at the per-Typeface level like this.
+-    constexpr size_t max_cached_font_size_count = 128;
+-    if (m_fonts.size() > max_cached_font_size_count)
+-        m_fonts.remove(m_fonts.begin());
++    // A font whose size changes by a fraction every frame (a font-size transition) asks for a new
++    // size each frame, and each size keeps its own HarfBuzz font and, on a variable font, a
++    // typeface clone for its optical size. The pages karouka renders use at most ~20 sizes of one
++    // typeface, so 32 bounds that churn without evicting a page's working set. Evict a font only
++    // this cache holds first: evicting one still in use frees nothing and would make a second
++    // copy of it on its next lookup.
++    constexpr size_t max_cached_font_count = 32;
++    if (m_fonts.size() >= max_cached_font_count) {
++        auto victim = m_fonts.begin();
++        for (auto it = m_fonts.begin(); it != m_fonts.end(); ++it) {
++            if (it->value->ref_count() == 1) {
++                victim = it;
++                break;
++            }
++        }
++        m_fonts.remove(victim);
++    }
+ 
+     RefPtr<Typeface const> used_typeface = const_cast<Typeface*>(this);
+     if (!variations.is_empty()) {

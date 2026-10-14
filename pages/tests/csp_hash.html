@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'sha256-jZe/q6Y8HlpaljPGiPcGkE2SDLwK2KSw06lMoHNmq0I=' 'sha256-k412wp05J2mHUVxQaMiUW2aI1stVWy6uD1AiwSyQ4Qs='">
+<meta name="karouka-check-title" content="^csp ok$">
+<title>csp pending</title>
+<!-- A CSP hash source, its SHA-256 from CommonCrypto (crypto_random.html): only the
+     scripts whose digest the policy lists run. The second script is not listed, so it must not
+     run; the third reports. -->
+</head>
+<body>
+<script>window.cspAllowed = 1;</script>
+<script>window.cspBlocked = 1;</script>
+<script>document.title = window.cspAllowed === 1 && window.cspBlocked === undefined ? 'csp ok' : 'csp FAILED';</script>
+</body>
+</html>

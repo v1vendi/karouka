@@ -1,0 +1,29 @@
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+index f6b102bb9a..bb87c29f4f 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+@@ -355,9 +355,10 @@ fn clip_data_is_equal(a: &ClipNodeData, b: &ClipNodeData) -> bool {
+     }
+ }
+ 
++// Background-color animation nodes hold no value of their own; effect_chain_verdict compares the
++// colors their trees were sampled at.
+ fn effect_data_is_equal(a: &EffectNodeData, b: &EffectNodeData) -> bool {
+     match (a, b) {
+-        (EffectNodeData::BackgroundColorAnimation, EffectNodeData::BackgroundColorAnimation) => true,
+         (EffectNodeData::Effects(data), EffectNodeData::Effects(other)) => {
+             data.opacity == other.opacity
+                 && data.blend_mode == other.blend_mode
+@@ -650,6 +651,12 @@ impl<'a> TreeChainComparison<'a> {
+                         (EffectNodeData::Mask(old_mask), EffectNodeData::Mask(new_mask)) => {
+                             old_mask == new_mask && self.mask_contents_are_equal((old, new))
+                         }
++                        // The fills that name the node paint the color sampled into its tree, so a
++                        // compositor background-color animation that moved changes them.
++                        (EffectNodeData::BackgroundColorAnimation, EffectNodeData::BackgroundColorAnimation) => {
++                            old_tree.sampled_background_color(EffectNodeIndex(old))
++                                == new_tree.sampled_background_color(EffectNodeIndex(new))
++                        }
+                         _ => effect_data_is_equal(&old_node.data, &new_node.data),
+                     };
+                     same_data

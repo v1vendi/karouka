@@ -1,0 +1,773 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* A recreation of the layout of the sashimi UI landing page
+     (sidebar nav + hero + four-card showcase + theme swatches + feature grid + Q&A).
+     Styles and copy are written from scratch for this demo; controls are plain
+     elements driven by script so the page leans only on docs/21-css-subset.md. */
+  @font-face { font-family: "Inter"; font-weight: 400; src: url("fonts/Inter-Regular.ttf"); }
+  @font-face { font-family: "InterSemi"; src: url("fonts/Inter-SemiBold.ttf"); }
+  @font-face { font-family: "InterBold"; src: url("fonts/Inter-Bold.ttf"); }
+  * { margin: 0; box-sizing: border-box; }
+  :root {
+    --ink: #31363a; --ink-2: #899196; --line: #c1c8ce; --line-2: #e3e7e9;
+    --hl: #f6f6f8; --surface: #ffffff;
+    --key: #1261ec; --on-key: #ffffff; --key-3: #d4e2fc;
+    --ok-bg: #e0f5e9; --radius: 8px;
+  }
+  .salmon { --key: #d44f4f; --key-3: #f8dcdc; }
+  .cyber  { --key: #6f9400; --key-3: #e7f3c4; }
+  .kawaii { --key: #e0708a; --key-3: #ffe3ea; }
+  .amber  { --key: #b3862a; --key-3: #f5ead0; }
+
+  body { font-family: "Inter"; font-size: 15px; line-height: 1.6; color: var(--ink);
+         background: var(--surface); }
+
+  /* sidebar */
+  .nav { position: fixed; left: 0; top: 0; width: 200px; background: var(--surface); padding: 20px 12px; border-right: 1px solid var(--line-2);
+         height: 100vh; overflow: auto; }
+  .brand { font-size: 22px; font-weight: 700; padding: 0 12px 16px; letter-spacing: -0.02em; }
+  .group { padding-bottom: 16px; margin-bottom: 16px; }
+  .group.sep { border-bottom: 1px solid var(--line-2); }
+  .group-h { color: var(--ink-2); font-size: 12px; font-weight: 700; padding: 0 12px 6px; }
+  .item { display: block; padding: 4px 12px; border-radius: var(--radius); font-size: 14px; cursor: pointer; }
+  .item:hover { background: var(--hl); }
+  .item.active { background: var(--key-3); color: var(--key); }
+
+  /* main column */
+  .main { margin-left: 200px; padding: 24px 48px 80px; }
+  .logo { font-size: 56px; font-weight: 700; letter-spacing: -0.03em; margin: 16px 0 32px; }
+  .logo span { color: var(--key); }
+  h2 { font-size: 28px; font-weight: 700; line-height: 1.2; margin: 48px 0 20px; }
+  h3 { font-size: 20px; font-weight: 700; line-height: 1.2; }
+  p { margin: 12px 0; }
+  .muted { color: var(--ink-2); }
+
+  /* showcase */
+  .showcase { margin-top: 32px; padding: 24px; background: var(--hl); border-radius: 16px; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+          padding: 20px; display: flex; flex-direction: column; gap: 16px; min-height: 420px; }
+  .card.split { flex-direction: row; padding: 0; gap: 0; }
+  .side { width: 140px; padding: 16px 10px; border-right: 1px solid var(--line); }
+  .shop { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; padding: 0 6px 20px; }
+  .seal { width: 30px; height: 30px; border-radius: var(--radius); background: var(--key); color: var(--on-key);
+          display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .body { flex-grow: 1; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .row.mid { align-items: center; }
+  .price { color: var(--key); font-size: 20px; font-weight: 700; }
+  .chip { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12px;
+          background: var(--hl); border: 1px solid var(--line-2); margin-bottom: 6px; }
+  .chip.on { background: var(--key-3); color: var(--key); border-color: var(--key-3); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .callout { background: var(--key-3); border-radius: var(--radius); padding: 14px 16px; font-size: 14px; }
+  .callout.ok { background: var(--ok-bg); }
+  .grow { margin-top: auto; }
+  .btn { display: inline-block; background: var(--key); color: var(--on-key); border-radius: var(--radius);
+         padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  .btn:hover { opacity: 0.9; }
+  .btn.ghost { background: transparent; color: var(--key); border: 1px solid var(--key-3); }
+  .link { color: var(--key); font-size: 14px; cursor: pointer; }
+
+  .opt { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px 12px 44px;
+         position: relative; cursor: pointer; margin-bottom: 8px; }
+  .opt:hover { background: var(--hl); }
+  .opt.on { background: var(--key-3); border-color: var(--key); }
+  .dot { position: absolute; left: 14px; top: 15px; width: 18px; height: 18px; border-radius: 50%;
+         border: 2px solid var(--line); background: var(--surface); }
+  .opt.on .dot { border: 5px solid var(--key); }
+  .small { font-size: 12px; color: var(--ink-2); }
+  .legend { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+  .check { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+  .box { width: 18px; height: 18px; border-radius: 5px; border: 2px solid var(--line); }
+  .check.on .box { background: var(--key); border-color: var(--key); }
+  .switch { width: 36px; height: 20px; border-radius: 10px; background: var(--line); position: relative;
+            transition: background-color 0.15s; }
+  .knob { position: absolute; left: 2px; top: 2px; width: 16px; height: 16px; border-radius: 50%;
+          background: #fff; transition: left 0.15s; }
+  .switch.on { background: var(--key); }
+  .switch.on .knob { left: 18px; }
+  .foot { border-top: 1px solid var(--line); padding-top: 14px; display: flex;
+          justify-content: space-between; align-items: flex-end; }
+  .total { font-size: 22px; font-weight: 700; }
+
+  .bar { height: 8px; border-radius: 4px; background: var(--line-2); }
+  .fill { height: 8px; border-radius: 4px; background: var(--key); width: 70%; }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 14px; }
+  .kv .k { color: var(--ink-2); }
+  .kv .v { text-align: right; }
+  .disc { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 10px 14px; font-size: 14px; cursor: pointer; }
+  .disc .ans { display: none; color: var(--ink-2); margin: 6px 0 0; }
+  .disc.open .ans { display: block; }
+
+  .table { width: 100%; font-size: 14px; }
+  .tr { display: flex; padding: 6px 0; border-bottom: 1px solid var(--line-2); }
+  .tr.h { color: var(--ink-2); font-weight: 700; }
+  .c1 { flex-grow: 1; } .c2 { width: 40px; } .c3 { width: 70px; text-align: right; }
+
+  .swatches { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
+  .sw { width: 26px; height: 26px; border-radius: 50%; cursor: pointer; border: 3px solid var(--surface); }
+  .sw.on { box-shadow: 0 0 0 2px var(--ink); }
+
+  .scrim { display: none; position: fixed; z-index: 10; left: 0; top: 0; right: 0; bottom: 0;
+           background: rgba(57, 69, 79, 0.65); align-items: center; justify-content: center; }
+  .scrim.open { display: flex; }
+  .dialog { background: var(--surface); border-radius: 12px; padding: 24px; width: 340px; }
+
+  .features { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .feat { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 20px; }
+  .feat .ico { width: 36px; height: 36px; border-radius: var(--radius); background: var(--key-3);
+               color: var(--key); display: flex; align-items: center; justify-content: center;
+               font-weight: 700; margin-bottom: 12px; }
+  .qa h3 { margin-top: 28px; }
+
+  /* ---- expanded demo: top bar, dark mode, component gallery, booking, pricing ---- */
+  .dark { --ink: #e6e9eb; --ink-2: #9aa3a9; --line: #4a5258; --line-2: #353b40;
+          --hl: #262b2f; --surface: #1b1f22; --ok-bg: #1f3a2b; }
+  .topbar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 16px;
+            padding: 12px 0; background: var(--surface); border-bottom: 1px solid var(--line-2); }
+  .search { flex-grow: 1; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 12px;
+            font-family: "Inter"; font-size: 14px; color: var(--ink); background: var(--hl); }
+  .ver { font-size: 12px; color: var(--ink-2); }
+  .toggle-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 16px; margin-top: 24px; }
+  .stat { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 16px; }
+  .stat .n { font-family: "InterBold"; font-size: 28px; line-height: 1.2; }
+  .stat .d { font-size: 12px; color: #2f9e5b; }
+  .stat .d.down { color: #d44f4f; }
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 32px; margin-top: 8px; }
+  .spark div { flex-grow: 1; background: var(--key-3); border-radius: 2px; }
+  .spark div:last-child { background: var(--key); }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line-2); margin-bottom: 20px; }
+  .tab { padding: 8px 14px; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--ink-2); }
+  .tab:hover { color: var(--ink); }
+  .tab.on { color: var(--key); border-bottom-color: var(--key); font-family: "InterSemi"; }
+  .panel { display: none; }
+  .panel.on { display: block; }
+  .gallery { border: 1px solid var(--line-2); border-radius: 16px; padding: 24px; }
+  .demo-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
+  .btn.lg { padding: 12px 22px; font-size: 16px; }
+  .btn.soft { background: var(--key-3); color: var(--key); }
+  .btn.danger { background: #d44f4f; }
+  .btn.off { opacity: 0.4; cursor: default; }
+  .btn.pill { border-radius: 999px; }
+  .field { display: flex; flex-direction: column; gap: 4px; width: 240px; font-size: 13px; }
+  .field input { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px;
+                 font-family: "Inter"; font-size: 14px; color: var(--ink); background: var(--surface); }
+  .field input:focus { border-color: var(--key); }
+  .field .err { color: #d44f4f; font-size: 12px; }
+  .select { position: relative; width: 200px; }
+  .select .cur { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; font-size: 14px; cursor: pointer; }
+  .select .menu { display: none; position: absolute; left: 0; right: 0; top: 42px; background: var(--surface);
+                  border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+  .select.open .menu { display: block; }
+  .stepper { display: flex; align-items: center; border: 1px solid var(--line); border-radius: var(--radius); }
+  .stepper span { padding: 6px 12px; cursor: pointer; }
+  .stepper .v { min-width: 36px; text-align: center; border-left: 1px solid var(--line); border-right: 1px solid var(--line); cursor: default; }
+  .avatars { display: flex; }
+  .av { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--surface); margin-left: -8px;
+        display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-family: "InterBold"; }
+  .av:first-child { margin-left: 0; }
+  .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 10px; background: #d44f4f;
+           color: #fff; font-size: 11px; text-align: center; font-family: "InterBold"; }
+  .spinner { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--key-3); border-top-color: var(--key);
+             animation: spin 0.9s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.45; } 100% { opacity: 1; } }
+  .steps { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .steps .s { display: flex; align-items: center; gap: 6px; color: var(--ink-2); }
+  .steps .s i { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); font-style: normal;
+                display: flex; align-items: center; justify-content: center; font-size: 11px; }
+  .steps .s.done { color: var(--ink); }
+  .steps .s.done i { background: var(--key); border-color: var(--key); color: var(--on-key); }
+  .steps .ln { width: 32px; height: 2px; background: var(--line-2); }
+  .acc { border: 1px solid var(--line-2); border-radius: var(--radius); }
+  .acc .it { border-bottom: 1px solid var(--line-2); }
+  .acc .it:last-child { border-bottom: 0; }
+  .acc .hd { display: flex; justify-content: space-between; padding: 10px 14px; cursor: pointer; font-family: "InterSemi"; }
+  .acc .hd:hover { background: var(--hl); }
+  .acc .bd { display: none; padding: 0 14px 12px; color: var(--ink-2); font-size: 14px; }
+  .acc .it.open .bd { display: block; }
+  .acc .it.open .arr { transform: rotate(90deg); }
+  .arr { display: inline-block; transition: transform 0.15s; }
+
+  .grid-table { border: 1px solid var(--line-2); border-radius: var(--radius); font-size: 14px; }
+  .grid-table .tr { padding: 8px 14px; }
+  .grid-table .tr:nth-child(even) { background: var(--hl); }
+  .grid-table .tr.h { cursor: pointer; }
+  .c4 { width: 90px; } .c5 { width: 80px; text-align: right; }
+  .pager { display: flex; gap: 4px; justify-content: flex-end; margin-top: 10px; }
+  .pg { padding: 2px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; border: 1px solid var(--line-2); }
+  .pg.on { background: var(--key); color: var(--on-key); border-color: var(--key); }
+
+  .book { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; }
+  .cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; font-size: 13px; }
+  .cal .wd { color: var(--ink-2); font-size: 11px; font-family: "InterSemi"; }
+  .cal .d { padding: 6px 0; border-radius: 6px; cursor: pointer; }
+  .cal .d:hover { background: var(--hl); }
+  .cal .d.x { color: var(--line); cursor: default; }
+  .cal .d.on { background: var(--key); color: var(--on-key); }
+  .slots { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .slot { border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; text-align: center; font-size: 13px; cursor: pointer; }
+  .slot.on { border-color: var(--key); background: var(--key-3); color: var(--key); }
+  .slot.full { color: var(--line); cursor: default; text-decoration: line-through; }
+
+  .reviews { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .rev { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 18px; }
+  .stars { color: #e3a008; letter-spacing: 2px; }
+  .who { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; }
+  .who .av { margin-left: 0; }
+
+  .billing { display: flex; justify-content: center; align-items: center; gap: 10px; margin-bottom: 20px; font-size: 14px; }
+  .tiers { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; align-items: stretch; }
+  .tier { border: 1px solid var(--line); border-radius: 12px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+  .tier.best { border: 2px solid var(--key); position: relative; }
+  .tier .amt { font-family: "InterBold"; font-size: 34px; line-height: 1.1; }
+  .tier ul { padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+  .ribbon { position: absolute; top: -12px; right: 16px; background: var(--key); color: var(--on-key);
+            font-size: 11px; padding: 2px 10px; border-radius: 999px; font-family: "InterBold"; }
+
+  .timeline { border-left: 2px solid var(--line-2); margin-left: 8px; padding-left: 24px; }
+  .ev { position: relative; padding-bottom: 20px; }
+  .ev::before { content: ""; position: absolute; left: -32px; top: 6px; width: 12px; height: 12px;
+                border-radius: 50%; background: var(--surface); border: 2px solid var(--key); }
+  .ev .when { font-size: 12px; color: var(--ink-2); }
+
+  .toasts { position: fixed; z-index: 10; right: 24px; bottom: 24px; display: flex; flex-direction: column; gap: 8px; width: 280px; }
+  .toast { background: var(--ink); color: var(--surface); border-radius: var(--radius); padding: 10px 14px; font-size: 14px;
+           box-shadow: 0 8px 24px rgba(0,0,0,0.2); animation: slide 0.25s ease-out; }
+  @keyframes slide { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0px); opacity: 1; } }
+
+  .footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--line-2);
+            display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 24px; font-size: 14px; }
+  .footer .col-h { font-family: "InterBold"; margin-bottom: 6px; }
+  .footer .link { display: block; color: var(--ink-2); }
+  .footer .link:hover { color: var(--key); }
+
+  /* Workaround: the engine ignores font-weight when picking a face through the
+     public ABI, so each weight is registered as its own family. */
+  b, h2, h3, .logo, .brand, .price, .total, .shop, .group-h, .tr.h, .feat .ico { font-family: "InterBold"; }
+  .legend, .chip, .item.active { font-family: "InterSemi"; }
+</style>
+</head>
+<body>
+  <div class="nav">
+    <div class="brand">sashimi UI</div>
+    <div class="group sep">
+      <div class="item active">Introduction</div><div class="item">Getting Started</div>
+      <div class="item">Theming</div><div class="item">Baseline Styles</div>
+      <div class="item">Advanced</div><div class="item">Troubleshooting</div>
+    </div>
+    <div class="group">
+      <div class="group-h">ACTIONS</div>
+      <div class="item">Button</div><div class="item">Link</div><div class="item">Menu Item</div>
+      <div class="item">Tab Item</div><div class="item">Chip</div><div class="item">Card</div>
+    </div>
+    <div class="group">
+      <div class="group-h">DISPLAY</div>
+      <div class="item">Icon</div><div class="item">Callout</div><div class="item">Details</div>
+      <div class="item">Table</div><div class="item">Progress</div><div class="item">Dialog</div>
+    </div>
+    <div class="group">
+      <div class="group-h">INPUTS</div>
+      <div class="item">Checkbox</div><div class="item">Radio</div><div class="item">Switch</div>
+      <div class="item">Text Field</div><div class="item">Select</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <input class="search" id="search" type="text" placeholder="Search components…">
+      <span class="ver">v2.4.0</span>
+      <div class="toggle-row" id="dark-row"><div class="switch" id="dark"><div class="knob"></div></div>Dark</div>
+      <span class="btn sm pill" id="gh">★ Star <span id="stars">1,284</span></span>
+    </div>
+    <div class="logo">sashimi <span>UI</span></div>
+    <h2>Plain HTML, nicely dressed</h2>
+    <p>A small stylesheet that styles the elements you already write, instead of hiding them behind components.</p>
+    <p>No wrappers and no abstractions: the browser's own behaviour does the heavy lifting.</p>
+
+    <div class="stats">
+      <div class="stat"><div class="small">Weekly downloads</div><div class="n">48.2k</div><div class="d">▲ 12.4%</div>
+        <div class="spark"><div style="height:40%"></div><div style="height:55%"></div><div style="height:48%"></div><div style="height:62%"></div><div style="height:70%"></div><div style="height:66%"></div><div style="height:90%"></div></div></div>
+      <div class="stat"><div class="small">Gzipped size</div><div class="n">6.1 kB</div><div class="d">▼ 0.3 kB</div>
+        <div class="spark"><div style="height:90%"></div><div style="height:85%"></div><div style="height:80%"></div><div style="height:78%"></div><div style="height:72%"></div><div style="height:70%"></div><div style="height:66%"></div></div></div>
+      <div class="stat"><div class="small">Open issues</div><div class="n">37</div><div class="d down">▲ 4</div>
+        <div class="spark"><div style="height:30%"></div><div style="height:45%"></div><div style="height:40%"></div><div style="height:35%"></div><div style="height:50%"></div><div style="height:58%"></div><div style="height:62%"></div></div></div>
+      <div class="stat"><div class="small">Contributors</div><div class="n">112</div><div class="d">▲ 9</div>
+        <div class="spark"><div style="height:50%"></div><div style="height:55%"></div><div style="height:60%"></div><div style="height:68%"></div><div style="height:74%"></div><div style="height:82%"></div><div style="height:95%"></div></div></div>
+    </div>
+
+    <div id="showcase" class="showcase">
+      <div class="cards">
+        <!-- menu card -->
+        <div class="card split">
+          <div class="side">
+            <div class="shop"><div class="seal">S</div>MINATO</div>
+            <div class="item cat active" data-i="0">Tuna</div>
+            <div class="item cat" data-i="1">White fish</div>
+            <div class="item cat" data-i="2">Shellfish</div>
+            <div class="item cat" data-i="3">Rolls</div>
+          </div>
+          <div class="body">
+            <div class="row">
+              <div><div class="chip">Chef's pick</div><h3 id="dish">Bluefin tuna trio</h3></div>
+              <div class="price" id="dish-price">¥2,400</div>
+            </div>
+            <p class="muted" id="dish-desc">Lean, medium and fatty cuts side by side, sliced to order.</p>
+            <div class="chips"><span class="chip">3 cuts</span><span class="chip">Wild</span><span class="chip">Popular</span></div>
+            <div class="callout grow">Start lean and work toward the richest cut.</div>
+            <div class="row mid">
+              <span class="link">View details</span>
+              <span class="btn" id="add">Add to order</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- order builder -->
+        <div class="card">
+          <div class="row">
+            <div><div class="chip">Your order</div><h3>Build a tasting set</h3></div>
+            <span class="small">01 / 02</span>
+          </div>
+          <div>
+            <div class="legend">Choose your menu</div>
+            <div class="opt on" data-price="3600"><div class="dot"></div><b>Chef's omakase</b></div>
+            <div class="opt" data-price="3000"><div class="dot"></div><b>Pick favourites</b>
+              <div class="small">Assemble your own six pieces</div></div>
+          </div>
+          <div class="check" id="uni"><div class="box"></div>Add Hokkaido uni</div>
+          <div class="row mid" id="wasabi-row" style="cursor: pointer">Fresh wasabi
+            <div class="switch on" id="wasabi"><div class="knob"></div></div></div>
+          <div class="foot grow">
+            <div><div class="small">Total</div><div class="total" id="total">¥4,200</div></div>
+            <span class="btn">Continue &gt;</span>
+          </div>
+        </div>
+
+        <!-- status card -->
+        <div class="card">
+          <div class="row">
+            <div><div class="chip on pulse">Preparing</div><h3>Order #1042</h3></div>
+            <div class="row mid"><div class="spinner"></div><span class="price" id="eta">12 min</span></div>
+          </div>
+          <div class="row small"><span id="stage">The chef is plating</span><b id="pct">70%</b></div>
+          <div class="bar"><div class="fill" id="fill"></div></div>
+          <div class="kv">
+            <span class="k">Counter</span><span class="v">Seat 08</span>
+            <span class="k">Menu</span><span class="v">Chef's omakase</span>
+            <span class="k">Serving</span><span class="v">8 pieces</span>
+          </div>
+          <div class="callout ok grow">Your dietary notes reached the kitchen.</div>
+          <div class="disc" id="next"><b>What happens next?</b>
+            <p class="ans">We will call your seat when everything is ready.</p></div>
+        </div>
+
+        <!-- receipt card -->
+        <div class="card">
+          <div class="row">
+            <div><div class="chip">Paid</div><h3>Receipt #1042</h3></div>
+            <span class="small">13:42</span>
+          </div>
+          <div class="table">
+            <div class="tr h"><span class="c1">Item</span><span class="c2">Qty</span><span class="c3">Price</span></div>
+            <div class="tr"><span class="c1">Chef's omakase</span><span class="c2">1</span><span class="c3">¥4,800</span></div>
+            <div class="tr"><span class="c1">Green tea</span><span class="c2">2</span><span class="c3">¥600</span></div>
+          </div>
+          <div class="kv grow">
+            <span class="k">Subtotal</span><span class="v">¥5,400</span>
+            <span class="k">Tax</span><span class="v">¥540</span>
+            <b>Total</b><b class="v">¥5,940</b>
+          </div>
+          <span class="btn" id="open-dialog">Open receipt dialog</span>
+        </div>
+      </div>
+
+      <div class="swatches">
+        <div class="sw on" data-t="" style="background: #1261ec"></div>
+        <div class="sw" data-t="salmon" style="background: #d44f4f"></div>
+        <div class="sw" data-t="cyber" style="background: #9cd000"></div>
+        <div class="sw" data-t="kawaii" style="background: #ffb3c1"></div>
+        <div class="sw" data-t="amber" style="background: #d1a443"></div>
+      </div>
+    </div>
+
+    <h2>What you get</h2>
+    <div class="features">
+      <div class="feat"><div class="ico">0</div><h3>No dependencies</h3><p class="muted">One stylesheet. Nothing to install, nothing to update.</p></div>
+      <div class="feat"><div class="ico">JS</div><h3>No JavaScript</h3><p class="muted">Native elements already know how to behave.</p></div>
+      <div class="feat"><div class="ico">&lt;&gt;</div><h3>No lock-in</h3><p class="muted">Works with any framework, or none at all.</p></div>
+      <div class="feat"><div class="ico">{}</div><h3>No config files</h3><p class="muted">No build step or tool configuration required.</p></div>
+      <div class="feat"><div class="ico">&lt;/&gt;</div><h3>No extra divs</h3><p class="muted">Your markup stays the markup you meant to write.</p></div>
+    </div>
+
+    <h2 id="sec-components">Components</h2>
+    <div class="gallery">
+      <div class="tabs">
+        <div class="tab on" data-p="p-actions">Actions</div><div class="tab" data-p="p-inputs">Inputs</div>
+        <div class="tab" data-p="p-feedback">Feedback</div><div class="tab" data-p="p-data">Data</div>
+      </div>
+      <div class="panel on" id="p-actions">
+        <div class="legend">Buttons</div>
+        <div class="demo-row">
+          <span class="btn sm">Small</span><span class="btn">Default</span><span class="btn lg">Large</span>
+          <span class="btn soft">Soft</span><span class="btn ghost">Ghost</span><span class="btn danger">Delete</span>
+          <span class="btn off">Disabled</span><span class="btn pill">Pill</span>
+        </div>
+        <div class="legend">Chips &amp; badges</div>
+        <div class="demo-row chips" id="filter-chips">
+          <span class="chip on">All</span><span class="chip">Raw</span><span class="chip">Seared</span>
+          <span class="chip">Vegetarian</span><span class="chip">Seasonal</span>
+          <span>Inbox <span class="badge" id="badge">3</span></span>
+        </div>
+        <div class="legend">Avatars</div>
+        <div class="demo-row">
+          <div class="avatars">
+            <div class="av" style="background:#1261ec">AK</div><div class="av" style="background:#d44f4f">MS</div>
+            <div class="av" style="background:#6f9400">YT</div><div class="av" style="background:#e0708a">RN</div>
+            <div class="av" style="background:#899196">+8</div>
+          </div>
+          <span class="small">12 people are cooking with sashimi UI right now</span>
+        </div>
+      </div>
+      <div class="panel" id="p-inputs">
+        <div class="demo-row" style="align-items:flex-start">
+          <label class="field">Name<input id="name" type="text" placeholder="Taro Yamada"><span class="err" id="name-err"></span></label>
+          <label class="field">Email<input id="email" type="text" placeholder="taro@example.jp"><span class="err" id="email-err"></span></label>
+        </div>
+        <div class="demo-row">
+          <div class="select" id="sel"><div class="cur" id="sel-cur">Counter seat ▾</div>
+            <div class="menu"><div class="item">Counter seat</div><div class="item">Table for two</div><div class="item">Private room</div></div></div>
+          <div class="stepper"><span id="minus">−</span><span class="v" id="qty">2</span><span id="plus">+</span></div>
+          <span class="small">guests</span>
+        </div>
+        <div class="demo-row">
+          <div class="check on" id="c1"><div class="box"></div>Allergy notes</div>
+          <div class="check" id="c2"><div class="box"></div>Birthday</div>
+          <div class="toggle-row" id="sw2-row"><div class="switch" id="sw2"><div class="knob"></div></div>Email updates</div>
+        </div>
+        <span class="btn" id="validate">Validate</span>
+      </div>
+      <div class="panel" id="p-feedback">
+        <div class="legend">Progress steps</div>
+        <div class="demo-row steps" id="steps">
+          <div class="s done"><i>1</i>Menu</div><div class="ln"></div>
+          <div class="s"><i>2</i>Extras</div><div class="ln"></div>
+          <div class="s"><i>3</i>Seat</div><div class="ln"></div>
+          <div class="s"><i>4</i>Pay</div>
+        </div>
+        <div class="demo-row"><span class="btn sm soft" id="step-back">Back</span><span class="btn sm" id="step-next">Next step</span></div>
+        <div class="legend">Callouts</div>
+        <div class="callout">Heads up: the fish market is closed on Wednesdays.</div>
+        <p></p><div class="callout ok">Reservation confirmed for Friday at 19:00.</div>
+        <p></p><div class="legend">Toasts</div>
+        <div class="demo-row"><span class="btn" id="toast-btn">Show toast</span><div class="spinner"></div><span class="small pulse">Syncing…</span></div>
+      </div>
+      <div class="panel" id="p-data">
+        <div class="grid-table" id="tbl">
+          <div class="tr h"><span class="c1" data-k="0">Dish ↕</span><span class="c4" data-k="1">Region ↕</span><span class="c5" data-k="2">Price ↕</span></div>
+        </div>
+        <div class="pager" id="pager"></div>
+        <p></p>
+        <div class="acc" id="acc">
+          <div class="it open"><div class="hd">How fresh is the fish?<span class="arr">›</span></div><div class="bd">Delivered from Toyosu every morning before 6:00.</div></div>
+          <div class="it"><div class="hd">Do you take walk-ins?<span class="arr">›</span></div><div class="bd">Two counter seats are held for walk-ins each evening.</div></div>
+          <div class="it"><div class="hd">Is there a dress code?<span class="arr">›</span></div><div class="bd">Smart casual; please avoid strong perfume at the counter.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <h2 id="sec-book">Reserve a seat</h2>
+    <div class="book">
+      <div class="gallery">
+        <div class="row mid" style="margin-bottom:12px"><span class="pg" id="m-prev">‹</span><b id="month">October 2026</b><span class="pg" id="m-next">›</span></div>
+        <div class="cal" id="cal"></div>
+      </div>
+      <div class="gallery">
+        <div class="legend">Available times — <span id="picked">Oct 9</span></div>
+        <div class="slots" id="slots"></div>
+        <p></p>
+        <div class="kv"><span class="k">Guests</span><span class="v" id="b-guests">2</span>
+          <span class="k">Seating</span><span class="v" id="b-seat">Counter seat</span>
+          <span class="k">Deposit</span><span class="v">¥2,000</span></div>
+        <p></p>
+        <span class="btn" id="reserve">Reserve</span>
+      </div>
+    </div>
+
+    <h2>Loved by kitchens</h2>
+    <div class="reviews">
+      <div class="rev"><div class="stars">★★★★★</div><p>Swapped our whole ordering tablet UI in an afternoon. The markup is just HTML.</p>
+        <div class="who"><div class="av" style="background:#d44f4f">HM</div><div><b>Hana M.</b><div class="small">Sushi Hana, Osaka</div></div></div></div>
+      <div class="rev"><div class="stars">★★★★☆</div><p>The theme swatches sold our designer. One variable and the brand is done.</p>
+        <div class="who"><div class="av" style="background:#6f9400">KO</div><div><b>Ken O.</b><div class="small">Umi Bar, Fukuoka</div></div></div></div>
+      <div class="rev"><div class="stars">★★★★★</div><p>Our kiosk runs on a tiny board. Fewer divs means it actually keeps up.</p>
+        <div class="who"><div class="av" style="background:#1261ec">LT</div><div><b>Lena T.</b><div class="small">Nori &amp; Co, Berlin</div></div></div></div>
+    </div>
+
+    <h2 id="sec-pricing">Pricing</h2>
+    <div class="billing">Monthly <div class="switch" id="yearly"><div class="knob"></div></div> Yearly <span class="chip on">−20%</span></div>
+    <div class="tiers">
+      <div class="tier"><h3>Hobby</h3><div class="amt" data-m="0">¥0</div><span class="small">forever</span>
+        <ul><li>Core stylesheet</li><li>5 themes</li><li>Community support</li></ul><span class="btn ghost grow">Download</span></div>
+      <div class="tier best"><span class="ribbon">POPULAR</span><h3>Studio</h3><div class="amt" data-m="1500">¥1,500</div><span class="small per">per month</span>
+        <ul><li>Everything in Hobby</li><li>Figma kit</li><li>Theme builder</li><li>Email support</li></ul><span class="btn grow">Start trial</span></div>
+      <div class="tier"><h3>Kitchen</h3><div class="amt" data-m="6000">¥6,000</div><span class="small per">per month</span>
+        <ul><li>Everything in Studio</li><li>Unlimited seats</li><li>Private components</li><li>SLA</li></ul><span class="btn soft grow">Contact sales</span></div>
+    </div>
+
+    <h2>Changelog</h2>
+    <div class="timeline">
+      <div class="ev"><div class="when">Sep 2026 · v2.4.0</div><b>Dialog and toast styles</b><p class="muted">Native &lt;dialog&gt; gets a scrim and a sliding entrance.</p></div>
+      <div class="ev"><div class="when">Jul 2026 · v2.3.0</div><b>Dark mode</b><p class="muted">Every token has a dark counterpart; no extra classes needed.</p></div>
+      <div class="ev"><div class="when">Apr 2026 · v2.2.0</div><b>Amber and kawaii themes</b><p class="muted">Two new palettes, both tested for contrast.</p></div>
+      <div class="ev"><div class="when">Jan 2026 · v2.0.0</div><b>Rewritten on custom properties</b><p class="muted">Theming dropped from 40 variables to 6.</p></div>
+    </div>
+
+    <div class="qa">
+      <h2>Q&amp;A</h2>
+      <h3>Isn't this just another Bootstrap?</h3>
+      <p class="muted">It covers less on purpose: it styles elements rather than defining a component system.</p>
+      <h3>Why so few components?</h3>
+      <p class="muted">Anything HTML already provides doesn't need a new component.</p>
+      <h3>What about accessibility?</h3>
+      <p class="muted">Native elements carry their semantics with them, so there is less to get wrong.</p>
+    </div>
+
+    <div class="footer">
+      <div><div class="brand" style="padding:0">sashimi UI</div><p class="muted">Plain HTML, nicely dressed. Made with care in Tokyo.</p></div>
+      <div><div class="col-h">Docs</div><span class="link">Getting started</span><span class="link">Theming</span><span class="link">Components</span></div>
+      <div><div class="col-h">Community</div><span class="link">Discussions</span><span class="link">Showcase</span><span class="link">Contributing</span></div>
+      <div><div class="col-h">Legal</div><span class="link">License (MIT)</span><span class="link">Privacy</span></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <div class="scrim" id="scrim">
+    <div class="dialog">
+      <h3>Receipt #1042</h3>
+      <p>Paid by card. Thanks for dining with us.</p>
+      <span class="btn ghost" id="close-dialog">Close</span>
+    </div>
+  </div>
+
+<script>
+  const dishes = [
+    ["Bluefin tuna trio", "¥2,400", "Lean, medium and fatty cuts side by side, sliced to order."],
+    ["Sea bream", "¥1,600", "Delicate white fish, lightly cured with kelp."],
+    ["Scallop and ark shell", "¥1,900", "Sweet, firm shellfish served with a touch of yuzu."],
+    ["Negitoro roll", "¥1,200", "Chopped fatty tuna and scallion wrapped in crisp nori."]
+  ];
+  const cats = document.querySelectorAll(".cat");
+  cats.forEach(c => c.addEventListener("click", () => {
+    cats.forEach(o => o.classList.remove("active"));
+    c.classList.add("active");
+    const d = dishes[Number(c.getAttribute("data-i"))];
+    document.getElementById("dish").textContent = d[0];
+    document.getElementById("dish-price").textContent = d[1];
+    document.getElementById("dish-desc").textContent = d[2];
+  }));
+
+  const opts = document.querySelectorAll(".opt");
+  const uni = document.getElementById("uni");
+  const wasabi = document.getElementById("wasabi");
+  function fmt(n) { const s = String(n); return "¥" + s.slice(0, s.length - 3) + "," + s.slice(s.length - 3); }
+  function recompute() {
+    let t = 0;
+    opts.forEach(o => { if (o.classList.contains("on")) t += Number(o.getAttribute("data-price")); });
+    if (uni.classList.contains("on")) t += 800;
+    if (wasabi.classList.contains("on")) t += 600;
+    document.getElementById("total").textContent = fmt(t);
+  }
+  opts.forEach(o => o.addEventListener("click", () => {
+    opts.forEach(x => x.classList.remove("on")); o.classList.add("on"); recompute();
+  }));
+  uni.addEventListener("click", () => { uni.classList.toggle("on"); recompute(); });
+  document.getElementById("wasabi-row").addEventListener("click", () => { wasabi.classList.toggle("on"); recompute(); });
+
+  const next = document.getElementById("next");
+  next.addEventListener("click", () => next.classList.toggle("open"));
+
+  const scrim = document.getElementById("scrim");
+  document.getElementById("open-dialog").addEventListener("click", () => scrim.classList.add("open"));
+  document.getElementById("close-dialog").addEventListener("click", () => scrim.classList.remove("open"));
+
+  const add = document.getElementById("add");
+  add.addEventListener("click", () => { add.textContent = "Added"; });
+
+  const sws = document.querySelectorAll(".sw");
+  const showcase = document.getElementById("showcase");
+  sws.forEach(s => s.addEventListener("click", () => {
+    sws.forEach(o => o.classList.remove("on")); s.classList.add("on");
+    showcase.className = "showcase " + s.getAttribute("data-t");
+  }));
+  // ---- expanded demo behaviour ----
+  function $(id) { return document.getElementById(id); }
+  function toast(msg) {
+    const t = document.createElement("div"); t.className = "toast"; t.textContent = msg;
+    $("toasts").appendChild(t);
+    setTimeout(() => t.remove(), 2600);
+  }
+
+  $("dark-row").addEventListener("click", () => {
+    $("dark").classList.toggle("on"); document.body.classList.toggle("dark");
+  });
+  let starred = false;
+  $("gh").addEventListener("click", () => {
+    starred = !starred; $("stars").textContent = starred ? "1,285" : "1,284";
+    toast(starred ? "Thanks for the star!" : "Star removed");
+  });
+
+  // sidebar: highlight + filter by search
+  const navItems = document.querySelectorAll(".nav .item");
+  navItems.forEach(n => n.addEventListener("click", () => {
+    navItems.forEach(o => o.classList.remove("active")); n.classList.add("active");
+  }));
+  $("search").addEventListener("input", () => {
+    const q = $("search").value.toLowerCase();
+    navItems.forEach(n => { n.style.display = n.textContent.toLowerCase().indexOf(q) >= 0 ? "block" : "none"; });
+  });
+
+  // live order status
+  const stages = ["Rice is resting", "Fish is being sliced", "The chef is plating", "Final garnish", "Ready at your seat"];
+  let pct = 70;
+  setInterval(() => {
+    pct = pct >= 100 ? 10 : pct + 5;
+    $("fill").style.width = pct + "%"; $("pct").textContent = pct + "%";
+    $("eta").textContent = Math.max(0, Math.round((100 - pct) / 2.5)) + " min";
+    $("stage").textContent = stages[Math.min(4, Math.floor(pct / 21))];
+  }, 1200);
+
+  // tabs
+  const tabs = document.querySelectorAll(".tab");
+  tabs.forEach(t => t.addEventListener("click", () => {
+    tabs.forEach(o => o.classList.remove("on")); t.classList.add("on");
+    document.querySelectorAll(".panel").forEach(p => p.classList.remove("on"));
+    $(t.getAttribute("data-p")).classList.add("on");
+  }));
+
+  // filter chips + badge
+  const fchips = document.querySelectorAll("#filter-chips .chip");
+  fchips.forEach(c => c.addEventListener("click", () => {
+    fchips.forEach(o => o.classList.remove("on")); c.classList.add("on");
+  }));
+  $("badge").addEventListener("click", () => { $("badge").textContent = "0"; });
+
+  // inputs
+  const sel = $("sel");
+  $("sel-cur").addEventListener("click", () => sel.classList.toggle("open"));
+  sel.querySelectorAll(".menu .item").forEach(i => i.addEventListener("click", () => {
+    $("sel-cur").textContent = i.textContent + " ▾"; $("b-seat").textContent = i.textContent;
+    sel.classList.remove("open");
+  }));
+  let qty = 2;
+  function setQty(n) { qty = Math.max(1, Math.min(8, n)); $("qty").textContent = qty; $("b-guests").textContent = qty; }
+  $("minus").addEventListener("click", () => setQty(qty - 1));
+  $("plus").addEventListener("click", () => setQty(qty + 1));
+  ["c1", "c2"].forEach(id => $(id).addEventListener("click", () => $(id).classList.toggle("on")));
+  $("sw2-row").addEventListener("click", () => $("sw2").classList.toggle("on"));
+  $("validate").addEventListener("click", () => {
+    const n = $("name").value, e = $("email").value;
+    $("name-err").textContent = n.length ? "" : "Please enter a name";
+    $("email-err").textContent = e.indexOf("@") > 0 ? "" : "That doesn't look like an email";
+    if (n.length && e.indexOf("@") > 0) toast("Looks good, " + n + "!");
+  });
+
+  // steps
+  let step = 1;
+  function drawSteps() {
+    document.querySelectorAll("#steps .s").forEach((s, i) => s.classList.toggle("done", i < step));
+  }
+  $("step-next").addEventListener("click", () => { step = Math.min(4, step + 1); drawSteps(); if (step === 4) toast("All steps complete"); });
+  $("step-back").addEventListener("click", () => { step = Math.max(1, step - 1); drawSteps(); });
+  $("toast-btn").addEventListener("click", () => toast("Order #" + (1042 + Math.floor(Math.random() * 50)) + " sent to the kitchen"));
+
+  // sortable, paginated table
+  const rows = [
+    ["Otoro", "Aomori", 1800], ["Chutoro", "Aomori", 1200], ["Akami", "Nagasaki", 700], ["Hamachi", "Kagoshima", 650],
+    ["Madai", "Ehime", 600], ["Hotate", "Hokkaido", 800], ["Uni", "Hokkaido", 1500], ["Ikura", "Hokkaido", 900],
+    ["Saba", "Oita", 450], ["Aji", "Chiba", 400], ["Ebi", "Aichi", 550], ["Tako", "Akashi", 500]
+  ];
+  let sortK = 2, sortDir = -1, page = 0; const per = 4;
+  function drawTable() {
+    const tbl = $("tbl");
+    while (tbl.children.length > 1) tbl.lastChild.remove();
+    const sorted = rows.slice().sort((a, b) => (a[sortK] > b[sortK] ? 1 : a[sortK] < b[sortK] ? -1 : 0) * sortDir);
+    sorted.slice(page * per, page * per + per).forEach(r => {
+      const tr = document.createElement("div"); tr.className = "tr";
+      [["c1", r[0]], ["c4", r[1]], ["c5", r[2] >= 1000 ? fmt(r[2]) : "¥" + r[2]]].forEach(([c, v]) => {
+        const sp = document.createElement("span"); sp.className = c; sp.textContent = v; tr.appendChild(sp);
+      });
+      tbl.appendChild(tr);
+    });
+    const pager = $("pager");
+    while (pager.firstChild) pager.firstChild.remove();
+    for (let i = 0; i < rows.length / per; i++) {
+      const b = document.createElement("span"); b.className = "pg" + (i === page ? " on" : ""); b.textContent = String(i + 1);
+      b.addEventListener("click", () => { page = i; drawTable(); });
+      pager.appendChild(b);
+    }
+  }
+  document.querySelectorAll("#tbl .tr.h span").forEach(h => h.addEventListener("click", () => {
+    const k = Number(h.getAttribute("data-k"));
+    sortDir = k === sortK ? -sortDir : 1; sortK = k; page = 0; drawTable();
+  }));
+  drawTable();
+
+  document.querySelectorAll("#acc .hd").forEach(h => h.addEventListener("click", () => h.parentNode.classList.toggle("open")));
+
+  // booking calendar
+  const months = ["September 2026", "October 2026", "November 2026"];
+  const firstDow = [2, 4, 0], lens = [30, 31, 30];
+  let mi = 1, day = 9, slot = -1;
+  function drawCal() {
+    $("month").textContent = months[mi];
+    const cal = $("cal"); while (cal.firstChild) cal.firstChild.remove();
+    ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].forEach(w => { const e = document.createElement("div"); e.className = "wd"; e.textContent = w; cal.appendChild(e); });
+    for (let i = 0; i < firstDow[mi]; i++) cal.appendChild(document.createElement("div"));
+    for (let d = 1; d <= lens[mi]; d++) {
+      const e = document.createElement("div"); const dow = (firstDow[mi] + d - 1) % 7;
+      e.className = "d" + (dow === 3 || (mi === 0 && d < 27) ? " x" : "") + (d === day ? " on" : "");
+      e.textContent = String(d);
+      if (dow !== 3 && !(mi === 0 && d < 27)) e.addEventListener("click", () => { day = d; slot = -1; drawCal(); drawSlots(); });
+      cal.appendChild(e);
+    }
+    $("picked").textContent = months[mi].slice(0, 3) + " " + day;
+  }
+  function drawSlots() {
+    const s = $("slots"); while (s.firstChild) s.firstChild.remove();
+    ["17:00", "17:30", "18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00"].forEach((t, i) => {
+      const e = document.createElement("div"); const full = (i * 7 + day) % 4 === 0;
+      e.className = "slot" + (full ? " full" : "") + (i === slot ? " on" : ""); e.textContent = t;
+      if (!full) e.addEventListener("click", () => { slot = i; drawSlots(); });
+      s.appendChild(e);
+    });
+  }
+  $("m-prev").addEventListener("click", () => { if (mi > 0) { mi--; day = mi === 0 ? 27 : 1; drawCal(); drawSlots(); } });
+  $("m-next").addEventListener("click", () => { if (mi < 2) { mi++; day = 2; drawCal(); drawSlots(); } });
+  $("reserve").addEventListener("click", () => {
+    if (slot < 0) { toast("Pick a time first"); return; }
+    toast("Reserved " + $("picked").textContent + " for " + qty + " · " + $("b-seat").textContent);
+  });
+  drawCal(); drawSlots();
+
+  // pricing toggle
+  $("yearly").addEventListener("click", () => {
+    const y = $("yearly").classList.toggle("on");
+    document.querySelectorAll(".amt").forEach(a => {
+      const m = Number(a.getAttribute("data-m"));
+      const v = y ? Math.round(m * 12 * 0.8) : m;
+      a.textContent = v >= 1000 ? fmt(v) : "¥" + v;
+    });
+    document.querySelectorAll(".per").forEach(p => { p.textContent = y ? "per year" : "per month"; });
+  });
+</script>
+</body>
+</html>

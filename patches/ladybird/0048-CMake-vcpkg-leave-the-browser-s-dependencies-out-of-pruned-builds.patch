@@ -1,0 +1,347 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 45da77512d..344b3ef116 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -27,8 +27,27 @@ else()
+     set(LADYBIRD_MEDIA_STUB_DEFAULT OFF)
+ endif()
+ option(LADYBIRD_MEDIA_STUB "Build LibMedia/LibMediaClient as a no-playback stub without ffmpeg" ${LADYBIRD_MEDIA_STUB_DEFAULT})
+-if (LADYBIRD_MEDIA_STUB)
++
++# karouka: a pruned LibWeb (Libraries/LibWeb/CMakeLists.txt) builds without the browser's services,
++# UI, LibWebView, LibDatabase, the js REPL and LibCompositing's WebGL command stream, so it needs
++# none of the ports only they use: the default "browser" feature of vcpkg.json (curl and its
++# http2/http3 stack, libproxy, sqlite3, sdl3, libedit, pdf.js, ANGLE). Declared here for the same
++# reason as LADYBIRD_MEDIA_STUB.
++if (KAROUKA_SOURCE_DIR)
++    set(LIBWEB_PRUNE_WEB_APIS_DEFAULT ON)
++else()
++    set(LIBWEB_PRUNE_WEB_APIS_DEFAULT OFF)
++endif()
++option(LIBWEB_PRUNE_WEB_APIS "Leave browser-only Web API families out of LibWeb" ${LIBWEB_PRUNE_WEB_APIS_DEFAULT})
++
++if (LADYBIRD_MEDIA_STUB OR LIBWEB_PRUNE_WEB_APIS)
+     set(VCPKG_MANIFEST_NO_DEFAULT_FEATURES ON)
++    if (NOT LADYBIRD_MEDIA_STUB)
++        list(APPEND VCPKG_MANIFEST_FEATURES media)
++    endif()
++    if (NOT LIBWEB_PRUNE_WEB_APIS)
++        list(APPEND VCPKG_MANIFEST_FEATURES browser)
++    endif()
+ endif()
+ 
+ # Pass additional information to vcpkg if we are using it.
+diff --git a/Libraries/CMakeLists.txt b/Libraries/CMakeLists.txt
+index 7bea85a3d8..4cecacd29d 100644
+--- a/Libraries/CMakeLists.txt
++++ b/Libraries/CMakeLists.txt
+@@ -2,7 +2,11 @@ add_subdirectory(LibCompress)
+ add_subdirectory(LibCore)
+ add_subdirectory(LibCrypto)
+ add_subdirectory(LibDNS)
+-add_subdirectory(LibDatabase)
++# karouka: only the browser uses LibDatabase (sqlite3) and LibWebView (SDL3), and a pruned LibWeb
++# leaves the browser out (see the top-level CMakeLists.txt).
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    add_subdirectory(LibDatabase)
++endif()
+ add_subdirectory(LibDiff)
+ add_subdirectory(LibFileSystem)
+ add_subdirectory(LibGC)
+@@ -38,7 +42,9 @@ if (ENABLE_GUI_TARGETS)
+     add_subdirectory(LibWebCommon)
+     add_subdirectory(LibCompositing)
+     add_subdirectory(LibWeb)
+-    add_subdirectory(LibWebView)
++    if (NOT LIBWEB_PRUNE_WEB_APIS)
++        add_subdirectory(LibWebView)
++    endif()
+ endif()
+ 
+ # FIXME: Increase support for building targets on Windows
+diff --git a/Libraries/LibCompositing/CMakeLists.txt b/Libraries/LibCompositing/CMakeLists.txt
+index b9942c7486..1cb37d95b1 100644
+--- a/Libraries/LibCompositing/CMakeLists.txt
++++ b/Libraries/LibCompositing/CMakeLists.txt
+@@ -22,6 +22,12 @@ set(SOURCES
+     WebGL/TextureUpload.cpp
+     WebGL/WebGLCommandList.cpp
+ )
++# karouka: a pruned LibWeb has no WebGL (Libraries/LibWeb/Embedder/Prune/WebGL.cmake), so nothing
++# records or replays a WebGL command stream. Leave it out, and with it the only sources that
++# include ANGLE's GLES headers, so vcpkg needn't build ANGLE. GLFunctions.h is still generated.
++if (LIBWEB_PRUNE_WEB_APIS)
++    list(REMOVE_ITEM SOURCES WebGL/TextureUpload.cpp WebGL/WebGLCommandList.cpp)
++endif()
+ 
+ generate_compositing_webgl_implementation()
+ 
+@@ -36,7 +42,6 @@ compile_ipc(FontClient.ipc FontClientEndpoint.h)
+ compile_ipc(FontServer.ipc FontServerEndpoint.h)
+ 
+ set(GENERATED_SOURCES
+-    WebGL/WebGLCommands.cpp
+     ../../Services/Compositor/CompositorControlClientEndpoint.h
+     ../../Services/Compositor/CompositorControlServerEndpoint.h
+     ../../Services/Compositor/CompositorWebContentClientEndpoint.h
+@@ -46,6 +51,9 @@ set(GENERATED_SOURCES
+     FontClientEndpoint.h
+     FontServerEndpoint.h
+ )
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    list(APPEND GENERATED_SOURCES WebGL/WebGLCommands.cpp)
++endif()
+ 
+ import_rust_crate(
+     MANIFEST_PATH Rust/Cargo.toml
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 7f97bc1d45..ece9db3390 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -1141,12 +1141,8 @@ set(SOURCES
+ # (navigator.serial, Window.cookieStore, ...). A family with files outside its directory filters
+ # them from SOURCES itself and lists their IDL in LIBWEB_PRUNED_IDL. Services that use a pruned family (WebContent uses WebDriver, for one) do not
+ # build with this option on.
+-if (KAROUKA_SOURCE_DIR)
+-    set(LIBWEB_PRUNE_WEB_APIS_DEFAULT ON)
+-else()
+-    set(LIBWEB_PRUNE_WEB_APIS_DEFAULT OFF)
+-endif()
+-option(LIBWEB_PRUNE_WEB_APIS "Leave browser-only Web API families out of LibWeb" ${LIBWEB_PRUNE_WEB_APIS_DEFAULT})
++# The LIBWEB_PRUNE_WEB_APIS option is declared in the top-level CMakeLists.txt, before project(), so
++# that vcpkg leaves the browser's dependencies out too.
+ set(LIBWEB_PRUNED_FAMILIES)
+ set(LIBWEB_PRUNED_IDL)
+ if (LIBWEB_PRUNE_WEB_APIS)
+@@ -1208,6 +1204,7 @@ target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP
+ # the actual GL entry points live in the Compositor. Copy only ANGLE's compile
+ # interface here so LibWeb can include those headers without linking ANGLE into
+ # WebContent.
++# karouka: a pruned LibWeb has no WebGL and finds no ANGLE (ANGLE_TARGETS is empty).
+ foreach(angle_target IN LISTS ANGLE_TARGETS)
+     target_include_directories(LibWeb PRIVATE $<TARGET_PROPERTY:${angle_target},INTERFACE_INCLUDE_DIRECTORIES>)
+     target_include_directories(LibWeb SYSTEM PRIVATE $<TARGET_PROPERTY:${angle_target},INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>)
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index 09403eb353..7232d95e77 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -2,7 +2,9 @@ include_guard()
+ 
+ find_package(PkgConfig REQUIRED)
+ 
+-if (NOT WIN32 AND NOT ANDROID)
++# karouka: a LIBWEB_PRUNE_WEB_APIS build leaves out the browser and the js REPL, and vcpkg doesn't
++# install their dependencies (libedit, curl, SDL3, SQLite3, ANGLE; CMakeLists.txt).
++if (NOT WIN32 AND NOT ANDROID AND NOT LIBWEB_PRUNE_WEB_APIS)
+     pkg_check_modules(LIBEDIT REQUIRED IMPORTED_TARGET libedit)
+ endif()
+ 
+@@ -68,13 +70,15 @@ else()
+     set(USE_VULKAN_DMABUF_IMAGES OFF CACHE BOOL "" FORCE)
+ endif()
+ 
+-find_package(CURL REQUIRED)
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    find_package(CURL REQUIRED)
++    find_package(SDL3 CONFIG REQUIRED)
++    find_package(SQLite3 REQUIRED)
++endif()
+ find_package(ICU 78.3 EXACT REQUIRED COMPONENTS data i18n uc)
+ find_package(LibXml2 REQUIRED)
+ find_package(OpenSSL REQUIRED)
+-find_package(SDL3 CONFIG REQUIRED)
+ find_package(simdjson CONFIG REQUIRED)
+-find_package(SQLite3 REQUIRED)
+ find_package(Threads REQUIRED)
+ find_package(ZLIB REQUIRED)
+ 
+@@ -89,12 +93,16 @@ endif()
+ pkg_check_modules(LIBPSL REQUIRED IMPORTED_TARGET libpsl)
+ pkg_check_modules(libtommath REQUIRED IMPORTED_TARGET libtommath)
+ 
+-find_package(unofficial-angle CONFIG)
+-if(unofficial-angle_FOUND)
+-    set(ANGLE_TARGETS unofficial::angle::libEGL unofficial::angle::libGLESv2)
++if (LIBWEB_PRUNE_WEB_APIS)
++    set(ANGLE_TARGETS)
+ else()
+-    pkg_check_modules(angle REQUIRED IMPORTED_TARGET angle)
+-    set(ANGLE_TARGETS PkgConfig::angle)
++    find_package(unofficial-angle CONFIG)
++    if(unofficial-angle_FOUND)
++        set(ANGLE_TARGETS unofficial::angle::libEGL unofficial::angle::libGLESv2)
++    else()
++        pkg_check_modules(angle REQUIRED IMPORTED_TARGET angle)
++        set(ANGLE_TARGETS PkgConfig::angle)
++    endif()
+ endif()
+ 
+ if (WIN32)
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index 99609e7040..7535f04582 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -1,7 +1,11 @@
+-ladybird_utility(js SOURCES js.cpp LIBS LibCrypto LibJS LibMain LibTextCodec LibGC)
++# karouka: a LIBWEB_PRUNE_WEB_APIS build has no libedit (check_for_dependencies.cmake), so it leaves
++# out the js REPL with the rest of the browser.
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    ladybird_utility(js SOURCES js.cpp LIBS LibCrypto LibJS LibMain LibTextCodec LibGC)
++endif()
+ ladybird_utility(wasm SOURCES wasm.cpp LIBS LibFileSystem LibWasm LibMain LibJS LibCrypto LibGC)
+ 
+-if (NOT WIN32 AND NOT ANDROID)
++if (NOT WIN32 AND NOT ANDROID AND NOT LIBWEB_PRUNE_WEB_APIS)
+     target_link_libraries(js PRIVATE PkgConfig::LIBEDIT)
+ endif()
+ 
+@@ -54,8 +58,10 @@ set(GIT_COMMIT_FILE "${CMAKE_BINARY_DIR}/COMMIT")
+ file(WRITE "${GIT_COMMIT_FILE}" "${GIT_COMMIT_HASH}\n")
+ 
+ if (NOT CMAKE_SKIP_INSTALL_RULES)
+-    install(TARGETS js COMPONENT js)
+-    install(FILES "${GIT_COMMIT_FILE}" COMPONENT js DESTINATION .)
++    if (TARGET js)
++        install(TARGETS js COMPONENT js)
++        install(FILES "${GIT_COMMIT_FILE}" COMPONENT js DESTINATION .)
++    endif()
+ 
+     install(TARGETS wasm COMPONENT wasm)
+     install(FILES "${GIT_COMMIT_FILE}" COMPONENT wasm DESTINATION .)
+diff --git a/vcpkg.json b/vcpkg.json
+index abfdbb3df2..c93209b21d 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -1,35 +1,11 @@
+ {
+   "builtin-baseline": "7f3781e19cc7d4e4882a4caec01668c6f7b5c163",
+   "dependencies": [
+-    {
+-      "name": "angle",
+-      "platform": "osx",
+-      "features": [
+-        "metal"
+-      ]
+-    },
+-    {
+-      "name": "angle",
+-      "platform": "linux | windows | android | bsd"
+-    },
+     "brotli",
+     {
+       "name": "cpptrace",
+       "platform": "linux | windows | osx"
+     },
+-    {
+-      "name": "curl",
+-      "default-features": false,
+-      "features": [
+-        "brotli",
+-        "non-http",
+-        "http2",
+-        "http3",
+-        "openssl",
+-        "websockets",
+-        "zstd"
+-      ]
+-    },
+     {
+       "name": "dbus",
+       "default-features": false,
+@@ -79,15 +55,7 @@
+         "apng"
+       ]
+     },
+-    {
+-      "name": "libproxy",
+-      "platform": "!(android | bsd)"
+-    },
+     "libpsl",
+-    {
+-      "name": "libedit",
+-      "platform": "!windows & !android"
+-    },
+     "libtommath",
+     {
+       "name": "libwebp",
+@@ -104,7 +72,6 @@
+     },
+     "mimalloc",
+     "openssl",
+-    "pdfjs",
+     {
+       "name": "pthread",
+       "platform": "windows"
+@@ -159,10 +126,6 @@
+       "platform": "windows | freebsd",
+       "default-features": false
+     },
+-    {
+-      "name": "sdl3",
+-      "default-features": false
+-    },
+     "simdjson",
+     "simdutf",
+     {
+@@ -207,7 +170,6 @@
+         "vulkan"
+       ]
+     },
+-    "sqlite3",
+     {
+       "name": "tiff",
+       "features": [
+@@ -231,9 +193,53 @@
+     "zlib"
+   ],
+   "default-features": [
++    "browser",
+     "media"
+   ],
+   "features": {
++    "browser": {
++      "description": "The browser's own dependencies: RequestServer's curl and libproxy, LibDatabase's sqlite3, LibWebView's SDL3, the js REPL's libedit, the pdf.js viewer and the Compositor's ANGLE. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave the browser and this feature out.",
++      "dependencies": [
++        {
++          "name": "angle",
++          "platform": "osx",
++          "features": [
++            "metal"
++          ]
++        },
++        {
++          "name": "angle",
++          "platform": "linux | windows | android | bsd"
++        },
++        {
++          "name": "curl",
++          "default-features": false,
++          "features": [
++            "brotli",
++            "non-http",
++            "http2",
++            "http3",
++            "openssl",
++            "websockets",
++            "zstd"
++          ]
++        },
++        {
++          "name": "libproxy",
++          "platform": "!(android | bsd)"
++        },
++        {
++          "name": "libedit",
++          "platform": "!windows & !android"
++        },
++        "pdfjs",
++        {
++          "name": "sdl3",
++          "default-features": false
++        },
++        "sqlite3"
++      ]
++    },
+     "media": {
+       "description": "Audio and video playback: LibMedia's ffmpeg decoders and demuxers. Builds with LADYBIRD_MEDIA_STUB (karouka) leave it out.",
+       "dependencies": [

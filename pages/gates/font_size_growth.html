@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>font size growth</title>
+<style>
+  body { margin: 0; background: #202830; color: #e8eef4; font-family: sans-serif; }
+  #label { margin: 0 16px; }
+</style>
+</head>
+<body>
+<!-- dev.sh check's font size growth gate (font_size_growth_check, docs/MEMORY.md). The label's size
+     changes by 0.1 px every frame, as a font-size transition does, from 12 px to 491.9 px over 4800
+     frames and again from frame 4800 on, so every frame resolves a size no frame before it in that
+     lap did, and its text changes too. Each size makes a font cascade, a Gfx::Font (and on the
+     variable system font a typeface clone) and Skia strikes. Two limits keep that bounded: the
+     document's font cascade memo forgets the cascades no computed style holds (patches 0091, 0095)
+     and kr_system_create2 caps Skia's glyph cache at 256 strikes. Without them the system malloc
+     zone grows without bound (85.7 MB at frame 2400, 109.2 at 4800). -->
+<p id="label">frame 0</p>
+<script>
+  const label = document.getElementById("label");
+  let frame = 0;
+  function step() {
+    ++frame;
+    label.textContent = `frame ${frame}`;
+    label.style.fontSize = `${12 + (frame % 4800) * 0.1}px`;
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

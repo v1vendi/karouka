@@ -1,0 +1,73 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^ok h1:block,32px,700,21\.4375px ul:block,40px li:list-item b:700 button:inline-block,4px,rgb\(128, 128, 128\) summary:list-item td:table-cell,1px hr:1px,8px sup:super pre:pre,monospace mark:rgb\(255, 255, 0\) address:italic small:12\.796875px section:block p:16px em:italic$">
+<title>pending</title>
+<style>
+  /* karouka's own page. A document publishes a user-agent
+     rule whose selectors all name an element type in their subject only once an element of one of
+     those names arrives (patch 0072). This page starts with nothing but html, head, body and
+     script, and inserts every other element after the first frames, then reads their computed
+     style at once, before any frame: each read must see the user-agent rules for an element type
+     the document never held before. The title lists what was read, which the build that publishes
+     every rule at once reads too. */
+  body { margin: 0; font: 16px sans-serif; }
+</style>
+</head>
+<body>
+<script>
+  const early = document.createElement("small");
+  early.textContent = "created early, inserted late";
+  const reads = [];
+  const read = (label, element, properties) => {
+    const style = getComputedStyle(element);
+    reads.push(label + ":" + properties.map(property => style.getPropertyValue(property)).join(","));
+  };
+  const insertLate = () => {
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const h1 = root.appendChild(document.createElement("h1"));
+    h1.textContent = "heading";
+    read("h1", h1, ["display", "font-size", "font-weight", "margin-top"]);
+    const list = root.appendChild(document.createElement("ul"));
+    const item = list.appendChild(document.createElement("li"));
+    item.textContent = "item";
+    read("ul", list, ["display", "padding-left"]);
+    read("li", item, ["display"]);
+    const bold = root.appendChild(document.createElement("b"));
+    bold.textContent = "bold";
+    read("b", bold, ["font-weight"]);
+    const button = root.appendChild(document.createElement("button"));
+    button.disabled = true;
+    button.textContent = "button";
+    read("button", button, ["display", "padding-left", "color"]);
+    root.insertAdjacentHTML("beforeend", "<details><summary>summary</summary>text</details><table><tr><td>cell</td></tr></table><hr><sup>sup</sup><pre>pre</pre><mark>mark</mark><address>address</address>");
+    read("summary", root.querySelector("summary"), ["display"]);
+    read("td", root.querySelector("td"), ["display", "padding-top"]);
+    read("hr", root.querySelector("hr"), ["border-top-width", "margin-top"]);
+    read("sup", root.querySelector("sup"), ["vertical-align"]);
+    read("pre", root.querySelector("pre"), ["white-space", "font-family"]);
+    read("mark", root.querySelector("mark"), ["background-color"]);
+    read("address", root.querySelector("address"), ["font-style"]);
+    root.appendChild(early);
+    read("small", early, ["font-size"]);
+    const host = root.appendChild(document.createElement("section"));
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = "<p>para <em>em</em></p>";
+    read("section", host, ["display"]);
+    read("p", shadow.querySelector("p"), ["margin-top"]);
+    read("em", shadow.querySelector("em"), ["font-style"]);
+  };
+  let frame = 0;
+  const step = () => {
+    if (++frame === 3) {
+      insertLate();
+      document.title = "ok " + reads.join(" ");
+      return;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

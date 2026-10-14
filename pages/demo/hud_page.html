@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* A "typical HUD": text, three CSS animations, and 20 bound values changing
+     every frame. This page has no script. Its 20 values are
+     data-bind-* attributes on model paths the host sets with kr_binding_set_*
+     before each kr_view_advance_time (karouka_viewer's stand-in game does it
+     for any page named hud_page.html, so the bench drives it the same way).
+     Without a host writing the model the authored "-" placeholders stay. */
+  @font-face { font-family: "Hud"; src: url("../fonts/NotoSans-Regular.ttf"); }
+  * { margin: 0; box-sizing: border-box; }
+  body { background: rgb(18, 24, 30); font-family: "Hud"; color: rgb(228, 232, 240); }
+  .panel {
+    position: absolute;
+    background: rgba(8, 12, 20, 0.62);
+    border: 1px solid rgb(64, 78, 104);
+    border-radius: 6px;
+  }
+  .label { position: absolute; font-size: 13px; color: rgb(150, 162, 186); }
+  .value { position: absolute; font-size: 20px; color: rgb(236, 240, 248); }
+  .big { font-size: 40px; }
+  .track {
+    position: absolute; height: 10px; width: 260px;
+    background: rgb(36, 42, 58); border-radius: 5px;
+  }
+  .fill { position: absolute; left: 0px; top: 0px; height: 10px; border-radius: 5px; }
+
+  #vitals { left: 32px; top: 900px; width: 360px; height: 148px; }
+  #ammo { left: 1628px; top: 948px; width: 260px; height: 100px; }
+  #objectives { left: 32px; top: 32px; width: 420px; height: 150px; }
+  #score { left: 760px; top: 24px; width: 400px; height: 56px; }
+  #minimap { left: 1668px; top: 32px; width: 220px; height: 220px; }
+  #alert { left: 810px; top: 980px; width: 300px; height: 44px; }
+
+  #hp-fill { background-color: rgb(210, 70, 64); }
+  #shield-fill { background-color: rgb(72, 160, 232); }
+  #stamina-fill { background-color: rgb(230, 190, 72); }
+  #xp-fill { background-color: rgb(150, 110, 230); }
+
+  /* The three animations -- docs/51 § Frame time "Typical HUD with 3 CSS
+     animations" -- on the animatable set docs/21-css-subset.md allows. */
+  @keyframes blip { 0% { opacity: 1; } 50% { opacity: 0.2; } 100% { opacity: 1; } }
+  @keyframes warn {
+    from { background-color: rgb(120, 24, 24); }
+    to { background-color: rgb(210, 64, 40); }
+  }
+  @keyframes low { from { opacity: 1; } to { opacity: 0.35; } }
+  #blip {
+    position: absolute; left: 104px; top: 104px; width: 12px; height: 12px;
+    border-radius: 6px; background-color: rgb(96, 230, 140);
+    animation: blip 1.2s linear infinite;
+  }
+  #alert { animation: warn 0.8s linear infinite alternate; }
+  #ammo-count { animation: low 0.5s linear infinite alternate; }
+</style>
+</head>
+<body>
+  <div id="objectives" class="panel">
+    <div class="label" style="left: 16px; top: 10px;">OBJECTIVES</div>
+    <div id="obj0" data-bind-text="'Capture point A  ' + objective.capture + '%'" class="value" style="left: 16px; top: 34px; font-size: 16px;">-</div>
+    <div id="obj1" data-bind-text="'Escort the convoy  ' + objective.escort + ' / 7'" class="value" style="left: 16px; top: 62px; font-size: 16px;">-</div>
+    <div id="obj2" data-bind-text="'Hold the bridge  ' + objective.hold + 's'" class="value" style="left: 16px; top: 90px; font-size: 16px;">-</div>
+    <div id="timer" data-bind-text="'Round ends in ' + round.remaining + 's'" class="value" style="left: 16px; top: 116px; font-size: 16px;">-</div>
+  </div>
+
+  <div id="score" class="panel">
+    <div class="label" style="left: 16px; top: 18px;">SCORE</div>
+    <div id="score-value" data-bind-text="match.score" class="value" style="left: 80px; top: 12px;">0</div>
+    <div class="label" style="left: 230px; top: 18px;">KILLS</div>
+    <div id="kills" data-bind-text="match.kills" class="value" style="left: 290px; top: 12px;">0</div>
+  </div>
+
+  <div id="minimap" class="panel">
+    <div id="blip"></div>
+    <div id="coords" data-bind-text="player.x + ', ' + player.y" class="label" style="left: 12px; top: 196px;">-</div>
+    <div id="heading" data-bind-text="player.heading + ' deg'" class="label" style="left: 150px; top: 196px;">-</div>
+  </div>
+
+  <div id="vitals" class="panel">
+    <div class="label" style="left: 16px; top: 10px;">HEALTH</div>
+    <div id="hp" data-bind-text="player.health" class="value" style="left: 290px; top: 4px;">100</div>
+    <div class="track" style="left: 16px; top: 30px;"><div id="hp-fill" data-bind-style-width="player.health + '%'" class="fill"></div></div>
+    <div class="label" style="left: 16px; top: 46px;">SHIELD</div>
+    <div id="shield" data-bind-text="player.shield" class="value" style="left: 290px; top: 40px;">100</div>
+    <div class="track" style="left: 16px; top: 66px;"><div id="shield-fill" data-bind-style-width="player.shield + '%'" class="fill"></div></div>
+    <div class="label" style="left: 16px; top: 82px;">STAMINA</div>
+    <div id="stamina" data-bind-text="player.stamina" class="value" style="left: 290px; top: 76px;">100</div>
+    <div class="track" style="left: 16px; top: 102px;"><div id="stamina-fill" data-bind-style-width="player.stamina + '%'" class="fill"></div></div>
+    <div id="level" data-bind-text="'LV ' + player.level" class="label" style="left: 16px; top: 120px;">-</div>
+    <div class="track" style="left: 90px; top: 124px; width: 186px;"><div id="xp-fill" data-bind-style-width="player.xp + '%'" class="fill"></div></div>
+  </div>
+
+  <div id="ammo" class="panel">
+    <div id="weapon" data-bind-text="weapon.name" class="label" style="left: 16px; top: 10px;">-</div>
+    <div id="ammo-count" data-bind-text="weapon.ammo" class="value big" style="left: 16px; top: 34px;">30</div>
+    <div id="reserve" class="value" style="left: 110px; top: 54px;">/ 180</div>
+    <div id="grenades" data-bind-text="'G x' + weapon.grenades" class="label" style="left: 190px; top: 62px;">-</div>
+  </div>
+
+  <div id="alert" class="panel">
+    <div class="value" style="left: 18px; top: 8px; font-size: 18px;">INCOMING</div>
+    <div id="alert-range" data-bind-text="alert.range + ' m'" class="value" style="left: 150px; top: 8px; font-size: 18px;">-</div>
+  </div>
+
+</body>
+</html>

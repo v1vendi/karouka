@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>malloc growth</title>
+<style>
+  body { margin: 0; background: #202830; }
+  #box { width: 64px; height: 64px; margin: 16px; }
+</style>
+</head>
+<body>
+<!-- dev.sh check's malloc growth gate (malloc_growth_check). Every frame repaints the box, so
+     kr_view_render draws through Skia's Metal backend, which autoreleases a command buffer each
+     frame; the small GIF (six 48x48 frames, decoded whole, 70 ms apart) also uploads
+     textures inside the render, as animated_churn.html's images do. Nothing else changes: no text
+     (each new string is a new blob in Skia's text blob cache, ~1 KB of system malloc a frame until
+     the cache's budget) and no image loads (each keeps its element and decoded data until a GC), so
+     with the pool the system malloc zone stays flat and without it grows ~1.8 KB a frame. -->
+<div id="box"></div>
+<img src="../tests/animated_gif_pool.gif" alt="">
+<script>
+  const box = document.getElementById("box");
+  let frame = 0;
+  function step() {
+    ++frame;
+    box.style.backgroundColor = `rgb(${frame % 256}, 128, ${255 - (frame % 256)})`;
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

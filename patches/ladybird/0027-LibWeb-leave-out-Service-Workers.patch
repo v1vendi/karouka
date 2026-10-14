@@ -1,0 +1,349 @@
+diff --git a/Libraries/LibWeb/Embedder/Prune/ServiceWorker.cmake b/Libraries/LibWeb/Embedder/Prune/ServiceWorker.cmake
+new file mode 100644
+index 0000000000..df9a0282a9
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/ServiceWorker.cmake
+@@ -0,0 +1,5 @@
++# karouka: Service Workers and the Cache API. Pages render from local files with no network and no
++# profile directory, so there is nothing to intercept fetches for and nowhere to keep caches.
++# `navigator.serviceWorker` and `caches` are not exposed, and environment settings objects keep no
++# service worker registration or worker object maps.
++list(APPEND LIBWEB_PRUNED_FAMILIES ServiceWorker)
+diff --git a/Libraries/LibWeb/HTML/Navigator.cpp b/Libraries/LibWeb/HTML/Navigator.cpp
+index c5e4a25df5..a38ad4160f 100644
+--- a/Libraries/LibWeb/HTML/Navigator.cpp
++++ b/Libraries/LibWeb/HTML/Navigator.cpp
+@@ -35,7 +35,9 @@
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/PermissionsAPI/Permissions.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+-#include <LibWeb/ServiceWorker/ServiceWorkerContainer.h>
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/ServiceWorkerContainer.h>
++#endif
+ #ifndef LIBWEB_PRUNE_WEBXR
+ #    include <LibWeb/WebXR/XRSystem.h>
+ #endif
+@@ -102,7 +104,9 @@ void Navigator::visit_edges(GC::Cell::Visitor& visitor)
+     visitor.visit(m_serial);
+ #endif
+     visitor.visit(m_user_activation);
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     visitor.visit(m_service_worker_container);
++#endif
+     visitor.visit(m_media_capabilities);
+     visitor.visit(m_media_devices);
+ #ifndef LIBWEB_PRUNE_CREDENTIALMANAGEMENT
+@@ -191,12 +195,14 @@ WebIDL::Long Navigator::max_touch_points()
+     return 0;
+ }
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+ GC::Ref<ServiceWorker::ServiceWorkerContainer> Navigator::service_worker()
+ {
+     if (!m_service_worker_container)
+         m_service_worker_container = ServiceWorker::ServiceWorkerContainer::create(relevant_settings_object(*m_window));
+     return *m_service_worker_container;
+ }
++#endif
+ 
+ GC::Ref<MediaCapabilitiesAPI::MediaCapabilities> Navigator::media_capabilities()
+ {
+diff --git a/Libraries/LibWeb/HTML/Navigator.h b/Libraries/LibWeb/HTML/Navigator.h
+index 02cc2f18a1..9bc2cc66e3 100644
+--- a/Libraries/LibWeb/HTML/Navigator.h
++++ b/Libraries/LibWeb/HTML/Navigator.h
+@@ -102,7 +102,9 @@ public:
+     void request_media_key_system_access(Utf16String key_system, Vector<EncryptedMediaExtensions::MediaKeySystemConfiguration> supported_configurations, GC::Ref<WebIDL::Promise>);
+ #endif
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     GC::Ref<ServiceWorker::ServiceWorkerContainer> service_worker();
++#endif
+ 
+     GC::Ref<MediaCapabilitiesAPI::MediaCapabilities> media_capabilities();
+     GC::Ref<MediaCapture::MediaDevices> media_devices();
+@@ -151,8 +153,10 @@ private:
+     // https://html.spec.whatwg.org/multipage/interaction.html#dom-navigator-useractivation
+     GC::Ptr<UserActivation> m_user_activation;
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     // https://w3c.github.io/ServiceWorker/#navigator-serviceworker
+     GC::Ptr<ServiceWorker::ServiceWorkerContainer> m_service_worker_container;
++#endif
+ 
+     // https://w3c.github.io/media-capabilities/#dom-navigator-mediacapabilities
+     GC::Ptr<MediaCapabilitiesAPI::MediaCapabilities> m_media_capabilities;
+diff --git a/Libraries/LibWeb/HTML/Scripting/Environments.cpp b/Libraries/LibWeb/HTML/Scripting/Environments.cpp
+index d094613e7d..eb5c8e0654 100644
+--- a/Libraries/LibWeb/HTML/Scripting/Environments.cpp
++++ b/Libraries/LibWeb/HTML/Scripting/Environments.cpp
+@@ -30,8 +30,12 @@
+ #include <LibWeb/Infra/SerializedURL.h>
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/SecureContexts/AbstractOperations.h>
+-#include <LibWeb/ServiceWorker/ServiceWorker.h>
+-#include <LibWeb/ServiceWorker/ServiceWorkerRegistration.h>
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/ServiceWorker.h>
++#endif
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/ServiceWorkerRegistration.h>
++#endif
+ #ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ #include <LibWeb/StorageAPI/StorageManager.h>
+ #endif
+@@ -84,8 +88,10 @@ void EnvironmentSettingsObject::visit_edges(Cell::Visitor& visitor)
+ #ifndef LIBWEB_PRUNE_WEBLOCKS
+     visitor.visit(m_lock_manager);
+ #endif
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     visitor.visit(m_service_worker_registration_object_map);
+     visitor.visit(m_service_worker_object_map);
++#endif
+     visitor.visit(m_owned_worker_agents);
+ }
+ 
+@@ -739,6 +745,7 @@ GC::Ref<WebLocks::LockManager> EnvironmentSettingsObject::lock_manager()
+ }
+ #endif
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+ // https://w3c.github.io/ServiceWorker/#get-the-service-worker-registration-object
+ GC::Ref<ServiceWorker::ServiceWorkerRegistration> EnvironmentSettingsObject::get_service_worker_registration_object(ServiceWorker::Registration const& registration)
+ {
+@@ -797,5 +804,6 @@ GC::Ref<ServiceWorker::ServiceWorker> EnvironmentSettingsObject::get_service_wor
+     // 3. Return objectMap[serviceWorker].
+     return *object_map.get(service_worker);
+ }
++#endif
+ 
+ }
+diff --git a/Libraries/LibWeb/HTML/Scripting/Environments.h b/Libraries/LibWeb/HTML/Scripting/Environments.h
+index fa88029b2f..d9eef3f96a 100644
+--- a/Libraries/LibWeb/HTML/Scripting/Environments.h
++++ b/Libraries/LibWeb/HTML/Scripting/Environments.h
+@@ -19,7 +19,13 @@
+ #include <LibWeb/HTML/EventLoop/EventLoop.h>
+ #include <LibWeb/HTML/Scripting/ModuleMap.h>
+ #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+-#include <LibWeb/ServiceWorker/Registration.h>
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/Registration.h>
++#else
++// Much of LibWeb (and its generated bindings) reaches these through ServiceWorker/Registration.h.
++#    include <LibWeb/Bindings/Worker.h>
++#    include <LibWeb/StorageAPI/StorageKey.h>
++#endif
+ #include <LibWebCommon/HTML/Scripting/EnvironmentId.h>
+ #include <LibWebCommon/HTML/Scripting/SerializedEnvironmentSettingsObject.h>
+ 
+@@ -146,12 +152,14 @@ public:
+     GC::Ref<WebLocks::LockManager> lock_manager();
+ #endif
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     // https://w3c.github.io/ServiceWorker/#get-the-service-worker-registration-object
+     GC::Ref<ServiceWorker::ServiceWorkerRegistration> get_service_worker_registration_object(ServiceWorker::Registration const&);
+ 
+     // https://w3c.github.io/ServiceWorker/#get-the-service-worker-object
+     GC::Ref<ServiceWorker::ServiceWorker> get_service_worker_object(ServiceWorker::ServiceWorkerRecord*);
+ 
++#endif
+     [[nodiscard]] bool discarded() const { return m_discarded; }
+     void set_discarded(bool b) { m_discarded = b; }
+ 
+@@ -204,6 +212,7 @@ private:
+     // Each environment settings object has a LockManager object.
+     GC::Ptr<WebLocks::LockManager> m_lock_manager;
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     // https://w3c.github.io/ServiceWorker/#environment-settings-object-service-worker-registration-object-map
+     // An environment settings object has a service worker registration object map,
+     // a map where the keys are service worker registrations and the values are ServiceWorkerRegistration objects.
+@@ -213,6 +222,7 @@ private:
+     // An environment settings object has a service worker object map,
+     // a map where the keys are service workers and the values are ServiceWorker objects.
+     HashMap<ServiceWorker::ServiceWorkerRecord*, GC::Ref<ServiceWorker::ServiceWorker>> m_service_worker_object_map;
++#endif
+ 
+     // https://w3c.github.io/ServiceWorker/#service-worker-client-discarded-flag
+     // A service worker client has an associated discarded flag. It is initially unset.
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+index 8325176089..ee5a7ba8e7 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+@@ -76,7 +76,9 @@
+ #include <LibWeb/Platform/ImageCodecPlugin.h>
+ #include <LibWeb/ResourceTiming/PerformanceResourceTiming.h>
+ #include <LibWeb/SVG/SVGImageElement.h>
+-#include <LibWeb/ServiceWorker/CacheStorage.h>
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/CacheStorage.h>
++#endif
+ #include <LibWeb/TrustedTypes/RequireTrustedTypesForDirective.h>
+ #include <LibWeb/TrustedTypes/TrustedScript.h>
+ #include <LibWeb/TrustedTypes/TrustedTypePolicy.h>
+@@ -146,7 +148,9 @@ void WindowOrWorkerGlobalScopeMixin::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_registered_event_sources);
+     visitor.visit(m_strongly_referenced_broadcast_channels);
+     visitor.visit(m_crypto);
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     visitor.visit(m_cache_storage);
++#endif
+     visitor.visit(m_resource_timing_secondary_buffer);
+     visitor.visit(m_trusted_type_policy_factory);
+     visitor.visit(m_count_queuing_strategy_size_function);
+@@ -1735,6 +1739,7 @@ GC::Ref<Crypto::Crypto> WindowOrWorkerGlobalScopeMixin::crypto()
+     return GC::Ref { *m_crypto };
+ }
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+ // https://w3c.github.io/ServiceWorker/#cache-storage-interface
+ GC::Ref<ServiceWorker::CacheStorage> WindowOrWorkerGlobalScopeMixin::caches()
+ {
+@@ -1743,6 +1748,7 @@ GC::Ref<ServiceWorker::CacheStorage> WindowOrWorkerGlobalScopeMixin::caches()
+     return GC::Ref { *m_cache_storage };
+ }
+ 
++#endif
+ // https://w3c.github.io/trusted-types/dist/spec/#extensions-to-the-windoworworkerglobalscope-interface
+ GC::Ref<TrustedTypes::TrustedTypePolicyFactory> WindowOrWorkerGlobalScopeMixin::trusted_types()
+ {
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
+index 6372ea5a2b..600e8bf924 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
+@@ -149,7 +149,9 @@ public:
+     static bool expose_experimental_interface(EnvironmentSettingsObject&, StringView name);
+ 
+     [[nodiscard]] GC::Ref<Crypto::Crypto> crypto();
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     [[nodiscard]] GC::Ref<ServiceWorker::CacheStorage> caches();
++#endif
+     GC::Ref<IndexedDB::IDBFactory> indexed_db();
+     [[nodiscard]] GC::Ref<HighResolutionTime::Performance> performance();
+     [[nodiscard]] GC::Ref<TrustedTypes::TrustedTypePolicyFactory> trusted_types();
+@@ -222,7 +224,9 @@ private:
+ 
+     GC::Ptr<Crypto::Crypto> m_crypto;
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     GC::Ptr<ServiceWorker::CacheStorage> m_cache_storage;
++#endif
+ 
+     GC::Ptr<TrustedTypes::TrustedTypePolicyFactory> m_trusted_type_policy_factory;
+ 
+diff --git a/Libraries/LibWeb/HTML/WorkerGlobalScope.cpp b/Libraries/LibWeb/HTML/WorkerGlobalScope.cpp
+index 28dc388bba..c3fb03b90e 100644
+--- a/Libraries/LibWeb/HTML/WorkerGlobalScope.cpp
++++ b/Libraries/LibWeb/HTML/WorkerGlobalScope.cpp
+@@ -25,7 +25,9 @@
+ #include <LibWeb/HTML/WorkerLocation.h>
+ #include <LibWeb/HTML/WorkerNavigator.h>
+ #include <LibWeb/Page/Page.h>
+-#include <LibWeb/ServiceWorker/ServiceWorkerGlobalScope.h>
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/ServiceWorkerGlobalScope.h>
++#endif
+ 
+ namespace Web::HTML {
+ 
+@@ -243,11 +245,13 @@ HTML::WorkerGlobalScope const* worker_global_scope_from_global_object(JS::Object
+     return Bindings::impl_from<HTML::WorkerGlobalScope>(&object);
+ }
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+ ServiceWorker::ServiceWorkerGlobalScope* service_worker_global_scope_from_global_object(JS::Object& object)
+ {
+     return Bindings::impl_from<ServiceWorker::ServiceWorkerGlobalScope>(&object);
+ }
+ 
++#endif
+ JS::Realm& main_world_realm(HTML::WorkerGlobalScope const& worker_global_scope)
+ {
+     auto wrapper = worker_global_scope.cached_main_world_wrapper();
+diff --git a/Libraries/LibWeb/HTML/WorkerGlobalScope.h b/Libraries/LibWeb/HTML/WorkerGlobalScope.h
+index 73a6d6a00c..88ab5c27e7 100644
+--- a/Libraries/LibWeb/HTML/WorkerGlobalScope.h
++++ b/Libraries/LibWeb/HTML/WorkerGlobalScope.h
+@@ -40,6 +40,7 @@ WEB_API void initialize_worker_web_interfaces(HTML::WorkerGlobalScope&);
+ 
+ }
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+ namespace Web::ServiceWorker {
+ 
+ class ServiceWorkerGlobalScope;
+@@ -51,6 +52,7 @@ namespace Web::Bindings {
+ WEB_API ServiceWorker::ServiceWorkerGlobalScope* service_worker_global_scope_from_global_object(JS::Object&);
+ 
+ }
++#endif
+ 
+ #define ENUMERATE_WORKER_GLOBAL_SCOPE_EVENT_HANDLERS(E)       \
+     E(onerror, HTML::EventNames::error)                       \
+diff --git a/Libraries/LibWeb/HTML/WorkerNavigator.cpp b/Libraries/LibWeb/HTML/WorkerNavigator.cpp
+index 068b8cc889..e6ccbc8800 100644
+--- a/Libraries/LibWeb/HTML/WorkerNavigator.cpp
++++ b/Libraries/LibWeb/HTML/WorkerNavigator.cpp
+@@ -40,7 +40,9 @@ void WorkerNavigator::visit_edges(GC::Cell::Visitor& visitor)
+ #ifndef LIBWEB_PRUNE_SERIAL
+     visitor.visit(m_serial);
+ #endif
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     visitor.visit(m_service_worker_container);
++#endif
+     visitor.visit(m_permissions);
+ }
+ 
+@@ -67,12 +69,14 @@ GC::Ref<Serial::Serial> WorkerNavigator::serial()
+ }
+ #endif
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+ GC::Ref<ServiceWorker::ServiceWorkerContainer> WorkerNavigator::service_worker()
+ {
+     if (!m_service_worker_container)
+         m_service_worker_container = ServiceWorker::ServiceWorkerContainer::create(relevant_settings_object(*m_global_scope));
+     return *m_service_worker_container;
+ }
++#endif
+ 
+ GC::Ref<PermissionsAPI::Permissions> WorkerNavigator::permissions()
+ {
+diff --git a/Libraries/LibWeb/HTML/WorkerNavigator.h b/Libraries/LibWeb/HTML/WorkerNavigator.h
+index 1d963c711d..574941787a 100644
+--- a/Libraries/LibWeb/HTML/WorkerNavigator.h
++++ b/Libraries/LibWeb/HTML/WorkerNavigator.h
+@@ -18,7 +18,9 @@
+ #ifndef LIBWEB_PRUNE_SERIAL
+ #    include <LibWeb/Serial/Serial.h>
+ #endif
+-#include <LibWeb/ServiceWorker/ServiceWorkerContainer.h>
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
++#    include <LibWeb/ServiceWorker/ServiceWorkerContainer.h>
++#endif
+ #ifndef LIBWEB_PRUNE_STORAGEMANAGER
+ #include <LibWeb/StorageAPI/NavigatorStorage.h>
+ #endif
+@@ -49,7 +51,9 @@ class WorkerNavigator
+ public:
+     [[nodiscard]] static GC::Ref<WorkerNavigator> create(WorkerGlobalScope&);
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     GC::Ref<ServiceWorker::ServiceWorkerContainer> service_worker();
++#endif
+ 
+     virtual ~WorkerNavigator() override;
+ 
+@@ -89,7 +93,9 @@ private:
+     GC::Ptr<Serial::Serial> m_serial;
+ #endif
+ 
++#ifndef LIBWEB_PRUNE_SERVICEWORKER
+     GC::Ptr<ServiceWorker::ServiceWorkerContainer> m_service_worker_container;
++#endif
+ 
+     // https://w3c.github.io/permissions/#navigator-and-workernavigator-extension
+     GC::Ptr<PermissionsAPI::Permissions> m_permissions;

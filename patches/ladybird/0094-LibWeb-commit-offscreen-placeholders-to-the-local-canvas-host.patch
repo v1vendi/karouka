@@ -1,0 +1,179 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: commit OffscreenCanvas placeholders to the local canvas host
+
+transferControlToOffscreen() asks the page's CompositorHost for a
+placeholder canvas id, and each rendering update commits the
+OffscreenCanvas's presented frame under it. On a page without a
+CompositorHost the canvas element gets no id and paints nothing.
+
+LocalCanvas2DHost now also allocates, commits, releases and reads back
+placeholder canvases. Commits through it are reported to the canvas
+element at once, during the rendering update before painting: the
+element moves its content generation so this update's display list
+redraws it, and resizes itself when the frame's size changed. Pages
+with a CompositorHost are unchanged.
+---
+--- a/Libraries/LibWeb/Embedder/LocalCanvas.h
++++ b/Libraries/LibWeb/Embedder/LocalCanvas.h
+@@ -6,7 +6,9 @@
+ 
+ #pragma once
+ 
++#include <AK/Optional.h>
+ #include <AK/RefPtr.h>
++#include <LibWeb/Compositor/CompositorHost.h>
+ #include <LibWeb/Export.h>
+ #include <LibWeb/Forward.h>
+ 
+@@ -24,6 +26,14 @@
+ 
+     virtual RefPtr<HTML::RemoteCanvas2DTransport> create_canvas_2d_transport() = 0;
+     virtual void flush_canvas_2d_stream() = 0;
++
++    // The placeholder canvas of transferControlToOffscreen(), as the compositor keeps it: an id
++    // the canvas element paints with DrawCanvas, which each rendering update's commit points at a
++    // copy of its OffscreenCanvas's presented pixels (none: the placeholder paints nothing).
++    virtual Optional<Compositor::PlaceholderCanvasLink> allocate_placeholder_canvas() = 0;
++    virtual void release_placeholder_canvas(Compositing::CanvasId) = 0;
++    virtual void commit_placeholder_canvas(Compositor::PlaceholderCanvasLink, Optional<Compositing::CanvasId> source_canvas_id, Gfx::IntSize, bool origin_clean) = 0;
++    virtual Compositor::PlaceholderCanvasPixels read_placeholder_canvas_pixels(Compositing::CanvasId, Gfx::IntRect) = 0;
+ };
+ 
+ // Not owned; null (the default) leaves canvases without a CompositorHost unbacked.
+--- a/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLCanvasElement.cpp
+@@ -24,6 +24,7 @@
+ #include <LibWeb/CSS/StyleValues/RatioStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/StyleValueList.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/LocalCanvas.h>
+ #include <LibWeb/FileAPI/Blob.h>
+ #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
+ #include <LibWeb/HTML/CanvasRenderingContext2D.h>
+@@ -81,6 +82,8 @@
+         placeholder_canvas_elements().remove(*m_placeholder_canvas_id);
+         if (document().page().has_compositor_host())
+             document().page().compositor_host().release_placeholder_canvas(*m_placeholder_canvas_id);
++        else if (auto* local_host = Embedder::local_canvas_2d_host())
++            local_host->release_placeholder_canvas(*m_placeholder_canvas_id);
+     }
+     Base::finalize();
+     document().page().unregister_canvas_element({}, unique_id());
+@@ -591,12 +594,15 @@
+     auto offscreen_canvas = OffscreenCanvas::create(*document().window(), width(), height());
+ 
+     // 3. Set the placeholder canvas element of offscreenCanvas to a weak reference to this canvas element.
+-    if (document().page().has_compositor_host()) {
+-        if (auto link = document().page().compositor_host().allocate_placeholder_canvas(); link.has_value()) {
+-            m_placeholder_canvas_id = link->canvas_id;
+-            placeholder_canvas_elements().set(link->canvas_id, unique_id());
+-            offscreen_canvas->set_placeholder_link(*link);
+-        }
++    Optional<Compositor::PlaceholderCanvasLink> link;
++    if (document().page().has_compositor_host())
++        link = document().page().compositor_host().allocate_placeholder_canvas();
++    else if (auto* local_host = Embedder::local_canvas_2d_host())
++        link = local_host->allocate_placeholder_canvas();
++    if (link.has_value()) {
++        m_placeholder_canvas_id = link->canvas_id;
++        placeholder_canvas_elements().set(link->canvas_id, unique_id());
++        offscreen_canvas->set_placeholder_link(*link);
+     }
+ 
+     // 4. Set this canvas element's context mode to placeholder.
+@@ -621,6 +627,16 @@
+ {
+     m_placeholder_frame_is_origin_clean = origin_clean;
+ 
++    if (!document().page().has_compositor_host()) {
++        // A local host commits during the rendering update, before painting, and reports every
++        // commit: move the content generation so this update's display list redraws the canvas
++        // (the compositor re-presents the contexts drawing it instead).
++        did_change_canvas_content();
++        prepare_for_compositing();
++        if (width() == static_cast<WebIDL::UnsignedLong>(size.width()) && height() == static_cast<WebIDL::UnsignedLong>(size.height()))
++            return;
++    }
++
+     queue_an_element_task(Task::Source::DOMManipulation, [this, size] {
+         if (width() != static_cast<WebIDL::UnsignedLong>(size.width()))
+             set_attribute_value(HTML::AttributeNames::width, Utf16String::number(size.width()));
+@@ -638,11 +654,17 @@
+     if (size.is_empty())
+         return nullptr;
+ 
+-    if (m_placeholder_canvas_id.has_value() && document().page().has_compositor_host()) {
+-        auto frame = document().page().compositor_host().read_placeholder_canvas_pixels(*m_placeholder_canvas_id, { {}, size });
+-        m_placeholder_frame_is_origin_clean = frame.origin_clean;
+-        if (frame.bitmap && frame.bitmap->size() == size)
+-            return frame.bitmap;
++    if (m_placeholder_canvas_id.has_value()) {
++        Optional<Compositor::PlaceholderCanvasPixels> frame;
++        if (document().page().has_compositor_host())
++            frame = document().page().compositor_host().read_placeholder_canvas_pixels(*m_placeholder_canvas_id, { {}, size });
++        else if (auto* local_host = Embedder::local_canvas_2d_host())
++            frame = local_host->read_placeholder_canvas_pixels(*m_placeholder_canvas_id, { {}, size });
++        if (frame.has_value()) {
++            m_placeholder_frame_is_origin_clean = frame->origin_clean;
++            if (frame->bitmap && frame->bitmap->size() == size)
++                return frame->bitmap;
++        }
+     }
+     return CanvasHost::get_bitmap_from_surface();
+ }
+--- a/Libraries/LibWeb/HTML/OffscreenCanvas.cpp
++++ b/Libraries/LibWeb/HTML/OffscreenCanvas.cpp
+@@ -16,11 +16,13 @@
+ #include <LibWeb/CSS/FontComputer.h>
+ #include <LibWeb/CSS/StyleValues/StyleValue.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/LocalCanvas.h>
+ #include <LibWeb/FileAPI/Blob.h>
+ #include <LibWeb/HTML/BindingsGlue.h>
+ #include <LibWeb/HTML/Canvas/SerializeBitmap.h>
+ #include <LibWeb/HTML/DedicatedWorkerGlobalScope.h>
+ #include <LibWeb/HTML/EventLoop/Task.h>
++#include <LibWeb/HTML/HTMLCanvasElement.h>
+ #include <LibWeb/HTML/OffscreenCanvas.h>
+ #include <LibWeb/HTML/OffscreenCanvasRenderingContext2D.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+@@ -346,7 +348,11 @@
+ {
+     m_placeholder_commit_is_pending = false;
+     auto& page = canvas_page();
+-    if (!m_placeholder_link.has_value() || !page.has_compositor_host())
++    if (!m_placeholder_link.has_value())
++        return;
++    // Without a CompositorHost, an embedder's LocalCanvas2DHost keeps the placeholder.
++    auto* local_host = page.has_compositor_host() ? nullptr : Embedder::local_canvas_2d_host();
++    if (!page.has_compositor_host() && !local_host)
+         return;
+ 
+     Optional<Compositing::CanvasId> source_canvas_id;
+@@ -354,7 +360,10 @@
+         [&](GC::Ref<OffscreenCanvasRenderingContext2D>& context) {
+             context->ensure_backing_storage();
+             context->prepare_for_compositing();
+-            page.compositor_host().flush_canvas_2d_stream();
++            if (local_host)
++                local_host->flush_canvas_2d_stream();
++            else
++                page.compositor_host().flush_canvas_2d_stream();
+             source_canvas_id = context->canvas_id();
+         },
+ #ifndef LIBWEB_PRUNE_WEBGL
+@@ -372,7 +381,13 @@
+     auto clamp_dimension = [](WebIDL::UnsignedLongLong dimension) {
+         return static_cast<int>(min(dimension, static_cast<WebIDL::UnsignedLongLong>(NumericLimits<int>::max())));
+     };
+-    page.compositor_host().commit_placeholder_canvas(*m_placeholder_link, source_canvas_id, { clamp_dimension(m_width), clamp_dimension(m_height) }, is_origin_clean());
++    Gfx::IntSize size { clamp_dimension(m_width), clamp_dimension(m_height) };
++    if (local_host) {
++        local_host->commit_placeholder_canvas(*m_placeholder_link, source_canvas_id, size, is_origin_clean());
++        HTMLCanvasElement::placeholder_frame_committed(m_placeholder_link->canvas_id, size, is_origin_clean());
++        return;
++    }
++    page.compositor_host().commit_placeholder_canvas(*m_placeholder_link, source_canvas_id, size, is_origin_clean());
+ }
+ 
+ void OffscreenCanvas::visit_edges(Cell::Visitor& visitor)

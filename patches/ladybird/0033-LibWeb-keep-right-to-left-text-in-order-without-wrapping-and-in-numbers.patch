@@ -1,0 +1,165 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: keep right-to-left text in order without wrapping and in numbers
+
+The text chunker split a text node into direction runs only when its lines
+wrap. Under white-space: nowrap or pre, a chunk holding Latin and Arabic was
+shaped in its first code point's direction, so the Arabic rendered with its
+letters (and words) in reverse visual order. Split direction runs in every
+mode; without wrapping the split is no break opportunity, and the line box
+places the runs in visual order (patch 0040), as it does when wrapping.
+
+A number inside right-to-left text resolved to RTL and was shaped right to
+left, so its digits came out reversed (UAX #9 I2 keeps them left to right).
+Shape a run of European or Arabic digits, with only number separators and
+terminators between them, left to right, and let the line box place it as one
+unit of the right-to-left sequence.
+
+A neutral run at a text node's edge, whose known side is not the embedding
+direction, depends on text outside the node: leave it context-dependent for
+the line box to resolve against the neighbouring fragments (patch 0040),
+instead of joining the space before an Arabic word in a left-to-right
+paragraph to the Arabic. The line box uses is_number_run and
+number_punctuation_run to resolve the numbers between fragments.
+
+---
+diff --git a/Libraries/LibWeb/Rust/src/layout/inline_level_iterator.rs b/Libraries/LibWeb/Rust/src/layout/inline_level_iterator.rs
+index e2c03049c8..f19a2fce4e 100644
+--- a/Libraries/LibWeb/Rust/src/layout/inline_level_iterator.rs
++++ b/Libraries/LibWeb/Rust/src/layout/inline_level_iterator.rs
+@@ -46,8 +46,15 @@ fn shape_glyph_data(
+     letter_spacing: f32,
+     word_spacing: f32,
+ ) -> (line_box_fragment::GlyphData, line_box_fragment::TrailingWhitespace) {
++    // A number inside right-to-left text keeps its own left-to-right order (UAX #9 rule I2): shape its digits
++    // left to right, and let the line box place the shaped run as one unit of the right-to-left sequence.
++    let shape_as = if text_type == line_box_fragment::GLYPH_TEXT_TYPE_RTL && text_chunker::is_number_run(text) {
++        line_box_fragment::GLYPH_TEXT_TYPE_LTR
++    } else {
++        text_type
++    };
+     let shaped_text_type =
+-        libgfx_rust::text_layout::TextType::try_from(text_type).expect("invalid Gfx::GlyphRun::TextType");
++        libgfx_rust::text_layout::TextType::try_from(shape_as).expect("invalid Gfx::GlyphRun::TextType");
+     let shaped = libgfx_rust::text_layout::shape_text(
+         &font,
+         text,
+@@ -554,19 +561,21 @@ impl<'iterator, 'context> InlineLevelIteratorGenerator<'iterator, 'context> {
+             )
+             .then_some(chunk.text_type)
+         });
+-        if let (Some(last), Some(next)) = (context.last_known_direction, next_known_direction)
+-            && last != next
+-        {
+-            return match self.context().style(self.context().containing_block).direction() {
+-                direction::LTR => line_box_fragment::GLYPH_TEXT_TYPE_LTR,
+-                direction::RTL => line_box_fragment::GLYPH_TEXT_TYPE_RTL,
+-                _ => unreachable!(),
+-            };
++        let embedding_direction = match self.context().style(self.context().containing_block).direction() {
++            direction::LTR => line_box_fragment::GLYPH_TEXT_TYPE_LTR,
++            direction::RTL => line_box_fragment::GLYPH_TEXT_TYPE_RTL,
++            _ => unreachable!(),
++        };
++        match (context.last_known_direction, next_known_direction) {
++            (Some(last), Some(next)) if last != next => embedding_direction,
++            (Some(known), Some(_)) => known,
++            // NB: At the text node's edge the neutral's other side is outside it. It takes the embedding direction if
++            //     its known side has it, whatever the other side is (UAX #9 N1, N2). Otherwise leave it to the line,
++            //     which resolves it against the neighbouring fragments (line_bidi), instead of joining the space
++            //     before an Arabic word in a left-to-right paragraph to the Arabic.
++            (Some(known), None) | (None, Some(known)) if known == embedding_direction => known,
++            _ => line_box_fragment::GLYPH_TEXT_TYPE_CONTEXT_DEPENDENT,
+         }
+-        context
+-            .last_known_direction
+-            .or(next_known_direction)
+-            .unwrap_or(line_box_fragment::GLYPH_TEXT_TYPE_CONTEXT_DEPENDENT)
+     }
+ 
+     fn add_extra_box_model_metrics_to_item(
+diff --git a/Libraries/LibWeb/Rust/src/layout/text_chunker.rs b/Libraries/LibWeb/Rust/src/layout/text_chunker.rs
+index 8602272f94..5074dc1566 100644
+--- a/Libraries/LibWeb/Rust/src/layout/text_chunker.rs
++++ b/Libraries/LibWeb/Rust/src/layout/text_chunker.rs
+@@ -86,6 +86,67 @@ fn text_type_for_code_point(code_point: u32) -> u8 {
+     }
+ }
+ 
++// Whether a run is a number: European or Arabic digits, with only number separators, terminators and marks
++// between them. Such a run keeps its left-to-right order inside right-to-left text. Spaces may surround it (a run
++// that doesn't wrap keeps its spaces), but not split it: two numbers in a row are two units of the sequence.
++pub(crate) fn is_number_run(text: &[u16]) -> bool {
++    let is_space = |unit: &u16| *unit <= 0x7f && code_point_is_ascii_space(u32::from(*unit));
++    let Some(first) = text.iter().position(|unit| !is_space(unit)) else {
++        return false;
++    };
++    let last = text.iter().rposition(|unit| !is_space(unit)).unwrap();
++    let text = &text[first..=last];
++    // LibUnicode's BidiClass, in declaration order.
++    const AN: u8 = 0;
++    const CS: u8 = 3;
++    const NSM: u8 = 4;
++    const EN: u8 = 5;
++    const ES: u8 = 6;
++    const ET: u8 = 7;
++    let mut has_digit = false;
++    for code_point in char::decode_utf16(text.iter().copied()) {
++        let Ok(code_point) = code_point else {
++            return false;
++        };
++        // SAFETY: Pure Unicode table lookup.
++        match unsafe { unicode_layout_bidirectional_class(u32::from(code_point)) } {
++            AN | EN => has_digit = true,
++            CS | NSM | ES | ET => {}
++            _ => return false,
++        }
++    }
++    has_digit
++}
++
++// What a run that holds no digit but only number punctuation becomes next to a number (UAX #9 rules W4 and W5).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum NumberPunctuation {
++    // Only terminators ("%", "$", "#"): part of a number on either side.
++    Terminators,
++    // Separators too ("." "," "/" "+" "-"): part of a number only between two.
++    Separators,
++}
++
++pub(crate) fn number_punctuation_run(text: &[u16]) -> Option<NumberPunctuation> {
++    // LibUnicode's BidiClass, in declaration order.
++    const CS: u8 = 3;
++    const ES: u8 = 6;
++    const ET: u8 = 7;
++    let mut kind = NumberPunctuation::Terminators;
++    for code_point in char::decode_utf16(text.iter().copied()) {
++        let Ok(code_point) = code_point else {
++            return None;
++        };
++        // SAFETY: Pure Unicode table lookup.
++        match unsafe { unicode_layout_bidirectional_class(u32::from(code_point)) } {
++            ET => {}
++            CS | ES => kind = NumberPunctuation::Separators,
++            _ => return None,
++        }
++    }
++    (!text.is_empty()).then_some(kind)
++}
++
+ // Stand-ins for the Unicode library's segmenters and the host's code point facts, which a unit test links through a
+ // document's render state but never reaches.
+ #[cfg(test)]
+@@ -686,8 +747,11 @@ impl<'text> TextChunker<'text> {
+                 // NB: The current index can sit past the end here after consuming trailing tabs; the retired C++
+                 // iterator read the direction class through it anyway, so the bounds check turns an out-of-bounds
+                 // read into a non-split.
+-                if self.should_wrap_lines
+-                    && self.current_index < self.text.len()
++                // NB: Split direction runs whether or not lines wrap. A nowrap or pre chunk that held both
++                //     directions was shaped in its first code point's direction, so its Arabic or Hebrew rendered
++                //     with its letters in reverse order. Without wrapping the split is no break opportunity; the
++                //     runs become fragments of their own, which line_bidi places in visual order.
++                if self.current_index < self.text.len()
+                     && pending.text_type != self.current_text_type()
+                     && let Some(chunk) = self.try_commit_chunk_at_cursor(&pending, can_break_at_current_position)
+                 {

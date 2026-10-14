@@ -1,0 +1,71 @@
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -4818,7 +4818,12 @@ bool Document::has_a_style_sheet_that_is_blocking_scripts() const
+     //          deferred or module scripts. Blocking child document scripts on the container document's style sheets
+     //          makes iframes needlessly wait for the embedding page's CSS, so match Blink and WebKit by only
+     //          considering our own set.
+-    return !m_script_blocking_style_sheet_set.is_empty();
++    if (!m_script_blocking_style_sheet_set.is_empty())
++        return true;
++
++    // AD-HOC: A style sheet isn't loaded until its @import-ed sheets are, so a pending @import blocks scripts too, as
++    //         it does rendering (see is_render_blocked()).
++    return !m_pending_css_import_rules.is_empty();
+ }
+ 
+ void Document::set_referrer(Utf16String referrer)
+@@ -11198,8 +11203,11 @@ void Document::add_pending_css_import_rule(Badge<CSS::StyleSheetImport>, Nonnull
+ void Document::remove_pending_css_import_rule(Badge<CSS::StyleSheetImport>, NonnullRefPtr<CSS::StyleSheetImport> rule)
+ {
+     m_pending_css_import_rules.remove(rule);
+-    if (m_pending_css_import_rules.is_empty())
++    if (m_pending_css_import_rules.is_empty()) {
++        // NB: Pending @imports block scripts (see has_a_style_sheet_that_is_blocking_scripts()), so wake the parser.
++        schedule_html_parser_end_check();
+         page().client().request_frame();
++    }
+ }
+ 
+ void Document::exit_pointer_lock()
+diff --git a/Libraries/LibWeb/Loader/FileRequest.h b/Libraries/LibWeb/Loader/FileRequest.h
+--- a/Libraries/LibWeb/Loader/FileRequest.h
++++ b/Libraries/LibWeb/Loader/FileRequest.h
+@@ -9,6 +9,7 @@
+ #include <AK/ByteString.h>
+ #include <AK/Error.h>
+ #include <AK/Function.h>
++#include <AK/Optional.h>
+ #include <LibWeb/Export.h>
+ 
+ namespace Web {
+@@ -19,10 +20,16 @@ public:
+ 
+     ByteString path() const;
+ 
++    // The file: URL's query, which a host that serves the request itself may act on (wptserve's `?pipe=`); the
++    // file system never sees it.
++    Optional<ByteString> const& query() const { return m_query; }
++    void set_query(Optional<ByteString> query) { m_query = move(query); }
++
+     Function<void(ErrorOr<i32>)> on_file_request_finish;
+ 
+ private:
+     ByteString m_path {};
++    Optional<ByteString> m_query {};
+ };
+ 
+ }
+diff --git a/Libraries/LibWeb/Loader/ResourceLoader.cpp b/Libraries/LibWeb/Loader/ResourceLoader.cpp
+--- a/Libraries/LibWeb/Loader/ResourceLoader.cpp
++++ b/Libraries/LibWeb/Loader/ResourceLoader.cpp
+@@ -265,6 +265,9 @@ void ResourceLoader::handle_file_load_request(LoadRequest& request, FileHandler
+         on_file(load_result);
+     });
+ 
++    if (auto query = url.query(); query.has_value())
++        file_request.set_query(query->to_byte_string());
++
+     page->client().request_file(move(file_request));
+ }
+ 

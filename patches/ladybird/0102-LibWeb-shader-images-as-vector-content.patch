@@ -1,0 +1,406 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 2dd48d18b7..8a2d07de7c 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -290,6 +290,7 @@ set(SOURCES
+     Embedder/WebFonts.cpp
+     Embedder/FileFetch.cpp
+     Embedder/ScriptTypes.cpp
++    Embedder/ShaderDecodedImageData.cpp
+     DOM/DocumentObserver.cpp
+     DOM/DocumentType.cpp
+     DOM/DOMEventListener.cpp
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+new file mode 100644
+index 0000000000..0be55a9122
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+@@ -0,0 +1,149 @@
++/*
++ * Copyright (c) 2026, the karouka authors.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/ByteBuffer.h>
++#include <LibCompositing/DisplayList/DisplayListCommand.h>
++#include <LibCompositing/DisplayList/VisualContextTreeTestBuilder.h>
++#include <LibGC/Heap.h>
++#include <LibWeb/Embedder/ShaderDecodedImageData.h>
++#include <LibWeb/Painting/ImagePaint.h>
++#include <math.h>
++
++namespace Web::Embedder {
++
++GC_DEFINE_ALLOCATOR(ShaderDecodedImageData);
++
++namespace {
++
++ShaderContentHook& shader_content_hook()
++{
++    // Never destroyed, like the system that sets it.
++    static auto* hook = new ShaderContentHook;
++    return *hook;
++}
++
++// The tree of a list whose only command draws at its root context: the root alone. (The builder is
++// LibCompositing's way to make a tree outside layout; this one has no nodes added.) Never destroyed:
++// recordings that hold it may outlive static destruction.
++Compositing::AccumulatedVisualContextTree const& root_only_visual_context_tree()
++{
++    static auto* tree = new Compositing::AccumulatedVisualContextTree(Compositing::VisualContextTreeTestBuilder().finish());
++    return *tree;
++}
++
++constexpr int maximum_raster_dimension = 16384;
++
++}
++
++void set_shader_content_hook(ShaderContentHook hook)
++{
++    shader_content_hook() = move(hook);
++}
++
++Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale)
++{
++    auto& hook = shader_content_hook();
++    if (!hook)
++        return {};
++    if (!(raster_scale > 0))
++        raster_scale = 1;
++    auto content_id = hook(source, raster_scale);
++    if (!content_id.has_value())
++        return {};
++
++    // The list's own pixels, as the painter of a vector image sizes it (vector_image_render_geometry).
++    Gfx::IntSize list_size {
++        clamp(static_cast<int>(lroundf(css_size.width().to_float() * raster_scale)), 1, maximum_raster_dimension),
++        clamp(static_cast<int>(lroundf(css_size.height().to_float() * raster_scale)), 1, maximum_raster_dimension),
++    };
++    Gfx::IntRect bounding_rect { {}, list_size };
++    // Not live: nothing animates it, so the player may keep the nested list as a raster.
++    Compositing::DrawEmbedderContent command { bounding_rect.to_type<float>(), *content_id, false };
++
++    // One record in one run, laid out as the Rust recorder writes it.
++    auto payload = Compositing::display_list_object_bytes(command);
++    auto record_size = sizeof(Compositing::DisplayListCommandHeader) + payload.size();
++    auto payload_size = align_up_to(record_size, Compositing::DisplayList::command_alignment) - sizeof(Compositing::DisplayListCommandHeader);
++    Compositing::DisplayListCommandHeader header {
++        .command_type = Compositing::DrawEmbedderContent::command_type,
++        .has_bounding_rect = true,
++        .inline_clip_count = 0,
++        .has_inline_transform = false,
++        .payload_size = static_cast<u32>(payload_size),
++        .bounding_rect = bounding_rect,
++    };
++    ByteBuffer bytes;
++    bytes.append(Compositing::display_list_object_bytes(header));
++    bytes.append(payload);
++    bytes.resize(align_up_to(bytes.size(), Compositing::DisplayList::command_alignment), ByteBuffer::ZeroFillNewElements::Yes);
++    Compositing::DisplayListCommandRun run {};
++    run.offset = 0;
++    run.size = bytes.size();
++    run.ink_bounds = bounding_rect;
++    Vector<Compositing::DisplayListCommandRun> runs;
++    runs.append(run);
++
++    auto const& tree = root_only_visual_context_tree();
++    return Compositing::DisplayListResource { Compositing::DisplayList::create_from_command_bytes(tree, move(bytes), move(runs)), tree };
++}
++
++GC::Ref<ShaderDecodedImageData> ShaderDecodedImageData::create(String source)
++{
++    return GC::Heap::the().allocate<ShaderDecodedImageData>(move(source));
++}
++
++ShaderDecodedImageData::ShaderDecodedImageData(String source)
++    : m_source(move(source))
++    , m_vector_content_identity(next_vector_content_identity())
++{
++}
++
++ShaderDecodedImageData::~ShaderDecodedImageData() = default;
++
++Optional<Compositing::DisplayListResource> ShaderDecodedImageData::record_display_list_at_scale(CSSPixelSize css_size, float raster_scale, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const
++{
++    RenderKey const key { css_size, raster_scale };
++    if (auto it = m_cached_display_lists.find(key); it != m_cached_display_lists.end())
++        return it->value;
++    auto display_list = record_shader_display_list(m_source.bytes_as_string_view(), css_size, raster_scale);
++    if (!display_list.has_value())
++        return {};
++    // FIXME: Evict least used entries.
++    if (m_cached_display_lists.size() > 10)
++        m_cached_display_lists.remove(m_cached_display_lists.begin());
++    m_cached_display_lists.set(key, *display_list);
++    return display_list;
++}
++
++Optional<Compositing::DisplayListResource> ShaderDecodedImageData::record_display_list(Gfx::IntSize size, CSS::PreferredColorScheme color_scheme, Compositing::DisplayListResourceStorage& resource_storage) const
++{
++    return record_display_list_at_scale(size.to_type<CSSPixels>(), 1, color_scheme, resource_storage);
++}
++
++// As SVGDecodedImageData's for an image without a viewBox: recorded at the destination's CSS size, at
++// the on-screen scale.
++Optional<Painting::ImagePaint> ShaderDecodedImageData::image_paint(Painting::ImagePaintRequest const& request) const
++{
++    auto dst_rect = request.dest_rect;
++    auto css_size = CSSPixelSize {
++        clamp(CSSPixels::nearest_value_for(dst_rect.width()), CSSPixels::smallest_positive_value(), CSSPixels(maximum_raster_dimension)),
++        clamp(CSSPixels::nearest_value_for(dst_rect.height()), CSSPixels::smallest_positive_value(), CSSPixels(maximum_raster_dimension)),
++    };
++    auto raster_scale = max(request.accumulated_scale.width(), request.accumulated_scale.height());
++    if (!(raster_scale > 0))
++        raster_scale = 1;
++    raster_scale = min(raster_scale, static_cast<float>(maximum_raster_dimension) / max(css_size.width(), css_size.height()).to_float());
++    auto display_list = record_display_list_at_scale(css_size, raster_scale, request.color_scheme, request.resource_storage);
++    if (!display_list.has_value())
++        return {};
++    Gfx::IntSize list_size {
++        max(1, static_cast<int>(lroundf(css_size.width().to_float() * raster_scale))),
++        max(1, static_cast<int>(lroundf(css_size.height().to_float() * raster_scale))),
++    };
++    return Painting::ImagePaint { Painting::ImagePaint::NestedDisplayList { .resource = *display_list, .list_size = list_size } };
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+new file mode 100644
+index 0000000000..0704a01816
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+@@ -0,0 +1,84 @@
++/*
++ * Copyright (c) 2026, the karouka authors.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Function.h>
++#include <AK/HashMap.h>
++#include <AK/Optional.h>
++#include <AK/String.h>
++#include <LibCompositing/DisplayList/DisplayList.h>
++#include <LibCompositing/DisplayList/DisplayListResourceStorage.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/HTML/DecodedImageData.h>
++
++namespace Web::Embedder {
++
++// A shader() image's pixels come from the embedder: LibWeb records one DrawEmbedderContent command
++// (LibCompositing) naming a content id the embedder gave it, and the embedder's player resolves the id
++// to pixels at replay. The hook compiles `source` (the shader's text) and answers the id of content
++// that paints it into a nested display list recorded at raster_scale device pixels per CSS pixel,
++// filling the command's destination rectangle; nothing when the source paints nothing (it doesn't
++// compile, or it declares what the embedder doesn't supply). It is asked again for each recording
++// the image does not have cached, so it caches by source itself.
++using ShaderContentHook = Function<Optional<u64>(StringView source, float raster_scale)>;
++WEB_API void set_shader_content_hook(ShaderContentHook);
++
++// The nested display list a shader() image is drawn as: one DrawEmbedderContent over
++// css_size × raster_scale device pixels, or nothing without a hook or content id.
++WEB_API Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale);
++
++// The decoded data of a shader() image: vector content with no natural size, recorded through the
++// hook above. Its rendering depends only on its source, the size and the scale.
++class WEB_API ShaderDecodedImageData final : public HTML::DecodedImageData {
++    GC_CELL(ShaderDecodedImageData, HTML::DecodedImageData);
++    GC_DECLARE_ALLOCATOR(ShaderDecodedImageData);
++
++public:
++    static GC::Ref<ShaderDecodedImageData> create(String source);
++    virtual ~ShaderDecodedImageData() override;
++
++    String const& source() const { return m_source; }
++
++    virtual bool is_vector_content() const override { return true; }
++    virtual u64 vector_content_identity() const override { return m_vector_content_identity; }
++    virtual Optional<Compositing::DisplayListResource> record_display_list_at_scale(CSSPixelSize, float raster_scale, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const override;
++    virtual Optional<Compositing::DisplayListResource> record_display_list(Gfx::IntSize, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const override;
++    virtual Optional<Painting::ImagePaint> image_paint(Painting::ImagePaintRequest const&) const override;
++
++    // No frames: a shader() image is only ever recorded.
++    virtual Optional<Gfx::DecodedImageFrame> default_frame(Gfx::IntSize = {}) const override { return {}; }
++    virtual Optional<Gfx::DecodedImageFrame> current_frame(Gfx::IntSize = {}) const override { return {}; }
++
++    // No natural size or aspect ratio: it fills whatever it is drawn into, as a gradient does.
++    virtual Optional<CSSPixels> intrinsic_width() const override { return {}; }
++    virtual Optional<CSSPixels> intrinsic_height() const override { return {}; }
++    virtual Optional<CSSPixelFraction> intrinsic_aspect_ratio() const override { return {}; }
++
++private:
++    explicit ShaderDecodedImageData(String source);
++
++    struct RenderKey {
++        CSSPixelSize css_size;
++        float raster_scale { 1 };
++        bool operator==(RenderKey const&) const = default;
++    };
++    struct RenderKeyTraits : public Traits<RenderKey> {
++        static unsigned hash(RenderKey const& key)
++        {
++            return pair_int_hash(pair_int_hash(key.css_size.width().raw_value(), key.css_size.height().raw_value()), bit_cast<u32>(key.raster_scale));
++        }
++        static bool equals(RenderKey const& a, RenderKey const& b) { return a == b; }
++    };
++
++    String m_source;
++    u64 m_vector_content_identity { 0 };
++    // The recordings, so that a nested list painted again is the same list (and the player's raster
++    // of it stays valid).
++    mutable HashMap<RenderKey, Compositing::DisplayListResource, RenderKeyTraits> m_cached_display_lists;
++};
++
++}
+diff --git a/Libraries/LibWeb/HTML/DecodedImageData.cpp b/Libraries/LibWeb/HTML/DecodedImageData.cpp
+index a18933e4fa..a2ac6827e5 100644
+--- a/Libraries/LibWeb/HTML/DecodedImageData.cpp
++++ b/Libraries/LibWeb/HTML/DecodedImageData.cpp
+@@ -40,6 +40,17 @@ Optional<Compositing::DisplayListResource> DecodedImageData::record_display_list
+     return {};
+ }
+ 
++Optional<Compositing::DisplayListResource> DecodedImageData::record_display_list_at_scale(CSSPixelSize, float, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const
++{
++    return {};
++}
++
++u64 DecodedImageData::next_vector_content_identity()
++{
++    static u64 s_next_vector_content_identity = 1;
++    return s_next_vector_content_identity++;
++}
++
+ void DecodedImageData::notify_clients_did_update()
+ {
+     for (auto* client : m_clients)
+diff --git a/Libraries/LibWeb/HTML/DecodedImageData.h b/Libraries/LibWeb/HTML/DecodedImageData.h
+index 83542b21d7..5ff018b595 100644
+--- a/Libraries/LibWeb/HTML/DecodedImageData.h
++++ b/Libraries/LibWeb/HTML/DecodedImageData.h
+@@ -48,6 +48,18 @@ public:
+     // property of the page.
+     virtual Optional<Compositing::DisplayListResource> record_display_list(Gfx::IntSize, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const;
+ 
++    // Vector content (an SVG document, an embedder's shader() image) is drawn as a nested display list
++    // recorded at the size and scale it is painted at, never as a decoded frame. Its identity names one
++    // rendering of it: it changes whenever the content would render differently, and identities are
++    // unique across every kind of vector content.
++    virtual bool is_vector_content() const { return false; }
++    virtual u64 vector_content_identity() const { return 0; }
++    // Whether the content keeps its proportions at any size (an SVG root with a viewBox), so that it
++    // is laid out at its raster size rather than at its CSS size.
++    virtual bool has_active_view_box() const { return false; }
++    // Lays the content out at the CSS size and records it at css × raster_scale resolution.
++    virtual Optional<Compositing::DisplayListResource> record_display_list_at_scale(CSSPixelSize, float raster_scale, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const;
++
+     virtual Optional<Gfx::DecodedImageFrame> default_frame(Gfx::IntSize = {}) const = 0;
+     virtual Optional<Gfx::DecodedImageFrame> current_frame(Gfx::IntSize = {}) const = 0;
+ 
+@@ -67,6 +79,7 @@ protected:
+ 
+     void notify_clients_did_update();
+     virtual void on_client_registered() { }
++    static u64 next_vector_content_identity();
+ 
+ private:
+     HashTable<Client*> m_clients;
+diff --git a/Libraries/LibWeb/Painting/PaintFacts.cpp b/Libraries/LibWeb/Painting/PaintFacts.cpp
+index 7740142a6c..bdf1cd0ea1 100644
+--- a/Libraries/LibWeb/Painting/PaintFacts.cpp
++++ b/Libraries/LibWeb/Painting/PaintFacts.cpp
+@@ -25,7 +25,6 @@
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/Painting/BoxViews.h>
+ #include <LibWeb/Painting/PaintFacts.h>
+-#include <LibWeb/SVG/SVGDecodedImageData.h>
+ #include <LibWeb/SVG/SVGImageElement.h>
+ 
+ namespace Web::Painting {
+@@ -146,10 +145,10 @@ static Layout::RustFFI::FfiImageContent image_content_facts(GC::Ptr<HTML::Decode
+     Layout::RustFFI::FfiImageContent content {};
+     if (!decoded_image_data)
+         return content;
+-    if (auto const* svg_image_data = as_if<SVG::SVGDecodedImageData>(*decoded_image_data)) {
++    if (decoded_image_data->is_vector_content()) {
+         content.kind = Layout::RustFFI::FfiImageContentKind::Vector;
+-        content.vector_content_identity = svg_image_data->vector_content_identity();
+-        content.vector_has_active_view_box = svg_image_data->has_active_view_box();
++        content.vector_content_identity = decoded_image_data->vector_content_identity();
++        content.vector_has_active_view_box = decoded_image_data->has_active_view_box();
+         return content;
+     }
+     content.kind = Layout::RustFFI::FfiImageContentKind::Raster;
+diff --git a/Libraries/LibWeb/Painting/PaintingRustBridge.cpp b/Libraries/LibWeb/Painting/PaintingRustBridge.cpp
+index 53da20c9f6..8d4184afa7 100644
+--- a/Libraries/LibWeb/Painting/PaintingRustBridge.cpp
++++ b/Libraries/LibWeb/Painting/PaintingRustBridge.cpp
+@@ -486,10 +486,9 @@ static Layout::RustFFI::FfiRecordingPublishCallbacks recording_publish_callbacks
+             } else if (auto const* observer = layer_image_observer(*layout_node, request->list, request->computed_index)) {
+                 decoded_image_data = observer->decoded_image_data();
+             }
+-            auto const* svg_image_data = as_if<SVG::SVGDecodedImageData>(decoded_image_data.ptr());
+-            if (!svg_image_data)
++            if (!decoded_image_data || !decoded_image_data->is_vector_content())
+                 return empty_display_list();
+-            auto display_list = svg_image_data->record_display_list_at_scale({ request->css_width, request->css_height }, request->raster_scale, image_color_scheme(*layout_node), context.resource_storage);
++            auto display_list = decoded_image_data->record_display_list_at_scale({ request->css_width, request->css_height }, request->raster_scale, image_color_scheme(*layout_node), context.resource_storage);
+             if (!display_list.has_value())
+                 return empty_display_list();
+             return context.resource_storage.add_display_list(move(*display_list)).value();
+diff --git a/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp b/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp
+index 2a96489e3f..79f0eb4eaa 100644
+--- a/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp
++++ b/Libraries/LibWeb/SVG/SVGDecodedImageData.cpp
+@@ -155,12 +155,6 @@ SVGDecodedImageData::SVGDecodedImageData(GC::Ref<Page> page, GC::Ref<SVGPageClie
+ {
+ }
+ 
+-u64 SVGDecodedImageData::next_vector_content_identity()
+-{
+-    static u64 s_next_vector_content_identity = 1;
+-    return s_next_vector_content_identity++;
+-}
+-
+ SVGDecodedImageData::~SVGDecodedImageData() = default;
+ 
+ void SVGDecodedImageData::finalize()
+diff --git a/Libraries/LibWeb/SVG/SVGDecodedImageData.h b/Libraries/LibWeb/SVG/SVGDecodedImageData.h
+index 7401a1cdad..849e9c9f02 100644
+--- a/Libraries/LibWeb/SVG/SVGDecodedImageData.h
++++ b/Libraries/LibWeb/SVG/SVGDecodedImageData.h
+@@ -34,11 +34,11 @@ public:
+     virtual Optional<CSSPixels> intrinsic_width() const override;
+     virtual Optional<CSSPixels> intrinsic_height() const override;
+     virtual Optional<CSSPixelFraction> intrinsic_aspect_ratio() const override;
+-    u64 vector_content_identity() const { return m_vector_content_identity; }
++    virtual bool is_vector_content() const override { return true; }
++    virtual u64 vector_content_identity() const override { return m_vector_content_identity; }
+ 
+     virtual Optional<Compositing::DisplayListResource> record_display_list(Gfx::IntSize, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const override;
+-    // Lays the inner document out at the CSS size and records at css × raster_scale resolution.
+-    Optional<Compositing::DisplayListResource> record_display_list_at_scale(CSSPixelSize css_size, float raster_scale, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const;
++    virtual Optional<Compositing::DisplayListResource> record_display_list_at_scale(CSSPixelSize css_size, float raster_scale, CSS::PreferredColorScheme, Compositing::DisplayListResourceStorage&) const override;
+ 
+     // FIXME: Support SVG animations. :^)
+     DOM::Document const& svg_document() const { return *m_document; }
+@@ -48,7 +48,7 @@ public:
+     virtual size_t external_memory_size() const override;
+ 
+     virtual Optional<Painting::ImagePaint> image_paint(Painting::ImagePaintRequest const&) const override;
+-    bool has_active_view_box() const;
++    virtual bool has_active_view_box() const override;
+ 
+     // The scheme the SVG document currently answers `prefers-color-scheme` with. Held on the image
+     // rather than on the page, because the page is shared with every other image.
+@@ -64,7 +64,6 @@ private:
+     void append_paint_command_cache_source_resources(Compositing::DisplayListResourceSet&) const;
+     void did_request_frame();
+     void invalidate_cached_rendering();
+-    static u64 next_vector_content_identity();
+ 
+     // FIXME: Remove this once everything is using surfaces instead.
+     mutable HashMap<Gfx::IntSize, Gfx::DecodedImageFrame> m_cached_rendered_frames;

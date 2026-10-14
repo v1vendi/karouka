@@ -1,0 +1,35 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: keep the body background off the canvas under
+ containment
+
+Document::background_color(), which gives the surface clear color, fell
+back to the body's background color whenever the root's was transparent.
+It ignored css-contain-2's rule that containment on <html> or <body>
+disables the propagation, which the paint path (root_background_source)
+already follows, so the canvas outside the root box was cleared to the
+body's color. Ask HTMLHtmlElement::should_use_body_background_properties()
+first, as the painted canvas background does.
+
+Fixes WPT css/css-contain/contain-{body,html}-bg-001..004 and
+css/css-backgrounds/background-color-body-propagation-008/009.
+---
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index 2460fbc28f..155a3a310a 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -1721,9 +1721,12 @@ Color Document::background_color(Layout::BegunRead const& read) const
+     }
+ 
+     // ...in which case we use the BODY element's background color.
+-    if (auto* body_element = body(); body_element && body_element->unsafe_layout_node(read)) {
+-        auto color = body_element->unsafe_layout_node(read)->background_color();
+-        return color;
++    // https://drafts.csswg.org/css-contain-2/#contain-property
++    // Unless containment on <html> or <body> disables the propagation (the paint path's root background source asks the
++    // same question, so the surface clear color and the painted canvas agree).
++    if (auto* html_element = this->html_element(); html_element && html_element->should_use_body_background_properties(read)) {
++        if (auto* body_element = body(); body_element && body_element->unsafe_layout_node(read))
++            return body_element->unsafe_layout_node(read)->background_color();
+     }
+ 
+     // By default, the document is transparent.

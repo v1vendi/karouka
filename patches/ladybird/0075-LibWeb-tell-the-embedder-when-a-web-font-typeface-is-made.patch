@@ -1,0 +1,127 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -285,6 +285,7 @@
+     Embedder/InPlaceLoad.cpp
+     Embedder/StageThreads.cpp
+     Embedder/SystemFonts.cpp
++    Embedder/WebFonts.cpp
+     DOM/DocumentObserver.cpp
+     DOM/DocumentType.cpp
+     DOM/DOMEventListener.cpp
+diff --git a/Libraries/LibWeb/CSS/FontComputer.cpp b/Libraries/LibWeb/CSS/FontComputer.cpp
+--- a/Libraries/LibWeb/CSS/FontComputer.cpp
++++ b/Libraries/LibWeb/CSS/FontComputer.cpp
+@@ -28,6 +28,7 @@
+ #include <LibWeb/CSS/StyleValues/StringStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/StyleValueList.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/WebFonts.h>
+ #include <LibWeb/DOM/Element.h>
+ #include <LibWeb/DOM/ShadowRoot.h>
+ #include <LibWeb/Fetch/Infrastructure/HTTP/MIME.h>
+@@ -225,8 +226,12 @@
+ 
+ void FontLoader::font_did_load_or_fail(RefPtr<Gfx::Typeface const> typeface)
+ {
+-    if (typeface)
++    if (typeface) {
++        // karouka: before the subscribers invalidate style, so the embedder's work on the font
++        // overlaps the restyle and layout that follow.
++        Embedder::notify_web_font_typeface_created(*typeface);
+         m_typeface = typeface.release_nonnull();
++    }
+     m_has_completed = true;
+     m_document_load_event_delayer.clear();
+     // Each subscriber publishes its now-loaded FontFace to FontComputer. The face's complete
+diff --git a/Libraries/LibWeb/CSS/FontFace.cpp b/Libraries/LibWeb/CSS/FontFace.cpp
+--- a/Libraries/LibWeb/CSS/FontFace.cpp
++++ b/Libraries/LibWeb/CSS/FontFace.cpp
+@@ -40,6 +40,7 @@
+ #include <LibWeb/CSS/StyleValues/StyleValueList.h>
+ #include <LibWeb/CSS/StyleValues/UnicodeRangeStyleValue.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/WebFonts.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+ #include <LibWeb/HTML/Window.h>
+@@ -165,6 +166,9 @@
+             return promise;
+         }
+ 
++        // karouka: a FontFace made from a BufferSource doesn't go through FontLoader, which tells the
++        // embedder for @font-face rules and FontFace URLs.
++        Embedder::notify_web_font_typeface_created(*result.value());
+         promise->resolve(result.release_value());
+         return promise;
+     }
+@@ -182,6 +186,7 @@
+             return;
+         }
+ 
++        Embedder::notify_web_font_typeface_created(*result.value());
+         promise->resolve(result.release_value());
+     });
+ 
+diff --git a/Libraries/LibWeb/Embedder/WebFonts.cpp b/Libraries/LibWeb/Embedder/WebFonts.cpp
+new file mode 100644
+index 0000000000..2d206e4ebd
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/WebFonts.cpp
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibWeb/Embedder/WebFonts.h>
++
++namespace Web::Embedder {
++
++static WebFontTypefaceCreatedCallback s_typeface_created;
++
++void set_web_font_typeface_created_callback(WebFontTypefaceCreatedCallback callback)
++{
++    s_typeface_created = callback;
++}
++
++void notify_web_font_typeface_created(Gfx::Typeface const& typeface)
++{
++    if (s_typeface_created)
++        s_typeface_created(typeface);
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/WebFonts.h b/Libraries/LibWeb/Embedder/WebFonts.h
+new file mode 100644
+index 0000000000..1d6460bcba
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/WebFonts.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Export.h>
++
++namespace Gfx {
++class Typeface;
++}
++
++namespace Web::Embedder {
++
++// Called on the thread that made it, as soon as a web font (an @font-face rule's, or a FontFace's from
++// URLs or a BufferSource) has loaded into a typeface, before any style or layout uses it. An embedder
++// can start work that depends on the font's glyphs (karouka warms the glyphs an earlier run drew with
++// it) while the document restyles and lays out.
++// The callback must not re-enter LibWeb. Null (the default) turns it off.
++using WebFontTypefaceCreatedCallback = void (*)(Gfx::Typeface const&);
++WEB_API void set_web_font_typeface_created_callback(WebFontTypefaceCreatedCallback);
++void notify_web_font_typeface_created(Gfx::Typeface const&);
++
++}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^canvas ok 255,0,0,255 0,0,255,255 0,128,0,255 [1-9]\d* ok offscreen=0,0,255,255$">
+<title>canvas pending</title>
+<style>
+  body { margin: 0; background: #eee; font: 14px sans-serif; }
+  canvas { display: block; margin: 8px; }
+</style>
+</head>
+<body>
+<!-- Canvas 2D replays in-process: drawing reaches the canvas, the frame shows it, and
+     getImageData reads the pixels back. The title says what the readback saw. -->
+<canvas id="main" width="240" height="120"></canvas>
+<canvas id="opaque" width="60" height="30"></canvas>
+<script>
+const source = document.createElement("canvas");
+source.width = 40;
+source.height = 40;
+const sctx = source.getContext("2d");
+sctx.fillStyle = "rgb(0, 128, 0)";
+sctx.fillRect(0, 0, 40, 40);
+
+const ctx = document.getElementById("main").getContext("2d");
+ctx.fillStyle = "rgb(255, 0, 0)";
+ctx.fillRect(0, 0, 60, 60);
+ctx.fillStyle = "rgb(0, 0, 255)";
+ctx.beginPath();
+ctx.arc(100, 30, 25, 0, Math.PI * 2);
+ctx.fill();
+// A canvas drawn onto another sees everything recorded on it before.
+ctx.drawImage(source, 150, 10);
+ctx.fillStyle = "black";
+ctx.font = "20px sans-serif";
+ctx.fillText("karouka", 10, 100);
+ctx.strokeStyle = "rgb(200, 100, 0)";
+ctx.lineWidth = 3;
+ctx.strokeRect(140, 70, 90, 40);
+
+function pixel(x, y) {
+    return Array.from(ctx.getImageData(x, y, 1, 1).data).join(",");
+}
+// Some text pixels are dark.
+const text = ctx.getImageData(10, 80, 90, 25).data;
+let ink = 0;
+for (let i = 0; i < text.length; i += 4)
+    if (text[i + 3] > 128 && text[i] < 100)
+        ink++;
+
+// A context without alpha starts opaque black.
+const octx = document.getElementById("opaque").getContext("2d", { alpha: false });
+octx.fillStyle = "white";
+octx.fillRect(30, 0, 30, 30);
+const black = Array.from(octx.getImageData(5, 5, 1, 1).data).join(",") === "0,0,0,255";
+
+// An OffscreenCanvas's context replays the same way.
+const offscreen = new OffscreenCanvas(8, 8).getContext("2d");
+offscreen.fillStyle = "blue";
+offscreen.fillRect(0, 0, 8, 8);
+const offscreen_pixel = Array.from(offscreen.getImageData(4, 4, 1, 1).data).join(",");
+
+document.title = `canvas ok ${pixel(30, 30)} ${pixel(100, 30)} ${pixel(170, 30)} ${ink} ${black ? "ok" : "not black"} offscreen=${offscreen_pixel}`;
+</script>
+</body>
+</html>

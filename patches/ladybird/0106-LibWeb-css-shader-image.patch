@@ -1,0 +1,389 @@
+diff --git a/Libraries/LibWeb/CSS/Fetch.cpp b/Libraries/LibWeb/CSS/Fetch.cpp
+index 3b617a013f..80be933ccd 100644
+--- a/Libraries/LibWeb/CSS/Fetch.cpp
++++ b/Libraries/LibWeb/CSS/Fetch.cpp
+@@ -172,6 +172,21 @@ GC::Ptr<HTML::SharedResourceRequest> fetch_an_external_image_for_a_stylesheet(St
+     return shared_resource_request;
+ }
+ 
++GC::Ptr<HTML::SharedResourceRequest> fetch_a_shader_for_a_stylesheet(StyleResourceURL const& url_value, ::URL::URL const& key, RuleOrDeclaration declaration, DOM::Document& document)
++{
++    if (!ResourceLoader::is_initialized())
++        return {};
++
++    auto request = fetch_a_style_resource_impl(url_value, declaration, Fetch::Infrastructure::Request::Destination::Image, CorsMode::NoCors);
++    if (!request)
++        return {};
++
++    auto shared_resource_request = HTML::SharedResourceRequest::get_or_create(document, key, HTML::SharedResourceRequest::Kind::Shader);
++    if (shared_resource_request->needs_fetching())
++        shared_resource_request->fetch_resource(*request);
++    return shared_resource_request;
++}
++
+ // https://drafts.csswg.org/css-values-5/#apply-request-modifiers-from-url-value
+ void apply_request_modifiers_from_url_value(URL const& url, GC::Ref<Fetch::Infrastructure::Request> request)
+ {
+diff --git a/Libraries/LibWeb/CSS/Fetch.h b/Libraries/LibWeb/CSS/Fetch.h
+index 3526af14c6..9c93d0d63e 100644
+--- a/Libraries/LibWeb/CSS/Fetch.h
++++ b/Libraries/LibWeb/CSS/Fetch.h
+@@ -45,6 +45,10 @@ GC::Ptr<Fetch::Infrastructure::FetchController> fetch_a_style_resource(StyleReso
+ // https://drafts.csswg.org/css-images-4/#fetch-an-external-image-for-a-stylesheet
+ GC::Ptr<HTML::SharedResourceRequest> fetch_an_external_image_for_a_stylesheet(StyleResourceURL const&, RuleOrDeclaration, DOM::Document&);
+ 
++// karouka: fetches a shader() image's source as fetch_an_external_image_for_a_stylesheet fetches an image,
++// sharing the request under key (the URL CSS keeps the image's resource under).
++GC::Ptr<HTML::SharedResourceRequest> fetch_a_shader_for_a_stylesheet(StyleResourceURL const&, ::URL::URL const& key, RuleOrDeclaration, DOM::Document&);
++
+ // https://drafts.csswg.org/css-values-5/#apply-request-modifiers-from-url-value
+ void apply_request_modifiers_from_url_value(URL const&, GC::Ref<Fetch::Infrastructure::Request>);
+ 
+diff --git a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
+index 900bd1b195..1bbe018b28 100644
+--- a/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
++++ b/Libraries/LibWeb/CSS/StyleValues/ImageStyleValue.cpp
+@@ -7,6 +7,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <AK/Base64.h>
+ #include <LibGC/Weak.h>
+ #include <LibWeb/CSS/Fetch.h>
+ #include <LibWeb/CSS/StyleSheetState.h>
+@@ -21,6 +22,32 @@
+ 
+ namespace Web::CSS {
+ 
++// karouka: the url_type values the Rust parser gives a shader() image (images_gradients_parser.rs), beside
++// URL::Type's. A shader(<url>) image's url is the URL of its source; a shader(<string>) image's is the source.
++static constexpr u8 shader_url_type = 2;
++static constexpr u8 shader_source_type = 3;
++
++static bool is_shader_type(u8 url_type)
++{
++    return url_type == shader_url_type || url_type == shader_source_type;
++}
++
++// The fragment a shader() image's resource URL carries, so that its shared request (which decodes the bytes as
++// SkSL) is kept apart from an image's request for the same file. Fetches ignore it.
++static constexpr auto shader_resource_fragment = "karouka-shader"sv;
++
++// A shader(<string>) image loads its source as a data: URL, so that equal sources share one request.
++static Optional<::URL::URL> shader_source_data_url(Utf16View source)
++{
++    auto utf8 = source.to_utf8();
++    if (utf8.is_error())
++        return {};
++    auto base64 = encode_base64(utf8.value().bytes());
++    if (base64.is_error())
++        return {};
++    return DOMURL::parse(Utf16String::formatted("data:text/plain;charset=utf-8;base64,{}", base64.value()));
++}
++
+ StyleValueFFI::StyleValueData const* ImageStyleValue::make_image_url_data(URL const& url, Optional<::URL::URL> const& style_resource_base_url)
+ {
+     // Rust copies the borrowed URL text and takes ownership of each modifier string.
+@@ -38,7 +65,7 @@ StyleValueFFI::StyleValueData const* ImageStyleValue::make_image_url_data(URL co
+ URL ImageStyleValue::url_value() const
+ {
+     auto const& data = m_value->image;
+-    return url_from_rust_data(data.url, data.url_type, data.url_modifiers);
++    return url_from_rust_data(data.url, is_shader_type(data.url_type) ? to_underlying(URL::Type::Url) : data.url_type, data.url_modifiers);
+ }
+ 
+ ImageStyleValueResource::ImageStyleValueResource(GC::Ref<HTML::SharedResourceRequest> request, GC::Ref<DOM::Document> const& document)
+@@ -171,6 +198,17 @@ GC::Ptr<HTML::SharedResourceRequest> ImageStyleValue::fetch_image(DOM::Document&
+         .parent_style_sheet_origin_clean = m_parent_style_sheet_origin_clean,
+     };
+ 
++    if (auto url_type = m_value->image.url_type; is_shader_type(url_type)) {
++        auto key = resolved_url(document);
++        if (!key.has_value())
++            return {};
++        if (url_type == shader_url_type)
++            return fetch_a_shader_for_a_stylesheet(url_value(), *key, move(rule_or_declaration), document);
++        auto data_url = *key;
++        data_url.set_fragment({});
++        return fetch_a_shader_for_a_stylesheet(move(data_url), *key, move(rule_or_declaration), document);
++    }
++
+     return fetch_an_external_image_for_a_stylesheet(url_value(), rule_or_declaration, document);
+ }
+ 
+@@ -277,7 +315,17 @@ Optional<::URL::URL> ImageStyleValue::resolved_url(DOM::Document const& document
+     if (url.is_empty())
+         return {};
+ 
++    auto url_type = m_value->image.url_type;
++    if (url_type == shader_source_type) {
++        m_resolved_url = shader_source_data_url(url);
++        if (m_resolved_url.has_value())
++            m_resolved_url->set_fragment(shader_resource_fragment);
++        return m_resolved_url;
++    }
++
+     auto resolved_url = DOMURL::parse(url, style_resource_base_url(document));
++    if (url_type == shader_url_type && resolved_url.has_value())
++        resolved_url->set_fragment(shader_resource_fragment);
+     // A value without a base URL of its own follows the document's base URL as that changes.
+     if (m_style_resource_base_url.has_value())
+         m_resolved_url = resolved_url;
+diff --git a/Libraries/LibWeb/HTML/SharedResourceRequest.cpp b/Libraries/LibWeb/HTML/SharedResourceRequest.cpp
+index a60f1cc623..3bfec82457 100644
+--- a/Libraries/LibWeb/HTML/SharedResourceRequest.cpp
++++ b/Libraries/LibWeb/HTML/SharedResourceRequest.cpp
+@@ -9,6 +9,7 @@
+ #include <LibGfx/Bitmap.h>
+ #include <LibGfx/DecodedImageFrame.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/ShaderDecodedImageData.h>
+ #include <LibWeb/Fetch/Fetching/Fetching.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchController.h>
+@@ -32,20 +33,23 @@ GC_DEFINE_ALLOCATOR(SharedResourceRequest);
+ 
+ static u64 s_next_memory_cache_touch_serial;
+ 
+-GC::Ref<SharedResourceRequest> SharedResourceRequest::get_or_create(DOM::Document& document, URL::URL const& url)
++GC::Ref<SharedResourceRequest> SharedResourceRequest::get_or_create(DOM::Document& document, URL::URL const& url, Kind kind)
+ {
+     auto& shared_resource_requests = document.shared_resource_requests();
+-    if (auto it = shared_resource_requests.find(url); it != shared_resource_requests.end()) {
++    // NB: A request of another kind for the same URL is replaced, not shared (CSS keeps its shader() requests
++    //     under URLs of their own, so this only happens for a page that names that URL itself).
++    if (auto it = shared_resource_requests.find(url); it != shared_resource_requests.end() && it->value->m_kind == kind) {
+         it->value->touch_memory_cache_entry();
+         return *it->value;
+     }
+-    auto request = GC::Heap::the().allocate<SharedResourceRequest>(document.page(), url, document);
++    auto request = GC::Heap::the().allocate<SharedResourceRequest>(document.page(), url, document, kind);
+     shared_resource_requests.set(url, request);
+     return request;
+ }
+ 
+-SharedResourceRequest::SharedResourceRequest(GC::Ref<Page> page, URL::URL url, GC::Ref<DOM::Document> document)
+-    : m_page(page)
++SharedResourceRequest::SharedResourceRequest(GC::Ref<Page> page, URL::URL url, GC::Ref<DOM::Document> document, Kind kind)
++    : m_kind(kind)
++    , m_page(page)
+     , m_url(move(url))
+     , m_document(document)
+ {
+@@ -128,6 +132,12 @@ void SharedResourceRequest::fetch_resource(GC::Ref<Fetch::Infrastructure::Reques
+         return;
+     }
+ 
++    // karouka: a shader's source comes from the page's own files or from inline text, never from the network.
++    if (m_kind == Kind::Shader && !request->url().scheme().is_one_of("data"sv, "file"sv)) {
++        handle_failed_fetch();
++        return;
++    }
++
+     GC::Weak weak_this { *this };
+     Fetch::Infrastructure::FetchAlgorithms::Input fetch_algorithms_input {};
+     fetch_algorithms_input.process_response = [weak_this, &realm, request](GC::Ref<Fetch::Infrastructure::Response> response) {
+@@ -220,6 +230,19 @@ void SharedResourceRequest::handle_successful_fetch(URL::URL const& url_string,
+     // AD-HOC: At this point, things gets very ad-hoc.
+     // FIXME: Bring this closer to spec.
+ 
++    // karouka: a shader() image's bytes are its SkSL source; the embedder compiles it when the image is recorded.
++    if (m_kind == Kind::Shader) {
++        auto source = String::from_utf8(StringView { data.bytes() });
++        if (source.is_error()) {
++            handle_failed_fetch();
++            return;
++        }
++        m_image_data = Embedder::ShaderDecodedImageData::create(source.release_value());
++        m_image_data->set_is_cors_cross_origin(image_data_is_cors_cross_origin);
++        handle_successful_resource_load();
++        return;
++    }
++
+     if (is_svg_image == IsSVGImage::Yes) {
+         auto result = SVG::SVGDecodedImageData::create(m_page, url_string, data);
+         if (result.is_error()) {
+diff --git a/Libraries/LibWeb/HTML/SharedResourceRequest.h b/Libraries/LibWeb/HTML/SharedResourceRequest.h
+index c9087e2cf7..54ebc87fec 100644
+--- a/Libraries/LibWeb/HTML/SharedResourceRequest.h
++++ b/Libraries/LibWeb/HTML/SharedResourceRequest.h
+@@ -20,7 +20,14 @@ class SharedResourceRequest final : public JS::Cell {
+     GC_DECLARE_ALLOCATOR(SharedResourceRequest);
+ 
+ public:
+-    [[nodiscard]] static GC::Ref<SharedResourceRequest> get_or_create(DOM::Document&, URL::URL const&);
++    // What the fetched bytes are decoded as. karouka: a Shader request's bytes are a shader() image's
++    // SkSL source (Embedder/ShaderDecodedImageData), fetched from data: or file: only.
++    enum class Kind : u8 {
++        Image,
++        Shader,
++    };
++
++    [[nodiscard]] static GC::Ref<SharedResourceRequest> get_or_create(DOM::Document&, URL::URL const&, Kind = Kind::Image);
+ 
+     virtual ~SharedResourceRequest() override;
+ 
+@@ -42,7 +49,7 @@ public:
+     bool needs_fetching() const;
+ 
+ private:
+-    explicit SharedResourceRequest(GC::Ref<Page>, URL::URL, GC::Ref<DOM::Document>);
++    explicit SharedResourceRequest(GC::Ref<Page>, URL::URL, GC::Ref<DOM::Document>, Kind);
+ 
+     virtual void finalize() override;
+     virtual void visit_edges(JS::Cell::Visitor&) override;
+@@ -67,6 +74,7 @@ private:
+     };
+ 
+     State m_state { State::New };
++    Kind m_kind { Kind::Image };
+ 
+     GC::Ref<Page> m_page;
+ 
+diff --git a/Libraries/LibWeb/Rust/src/css/absolutize.rs b/Libraries/LibWeb/Rust/src/css/absolutize.rs
+index 7f58090924..045ed58304 100644
+--- a/Libraries/LibWeb/Rust/src/css/absolutize.rs
++++ b/Libraries/LibWeb/Rust/src/css/absolutize.rs
+@@ -321,7 +321,8 @@ fn absolutize_image(value: &StyleValueData, context: &AbsolutizationContext) ->
+     else {
+         return None;
+     };
+-    if url.is_empty() {
++    // A shader(<string>) image's url is its source text, not a URL.
++    if url.is_empty() || *url_type == crate::css::parser::images_gradients_parser::SHADER_SOURCE_IMAGE_TYPE {
+         return Some(Absolutized::Unchanged);
+     }
+ 
+diff --git a/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs b/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
+index fe3c6f40f0..cf1eeb711a 100644
+--- a/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
++++ b/Libraries/LibWeb/Rust/src/css/parser/images_gradients_parser.rs
+@@ -85,6 +85,50 @@ fn image_from_string(context: &ParseContext, string: &[u16]) -> Option<StyleValu
+     })
+ }
+ 
++/// karouka: the `url_type` of a `shader(<url>)` image, beside the C++ URL::Type values (url() 0,
++/// src() 1) it otherwise carries. The URL names the shader's source (data: or file: only).
++pub(crate) const SHADER_URL_IMAGE_TYPE: u8 = 2;
++/// karouka: the `url_type` of a `shader(<string>)` image, whose `url` is the shader's source text.
++pub(crate) const SHADER_SOURCE_IMAGE_TYPE: u8 = 3;
++
++/// karouka: `shader( <url> | <string> )`, an image whose pixels an SkSL shader paints
++/// (docs/ENGINE.md). Uniform arguments aren't supported yet.
++fn parse_shader(context: &ParseContext, arguments: &[ComponentValue]) -> Option<StyleValueData> {
++    if context.contains_attr_tainted_values {
++        return None;
++    }
++    let mut arguments = arguments.iter().filter(|value| !value.is_whitespace());
++    let source = arguments.next()?;
++    if arguments.next().is_some() {
++        return None;
++    }
++    if let Some(string) = source.string() {
++        return Some(StyleValueData::Image {
++            url: RetainedString::from_utf16(string)?,
++            url_type: SHADER_SOURCE_IMAGE_TYPE,
++            url_modifiers: RetainedRequestUrlModifierList::from_retained_modifiers(Vec::new()),
++            resource_context: image_resource_context(context)?,
++        });
++    }
++    let StyleValueData::Url {
++        url,
++        url_type: 0,
++        modifiers,
++    } = parse_url_value(context, source)?
++    else {
++        return None;
++    };
++    if url.is_fragment() {
++        return None;
++    }
++    Some(StyleValueData::Image {
++        url,
++        url_type: SHADER_URL_IMAGE_TYPE,
++        url_modifiers: modifiers,
++        resource_context: image_resource_context(context)?,
++    })
++}
++
+ fn parse_type(_context: &ParseContext, value: &ComponentValue) -> Option<CssString> {
+     let (name, arguments) = value.function()?;
+     if !equals_ascii_case_insensitive(name, b"type") {
+@@ -648,6 +692,13 @@ pub(crate) fn parse_image_value(
+         tokens.discard_a_token();
+         return Some(parsed);
+     }
++    if let Some((name, arguments)) = tokens.next_token().function()
++        && equals_ascii_case_insensitive(name, b"shader")
++    {
++        let parsed = parse_shader(context, arguments)?;
++        tokens.discard_a_token();
++        return Some(parsed);
++    }
+     if let Some((name, arguments)) = tokens.next_token().function()
+         && let Some(parsed) = parse_gradient(context, property, name, arguments)
+     {
+@@ -669,6 +720,7 @@ pub(crate) fn is_image_function_name(name: &[u16]) -> bool {
+         "repeating-conic-gradient",
+         "radial-gradient",
+         "repeating-radial-gradient",
++        "shader",
+     ]
+     .iter()
+     .any(|expected| equals_ascii_case_insensitive(name, expected.as_bytes()))
+diff --git a/Libraries/LibWeb/Rust/src/css/serialize.rs b/Libraries/LibWeb/Rust/src/css/serialize.rs
+index 16430b5670..9ff4be94ae 100644
+--- a/Libraries/LibWeb/Rust/src/css/serialize.rs
++++ b/Libraries/LibWeb/Rust/src/css/serialize.rs
+@@ -1206,13 +1206,26 @@ pub(crate) fn serialize_style_value(sink: &mut TextSink, value: &StyleValueData,
+             url_modifiers,
+             ..
+         } => {
+-            sink.push_ascii(if *url_type == 0 { "url(" } else { "src(" });
++            use crate::css::parser::images_gradients_parser::{SHADER_SOURCE_IMAGE_TYPE, SHADER_URL_IMAGE_TYPE};
++            if *url_type == SHADER_SOURCE_IMAGE_TYPE {
++                sink.push_ascii("shader(");
++                serialize_url_text(sink, url);
++                sink.push_ascii(")");
++                return true;
++            }
++            if *url_type == SHADER_URL_IMAGE_TYPE {
++                sink.push_ascii("shader(");
++            }
++            sink.push_ascii(if *url_type == 1 { "src(" } else { "url(" });
+             serialize_url_text(sink, url);
+             for modifier in url_modifiers.as_slice() {
+                 sink.push_ascii(" ");
+                 serialize_request_url_modifier(sink, modifier);
+             }
+             sink.push_ascii(")");
++            if *url_type == SHADER_URL_IMAGE_TYPE {
++                sink.push_ascii(")");
++            }
+             true
+         }
+         StyleValueData::Unresolved { source_text, .. } => {
+diff --git a/Libraries/LibWeb/Rust/src/css/style_compute.rs b/Libraries/LibWeb/Rust/src/css/style_compute.rs
+index 710858e4eb..c2d9f5b944 100644
+--- a/Libraries/LibWeb/Rust/src/css/style_compute.rs
++++ b/Libraries/LibWeb/Rust/src/css/style_compute.rs
+@@ -1514,10 +1514,16 @@ pub(crate) fn collect_external_value_dependencies(value: &StyleValueData) -> Ext
+                 dependencies.container_relative_length_unit_mask |= container_relative_length_unit_bit(*unit);
+             }
+             StyleValueData::Image {
+-                url, resource_context, ..
++                url,
++                url_type,
++                resource_context,
++                ..
+             } => {
+-                dependencies.needs_document_base_url |= !url.is_empty() && !resource_context.has_base_url;
+-                dependencies.may_need_style_sheet_resource_context |= !url.is_empty();
++                // A shader(<string>) image's url is its source text, not a URL.
++                let is_url = !url.is_empty()
++                    && *url_type != crate::css::parser::images_gradients_parser::SHADER_SOURCE_IMAGE_TYPE;
++                dependencies.needs_document_base_url |= is_url && !resource_context.has_base_url;
++                dependencies.may_need_style_sheet_resource_context |= is_url;
+             }
+             StyleValueData::Calculated { rust_calculation, .. } => {
+                 collect_calculation(rust_calculation.node(), dependencies);

@@ -1,0 +1,168 @@
+diff --git a/Libraries/LibWeb/Embedder/HostClock.cpp b/Libraries/LibWeb/Embedder/HostClock.cpp
+index 6ea5fe6..f1c4afa 100644
+--- a/Libraries/LibWeb/Embedder/HostClock.cpp
++++ b/Libraries/LibWeb/Embedder/HostClock.cpp
+@@ -12,9 +12,15 @@
+ #include <LibCore/EventLoop.h>
+ #include <LibGC/Cell.h>
+ #include <LibGC/Root.h>
++#include <LibJS/Runtime/Realm.h>
+ #include <LibJS/Runtime/Temporal/Now.h>
++#include <LibJS/Runtime/VM.h>
+ #include <math.h>
++#include <pthread.h>
++#include <LibWeb/Bindings/MainThreadVM.h>
+ #include <LibWeb/Embedder/HostClock.h>
++#include <LibWeb/HTML/Window.h>
++#include <LibWeb/HighResolutionTime/Performance.h>
+ 
+ namespace Web::Embedder {
+ 
+@@ -49,6 +55,27 @@ i64 wall_now_ns()
+     return s_wall_now_ns.load(AK::MemoryOrder::memory_order_relaxed);
+ }
+ 
++// The thread that installed the clock: the main thread, whose event loop it drives.
++pthread_t s_clock_thread;
++
++HostClock& clock();
++
++// LibJS's Date clock. On the clock's thread, a read from a window's script is a script read of the host clock
++// (read_host_clock_for_script) through the window's Performance, so a script that waits for Date.now() to move
++// gets there, and Date.now() and performance.now() move together. Any other read is the host's wall time.
++i64 script_wall_now_ns()
++{
++    if (pthread_equal(pthread_self(), s_clock_thread)) {
++        if (auto* realm = Bindings::main_thread_vm().current_realm()) {
++            if (auto* window = Bindings::window_from_global_object(realm->global_object())) {
++                auto now_ms = window->performance()->read_host_clock_for_script();
++                return clock().wall_offset_ns + static_cast<i64>(llround(now_ms * 1e6));
++            }
++        }
++    }
++    return wall_now_ns();
++}
++
+ // Never destroyed: a timer finalized during exit()'s static destructors may still cancel itself.
+ HostClock& clock()
+ {
+@@ -119,8 +146,12 @@ void install_host_clock(double now_ms)
+     host_clock.installed = true;
+     host_clock.now = now_ms;
+     host_clock.wall_offset_ns = UnixDateTime::now().nanoseconds_since_epoch() - static_cast<i64>(llround(now_ms * 1e6));
++    // A whole number of milliseconds, so that where Date.now() (which floors to a millisecond) ticks over against the
++    // host's time is the same on every run: a script that waits on Date.now() takes the same reads each time.
++    host_clock.wall_offset_ns -= host_clock.wall_offset_ns % 1'000'000;
+     s_wall_now_ns.store(host_clock.wall_offset_ns + static_cast<i64>(llround(now_ms * 1e6)));
+-    JS::Temporal::set_host_wall_clock(wall_now_ns);
++    s_clock_thread = pthread_self();
++    JS::Temporal::set_host_wall_clock(script_wall_now_ns);
+ }
+ 
+ void set_host_clock_time(double now_ms)
+@@ -164,6 +195,13 @@ double host_clock_wall_time()
+     return static_cast<double>(wall_now_ns()) / 1e6;
+ }
+ 
++double read_host_clock_for_script(double& next_read)
++{
++    auto now_ms = max(clock().now, next_read);
++    next_read = now_ms + script_read_step_ms;
++    return now_ms;
++}
++
+ void schedule_on_host_clock(GC::Cell& cell, i32 interval_ms, bool repeating, Function<void()> fire)
+ {
+     auto& host_clock = clock();
+diff --git a/Libraries/LibWeb/Embedder/HostClock.h b/Libraries/LibWeb/Embedder/HostClock.h
+index ed578fe..9579698 100644
+--- a/Libraries/LibWeb/Embedder/HostClock.h
++++ b/Libraries/LibWeb/Embedder/HostClock.h
+@@ -28,6 +28,16 @@ namespace Web::Embedder {
+ // Unix time at which the clock was installed plus the host time since, so Date.now() moves by what
+ // performance.now() moves by, and performance.timeOrigin holds still.
+ //
++// A script's reads of it take time. Within a task the host clock stands still, so a script that waits
++// for performance.now() or Date.now() to move would spin forever. Each read a window's script makes
++// (Performance::now, and on the main thread Date.now(), new Date() and Temporal.Now through the
++// window's Performance) returns at least script_read_step_ms after the previous read in the same
++// window, and never less than the host clock's time: a script's time is the host's, plus one step per
++// read it made since the host's time passed it. The step is fixed, so a busy wait ends after the same
++// number of reads on every run. Only script reads step: LibWeb's own reads (event timestamps, the
++// animation timeline, timers) stay on the host's time, which can then lag what a page read until the
++// host's time catches up (a 100 ms busy wait reads 100 ms ahead of the next six 16.67 ms frames).
++//
+ // Installs the clock at now_ms (milliseconds on the host's monotonic clock). Installing it again only
+ // sets its time. There is no uninstall: time origins and deadlines taken on one clock mean nothing on
+ // the other.
+@@ -48,6 +58,14 @@ double host_clock_time();
+ double host_clock_wall_offset();
+ double host_clock_wall_time();
+ 
++// The step, in milliseconds, each script read of the host clock takes (see above).
++constexpr double script_read_step_ms = 0.001;
++
++// A script's read of the host clock, for the reader whose next read may come no earlier than next_read
++// (Performance keeps it per window; it starts at zero): the later of the host clock's time and
++// next_read. Moves next_read one step past the time returned.
++double read_host_clock_for_script(double& next_read);
++
+ // For HTML::Timer. A timer is scheduled at most once; scheduling it again moves it. `cell` is kept
+ // rooted while a firing is under way, so that the firing of another timer can't collect it.
+ void schedule_on_host_clock(GC::Cell& cell, i32 interval_ms, bool repeating, Function<void()> fire);
+diff --git a/Libraries/LibWeb/HighResolutionTime/Performance.cpp b/Libraries/LibWeb/HighResolutionTime/Performance.cpp
+index 4d3375b9db..b04b47f018 100644
+--- a/Libraries/LibWeb/HighResolutionTime/Performance.cpp
++++ b/Libraries/LibWeb/HighResolutionTime/Performance.cpp
+@@ -12,6 +12,7 @@
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Event.h>
+ #include <LibWeb/DOM/EventDispatcher.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/Window.h>
+ #include <LibWeb/HighResolutionTime/Performance.h>
+@@ -73,9 +74,18 @@ double Performance::time_origin() const
+ double Performance::now() const
+ {
+     // The now() method MUST return the number of milliseconds in the current high resolution time given this's relevant global object (a duration).
++    // NB: On an embedder's host clock (Embedder/HostClock.h), which stands still within a task, each read takes a step,
++    //     so that a script waiting for the time to move gets there.
++    if (Embedder::host_clock_is_installed())
++        return relative_high_resolution_time(read_host_clock_for_script(), relevant_global_object());
+     return current_high_resolution_time(relevant_global_object());
+ }
+ 
++double Performance::read_host_clock_for_script() const
++{
++    return Embedder::read_host_clock_for_script(m_next_host_clock_read);
++}
++
+ // https://w3c.github.io/user-timing/#mark-method
+ WebIDL::ExceptionOr<GC::Ref<UserTiming::PerformanceMark>> Performance::mark(Utf16String const& mark_name, Bindings::PerformanceMarkOptions const& mark_options)
+ {
+diff --git a/Libraries/LibWeb/HighResolutionTime/Performance.h b/Libraries/LibWeb/HighResolutionTime/Performance.h
+index 47e1b9fff4..a58cbb4087 100644
+--- a/Libraries/LibWeb/HighResolutionTime/Performance.h
++++ b/Libraries/LibWeb/HighResolutionTime/Performance.h
+@@ -27,6 +27,10 @@ public:
+     virtual ~Performance() override;
+ 
+     double now() const;
++
++    // NB: A read of an embedder's host clock (Embedder/HostClock.h) by this window's script: performance.now() and
++    //     Date's reads step it.
++    double read_host_clock_for_script() const;
+     double time_origin() const;
+ 
+     WebIDL::ExceptionOr<GC::Ref<UserTiming::PerformanceMark>> mark(Utf16String const& mark_name, Bindings::PerformanceMarkOptions const& mark_options = {});
+@@ -60,6 +64,9 @@ private:
+     GC::Ptr<NavigationTiming::PerformanceNavigation> m_navigation;
+     GC::Ptr<NavigationTiming::PerformanceTiming> m_timing;
+     GC::Ref<DOM::EventTarget> m_global_object;
++
++    // The earliest time this window's script may read next on an embedder's host clock (read_host_clock_for_script).
++    mutable double m_next_host_clock_read { 0 };
+ };
+ 
+ }

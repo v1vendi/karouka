@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-pixels" content="25,25=#c00000~8 55,25=#ff8000~8 97,25=#800080~8 145,25=#00a000~8 217,25=#c00000~8 247,25=#ff8000~8 259,25=#800080~8 337,25=#00a000~8 403,25=#c00000~8 439,25=#ff8000~8 451,25=#800080~8 535,25=#00a000~8 595,25=#c00000~8 625,25=#ff8000~8 637,25=#800080~8 715,25=#00a000~8 25,55=#804000~8 55,55=#000000~8 97,55=#80ff80~8 145,55=#404040~8 217,55=#804000~8 247,55=#000000~8 259,55=#80ff80~8 337,55=#404040~8 403,55=#804000~8 439,55=#000000~8 451,55=#80ff80~8 535,55=#404040~8 595,55=#804000~8 625,55=#000000~8 637,55=#80ff80~8 715,55=#404040~8 217,67=#00ffff~8 247,67=#8080ff~8 259,67=#ffffff~8 337,67=#ffc0c0~8 595,67=#00ffff~8 625,67=#8080ff~8 637,67=#ffffff~8 715,67=#ffc0c0~8 403,73=#00ffff~8 439,73=#8080ff~8 451,73=#ffffff~8 535,73=#ffc0c0~8 25,97=#00ffff~8 55,97=#8080ff~8 97,97=#ffffff~8 145,97=#ffc0c0~8 25,145=#0000c0~8 55,145=#008080~8 97,145=#ff00ff~8 145,145=#c0c000~8 217,145=#0000c0~8 247,145=#008080~8 259,145=#ff00ff~8 337,145=#c0c000~8 595,145=#0000c0~8 625,145=#008080~8 637,145=#ff00ff~8 715,145=#c0c000~8 403,151=#0000c0~8 439,151=#008080~8 451,151=#ff00ff~8 535,151=#c0c000~8 217,187=#c00000~8 247,187=#800080~8 259,187=#ff8000~8 367,187=#00a000~8 385,187=#00a000~8 25,205=#c00000~8 55,205=#ff8000~8 97,205=#800080~8 145,205=#00a000~8 217,217=#00ffff~8 367,217=#ffc0c0~8 385,217=#ffc0c0~8 25,235=#804000~8 55,235=#000000~8 97,235=#80ff80~8 145,235=#404040~8 217,235=#804000~8 367,235=#404040~8 385,235=#404040~8 25,277=#00ffff~8 55,277=#8080ff~8 97,277=#ffffff~8 145,277=#ffc0c0~8 25,325=#0000c0~8 55,325=#008080~8 97,325=#ff00ff~8 145,325=#c0c000~8 217,337=#0000c0~8 247,337=#ff00ff~8 259,337=#008080~8 367,337=#c0c000~8 385,337=#c0c000~8 217,361=#0000c0~8 247,361=#ff00ff~8 259,361=#008080~8 367,361=#c0c000~8 385,361=#c0c000~8 31,385=#c00000~8 67,385=#00a000~8 115,385=#0000c0~8 157,385=#c0c000~8 217,385=#c00000~8 241,385=#00a000~8 403,385=#c00000~8 463,385=#00a000~8 487,385=#0000c0~8 601,385=#c00000~8 649,385=#00a000~8 685,385=#0000c0~8 745,385=#c0c000~8 430,390=#e8e8e8~8">
+<title>border-image vector sources</title>
+<style>
+  body { margin: 0; background: #e8e8e8; }
+  div { position: absolute; box-sizing: content-box; width: 90px; height: 90px; border: 30px solid #f0f; border-image-slice: 30 fill; }
+  .r1 { top: 20px; } .r2 { top: 200px; } .r3 { top: 380px; }
+  .c1 { left: 20px; } .c2 { left: 210px; } .c3 { left: 400px; } .c4 { left: 590px; }
+  /* An SVG with a natural size, 90x90, sliced at its 30px cells. */
+  .svg { border-image-source: url(border_image_grid.svg); }
+  /* An SVG with no natural size or ratio: the source takes the border image area (150x150), cut at its thirds. */
+  .sizeless { border-image-source: url(border_image_grid_sizeless.svg); border-image-slice: 50 fill; }
+  /* The same grid as a PNG: the raster path, beside the SVG ones. */
+  .png { border-image-source: url(border_image_grid.png); }
+  /* Gradients have no natural size either: the stripes run across the whole border image area. Here the slices
+     scale by 2/3 (slice 30, border 20) and the tiles land on fractional pixels. */
+  .gradient {
+    width: 128px; height: 88px; border-width: 20px;
+    border-image-source: linear-gradient(to right, #c00000 0 25%, #00a000 25% 50%, #0000c0 50% 75%, #c0c000 75%);
+  }
+  .stretch { border-image-repeat: stretch; }
+  .round { border-image-repeat: round; }
+  .space { border-image-repeat: space; width: 98px; height: 98px; }
+  .outset { border-image-outset: 15px; border-image-repeat: repeat; border-image-slice: 30; }
+</style>
+</head>
+<body>
+<!-- border-image-source as vector content (SVG with and without a natural size) and as a gradient,
+     under stretch, round, space and repeat. Each SVG cell and each edge half has its own colour, so a
+     slice painted in the wrong place, transposed, mirrored or tiled wrongly shows. The SVG boxes keep
+     every tile on whole pixels at whole scale ratios, so the player's cached rasters of the nested
+     list match its direct replay and the software backend exactly. The pixels were read from
+     Chrome's rendering of this page (headless, 800x600, scale 1). -->
+<div class="svg stretch r1 c1"></div><div class="svg round r1 c2"></div><div class="svg space r1 c3"></div><div class="png round r1 c4"></div>
+<div class="sizeless stretch r2 c1"></div><div class="svg outset r2 c2" style="left: 225px"></div>
+<div class="gradient stretch r3 c1"></div><div class="gradient round r3 c2"></div><div class="gradient space r3 c3" style="width: 128px; height: 88px"></div><div class="gradient r3 c4" style="border-image-repeat: space round"></div>
+</body>
+</html>

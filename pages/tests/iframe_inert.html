@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>inert:</title>
+<meta name="karouka-check-title" content="^inert: docs=0 windows=0 length=0 load loads=0 ran=0$">
+<meta name="karouka-check-pixels" content="2,2=#333333 100,50=#ffcc00 100,170=#ffcc00 290,50=#00aa00">
+<!-- karouka has no child navigables (patch 0100, Embedder/ChildNavigables). An iframe,
+     frame or object stays in the DOM but loads no document: its contentDocument and contentWindow
+     are null, no load event fires at it for a document, a srcdoc's script never runs, and the
+     iframe paints as an empty box, its border around the page's own background. An object whose
+     resource is a document shows its fallback content. The parser-made and script-made frames
+     count, ten frames after the page's load event. -->
+<style>
+  body { margin: 0; background: #fc0; }
+  iframe { position: absolute; left: 0; width: 200px; height: 100px; border: 4px solid #333; }
+  #a { top: 0; }
+  #b { top: 120px; }
+  object { position: absolute; left: 240px; top: 0; width: 100px; height: 100px; display: block; }
+  #fallback { width: 100px; height: 100px; background: #0a0; }
+</style>
+</head>
+<body>
+<iframe id="a" srcdoc="<body style='margin:0;background:#2a2'><script>parent.ran = (parent.ran || 0) + 1;</script></body>"></iframe>
+<iframe id="b" src="iframe_inert.html#child"></iframe>
+<iframe id="c" src="data:text/html,<body style='background:%23088'><script>parent.ran = (parent.ran || 0) + 1;</script></body>" style="display: none"></iframe>
+<object id="o" type="text/html" data="data:text/html,<body style='background:%23088'></body>"><div id="fallback"></div></object>
+<script>
+  // #b's document, were it loaded, would only report.
+  if (location.hash === "#child")
+    parent.ran = (parent.ran || 0) + 1;
+  let loads = 0;
+  const containers = [...document.querySelectorAll("iframe, object")];
+  const made = document.createElement("iframe");
+  made.srcdoc = "<script>parent.ran = (parent.ran || 0) + 1;<\/script>";
+  made.style.display = "none";
+  document.body.appendChild(made);
+  const frame = document.createElement("frame");
+  frame.src = "data:text/html,<script>parent.ran = (parent.ran || 0) + 1;<\/script>";
+  document.body.appendChild(frame);
+  containers.push(made, frame);
+  for (const element of containers)
+    element.addEventListener("load", () => ++loads);
+  const docs = containers.filter((element) => element.contentDocument !== null).length;
+  const windows = containers.filter((element) => element.contentWindow !== null).length;
+  document.title += ` docs=${docs} windows=${windows} length=${window.length}`;
+  addEventListener("load", () => {
+    document.title += " load";
+    let frames = 0;
+    const report = () => {
+      if (++frames < 10)
+        return requestAnimationFrame(report);
+      const lateDocs = containers.filter((element) => element.contentDocument !== null).length;
+      document.title += ` loads=${loads + lateDocs} ran=${window.ran || 0}`;
+    };
+    requestAnimationFrame(report);
+  });
+</script>
+</body>
+</html>

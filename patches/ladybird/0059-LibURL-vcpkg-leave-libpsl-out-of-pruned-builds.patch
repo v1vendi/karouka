@@ -1,0 +1,147 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibURL+vcpkg: leave libpsl out of pruned builds
+
+PublicSuffixData was the only user of libpsl, which brought libidn2 and
+libunistring along (2.2 MB, three dylibs bound before main). Its
+answers feed registrable domains and same-site checks for cookies,
+which a LIBWEB_PRUNE_WEB_APIS build (karouka: no network, no cookie
+jar) never uses. Such a build now answers as libpsl would with an
+empty list: only the "*" rule applies, so with the star rule a host's
+last label is its public suffix, and without it no host is one.
+
+The libpsl port moves into vcpkg.json's "browser" feature, which pruned
+builds leave out, and the public suffix test isn't built with them.
+
+---
+diff --git a/Libraries/LibURL/CMakeLists.txt b/Libraries/LibURL/CMakeLists.txt
+index ee04d1f5bf..b0acf72957 100644
+--- a/Libraries/LibURL/CMakeLists.txt
++++ b/Libraries/LibURL/CMakeLists.txt
+@@ -9,7 +9,14 @@ set(SOURCES
+ )
+ 
+ ladybird_lib(LibURL url)
+-target_link_libraries(LibURL PRIVATE liburl_rust LibUnicode LibTextCodec LibRegex PkgConfig::LIBPSL)
++target_link_libraries(LibURL PRIVATE liburl_rust LibUnicode LibTextCodec LibRegex)
++# karouka: a LIBWEB_PRUNE_WEB_APIS build has no cookies or network, so it leaves out libpsl (and its
++# libidn2 and libunistring; vcpkg.json) and PublicSuffixData answers from the "*" rule alone.
++if (LIBWEB_PRUNE_WEB_APIS)
++    target_compile_definitions(LibURL PRIVATE LIBURL_NO_PUBLIC_SUFFIX_LIST)
++else()
++    target_link_libraries(LibURL PRIVATE PkgConfig::LIBPSL)
++endif()
+ 
+ import_rust_crate(MANIFEST_PATH Rust/Cargo.toml CRATE_NAME liburl_rust FEATURES allocator FFI_HEADER RustFFI.h)
+ target_link_libraries(liburl_rust INTERFACE LibUnicode LibRegex)
+diff --git a/Libraries/LibURL/PublicSuffixData.cpp b/Libraries/LibURL/PublicSuffixData.cpp
+index 7dd5befcc6..605b47a533 100644
+--- a/Libraries/LibURL/PublicSuffixData.cpp
++++ b/Libraries/LibURL/PublicSuffixData.cpp
+@@ -10,10 +10,13 @@
+ #include <LibURL/Parser.h>
+ #include <LibURL/PublicSuffixData.h>
+ 
+-#include <libpsl.h>
++#ifndef LIBURL_NO_PUBLIC_SUFFIX_LIST
++#    include <libpsl.h>
++#endif
+ 
+ namespace URL {
+ 
++#ifndef LIBURL_NO_PUBLIC_SUFFIX_LIST
+ static psl_ctx_t const* public_suffix_context()
+ {
+     static auto const* context = psl_builtin();
+@@ -27,6 +30,7 @@ static constexpr auto public_suffix_match_types(PublicSuffixData::IncludeStarRul
+         return PSL_TYPE_ANY;
+     return PSL_TYPE_ANY | PSL_TYPE_NO_STAR_RULE;
+ }
++#endif
+ 
+ struct NormalizedDomain {
+     StringView host;
+@@ -53,11 +57,22 @@ static Optional<NormalizedDomain> normalized_domain_for_host(Host const& host)
+     return NormalizedDomain { domain, trailing_dot };
+ }
+ 
++#ifdef LIBURL_NO_PUBLIC_SUFFIX_LIST
++// karouka: built without libpsl (LIBWEB_PRUNE_WEB_APIS, Libraries/LibURL/CMakeLists.txt). Answer as
++// libpsl would with an empty list: only the "*" rule applies, so with IncludeStarRule::Yes a host's
++// last label is its public suffix (and its last two labels its registrable domain), and without it
++// no host is one. Only cookies and same-site checks need the real list, and karouka loads no network.
++static bool is_matching_public_suffix_impl(StringView host, PublicSuffixData::IncludeStarRule include_star_rule)
++{
++    return include_star_rule == PublicSuffixData::IncludeStarRule::Yes && !host.contains('.');
++}
++#else
+ static bool is_matching_public_suffix_impl(StringView host, PublicSuffixData::IncludeStarRule include_star_rule)
+ {
+     ByteString lookup_host { host };
+     return psl_is_public_suffix2(public_suffix_context(), lookup_host.characters(), public_suffix_match_types(include_star_rule));
+ }
++#endif
+ 
+ bool PublicSuffixData::is_matching_public_suffix(StringView host, IncludeStarRule include_star_rule)
+ {
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index 7232d95e77..eee46366a5 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -90,7 +90,10 @@ else()
+     set(BROTLI_TARGETS PkgConfig::BROTLI)
+ endif()
+ 
+-pkg_check_modules(LIBPSL REQUIRED IMPORTED_TARGET libpsl)
++# karouka: a LIBWEB_PRUNE_WEB_APIS build leaves out libpsl too (Libraries/LibURL/CMakeLists.txt).
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    pkg_check_modules(LIBPSL REQUIRED IMPORTED_TARGET libpsl)
++endif()
+ pkg_check_modules(libtommath REQUIRED IMPORTED_TARGET libtommath)
+ 
+ if (LIBWEB_PRUNE_WEB_APIS)
+diff --git a/Tests/LibURL/CMakeLists.txt b/Tests/LibURL/CMakeLists.txt
+index b7711936e0..4ef2e6cf6a 100644
+--- a/Tests/LibURL/CMakeLists.txt
++++ b/Tests/LibURL/CMakeLists.txt
+@@ -1,8 +1,11 @@
+ set(URL_TEST_SOURCES
+     TestURL.cpp
+     TestURLPattern.cpp
+-    TestPublicSuffix.cpp
+ )
++# karouka: a LIBWEB_PRUNE_WEB_APIS build has no public suffix list (Libraries/LibURL/CMakeLists.txt).
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    list(APPEND URL_TEST_SOURCES TestPublicSuffix.cpp)
++endif()
+ 
+ foreach(source IN LISTS URL_TEST_SOURCES)
+     ladybird_test("${source}" LibURL LIBS LibURL LibRegex)
+diff --git a/vcpkg.json b/vcpkg.json
+index c93209b21d..c1d61fb09d 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -55,7 +55,6 @@
+         "apng"
+       ]
+     },
+-    "libpsl",
+     "libtommath",
+     {
+       "name": "libwebp",
+@@ -198,7 +197,7 @@
+   ],
+   "features": {
+     "browser": {
+-      "description": "The browser's own dependencies: RequestServer's curl and libproxy, LibDatabase's sqlite3, LibWebView's SDL3, the js REPL's libedit, the pdf.js viewer and the Compositor's ANGLE. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave the browser and this feature out.",
++      "description": "The browser's own dependencies: RequestServer's curl and libproxy, LibURL's libpsl (the public suffix list for cookies and same-site checks), LibDatabase's sqlite3, LibWebView's SDL3, the js REPL's libedit, the pdf.js viewer and the Compositor's ANGLE. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave the browser and this feature out.",
+       "dependencies": [
+         {
+           "name": "angle",
+@@ -232,6 +231,7 @@
+           "name": "libedit",
+           "platform": "!windows & !android"
+         },
++        "libpsl",
+         "pdfjs",
+         {
+           "name": "sdl3",

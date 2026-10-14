@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>animated churn</title>
+<meta name="karouka-check-animated" content="the label shows the frame number and cycles its font size every frame">
+<style>
+  body { margin: 0; background: #202830; color: #e8eef4; font-family: sans-serif; }
+  #frame { width: 256px; height: 256px; display: block; margin: 16px; }
+  #label { margin: 0 16px; }
+</style>
+</head>
+<body>
+<!-- resource_churn.html with a 4-frame 512x512 GIF: every load decodes four 1 MB frames, which
+     LibWeb keeps and plays in an AnimatedBitmapDecodedImageData (a session with no decoder left to
+     feed it: the animation fits LibWeb's 8-frame pool). RSS has to stay flat as frames go by: run it
+     under `tools/dev.sh mem pages/tests/animated_churn.html --frames 150` and `--frames 600`. -->
+<img id="frame" alt="">
+<p id="label">frame 0</p>
+<script>
+  const label = document.getElementById("label");
+  let frame = 0;
+  let images = 0;
+  // A new image goes in once the one before it has loaded: a src changed every frame never decodes.
+  // Each URL is its own resource, so each is decoded again (four 1 MB frames).
+  function next_image() {
+    ++images;
+    const decoded = new Image();
+    decoded.id = "frame";
+    decoded.onload = () => {
+      document.getElementById("frame").replaceWith(decoded);
+      next_image();
+    };
+    decoded.src = `animated_churn.gif?${images}`;
+  }
+  function step() {
+    ++frame;
+    // The image count depends on load timing; only the title, which the capture doesn't show, says it.
+    label.textContent = `frame ${frame}`;
+    label.style.fontSize = `${12 + (frame % 48)}px`;
+    document.title = `animated churn ${frame} ${images}`;
+    requestAnimationFrame(step);
+  }
+  next_image();
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

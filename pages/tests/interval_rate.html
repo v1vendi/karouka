@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^bar=96px$">
+<meta name="karouka-check-animated" content="setInterval(10) grows the bar 2px per firing for as long as it runs">
+<style>
+  /* setInterval(10) counted as a bar 2px wide per firing. On the
+     host clock a 10 ms interval fires 100 times per second of host time:
+     kr_view_advance_time steps LibWeb's clock to each timer deadline between
+     two frames and runs the tasks due at each. Stepped 16.67 ms per frame,
+     --frames 30 spans 483 ms after the first frame, so the bar is 96px
+     (48 firings); when timers fired only at frame boundaries it was 58px (one
+     firing a frame). With --verbose the page logs the count every 60 frames.
+     The title carries the bar's width and the karouka-check-title meta pins
+     it at 96px, so dev.sh check fails if the rate changes, alone or four
+     views to a system (the meta assumes check's --frames 30).
+     Text-free, so the capture does not depend on a font. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 40px;
+    background: rgb(192, 64, 0);
+  }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<script>
+  const bar = document.getElementById("bar");
+  const start = performance.now();
+  let fires = 0;
+  setInterval(() => {
+    fires++;
+    bar.style.width = (fires * 2) + "px";
+    document.title = "bar=" + bar.style.width;
+  }, 10);
+  let frames = 0;
+  function onFrame() {
+    if (++frames % 60 === 0)
+      console.log(`interval_rate frame=${frames} host_ms=${(performance.now() - start).toFixed(2)} fires=${fires}`);
+    requestAnimationFrame(onFrame);
+  }
+  requestAnimationFrame(onFrame);
+</script>
+</body>
+</html>

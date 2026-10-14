@@ -1,0 +1,58 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: latch wheel gestures that start over text to their
+ element
+
+A wheel gesture whose first step hits text latched the Text node. Each
+later step of the gesture went to the Text node's own layout node,
+which has no box to dispatch the wheel event to, so dispatch_wheel_event
+returned Dropped and the step neither fired the event nor scrolled. The
+latch was only cleared on Cancelled, so every step after the first was
+lost for the rest of the gesture.
+
+Latch the nearest flat-tree ancestor element with a layout node instead
+of a text node, and clear the latch when a dispatch is dropped, so the
+next step is targeted afresh rather than dropped too.
+
+---
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+index 3834e25820095bf682baf18d3944667bb75363a8..6675c5c7deb9a841b9ee7f5c006cf7284dff7c9c 100644
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -902,10 +902,23 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
+     auto latch_gesture_to_wheel_event_target = [&](Target const& target, Layout::Node* target_layout_node) {
+         if (!wheel_event_has_delta || !target.dom_node())
+             return;
++        // A hit on text latches the element the text lays out in: the text node's own layout node has no box to
++        // dispatch the gesture's later steps to, so they would be dropped.
++        GC::Ptr<DOM::Node> latch_target = target.dom_node();
++        Optional<CSS::PseudoElement> latch_pseudo_element = target_layout_node ? target_layout_node->generated_for_pseudo_element() : Optional<CSS::PseudoElement> {};
++        if (!latch_target->is_element()) {
++            auto* element = latch_target->flat_tree_parent_element();
++            while (element && !element->layout_node(read))
++                element = element->flat_tree_parent_element();
++            if (!element)
++                return;
++            latch_target = element;
++            latch_pseudo_element = {};
++        }
+         m_wheel_scroll_latch = WheelScrollLatch {
+             .gesture = Compositing::WheelGestureIdentity::started_by(gesture_position, scroll_gesture_phase, modifiers, now),
+-            .wheel_event_target = target.dom_node(),
+-            .wheel_event_target_pseudo_element = target_layout_node ? target_layout_node->generated_for_pseudo_element() : Optional<CSS::PseudoElement> {},
++            .wheel_event_target = latch_target,
++            .wheel_event_target_pseudo_element = latch_pseudo_element,
+         };
+     };
+     if (continues_latched_gesture) {
+@@ -1063,8 +1076,9 @@ EventResult EventHandler::handle_mousewheel(CSSPixelPoint visual_viewport_positi
+ 
+         auto is_cancelable = async_scroll_performed_default_action ? UIEvents::WheelEventIsCancelable::No : UIEvents::WheelEventIsCancelable::Yes;
+         auto dispatch_result = dispatch_wheel_event(read, *wheel_event_target_layout_node, visual_viewport_position, screen_position, button, buttons, modifiers, wheel_delta_x, wheel_delta_y, is_cancelable == UIEvents::WheelEventIsCancelable::Yes);
+-        // A listener that cancels the event scrolls by itself, so the next event is targeted afresh.
+-        if (dispatch_result == EventResult::Cancelled)
++        // A listener that cancels the event scrolls by itself, so the next event is targeted afresh; so is one after
++        // an event that found nothing to dispatch to, rather than every later step of the gesture being dropped.
++        if (dispatch_result == EventResult::Cancelled || dispatch_result == EventResult::Dropped)
+             m_wheel_scroll_latch.clear();
+         if (dispatch_result == EventResult::Accepted) {
+             if (async_scroll_performed_default_action)

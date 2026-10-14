@@ -1,0 +1,98 @@
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/karouka-purge-expired-arenas.patch b/Meta/CMake/vcpkg/overlay-ports/mimalloc/karouka-purge-expired-arenas.patch
+new file mode 100644
+index 0000000..dd617b8
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/karouka-purge-expired-arenas.patch
+@@ -0,0 +1,45 @@
++karouka: mimalloc 2.2.7's mi_arenas_try_purge returns early when the arenas' purge deadline
++has passed (`arenas_expire < now`; mi_arena_try_purge and upstream v3 test `> now`), so segments
++freed back to an arena were purged only by a forced collect. Purge them once the deadline passes,
++and have a forced purge wait for one running on another thread instead of skipping it.
++
++--- a/src/arena.c
+++++ b/src/arena.c
++@@ -621,14 +621,27 @@
++   // check if any arena needs purging?
++   const mi_msecs_t now = _mi_clock_now();
++   mi_msecs_t arenas_expire = mi_atomic_loadi64_acquire(&mi_arenas_purge_expire);
++-  if (!force && (arenas_expire == 0 || arenas_expire < now)) return;
+++  // karouka: purge once the deadline has passed (2.2.7 tests `arenas_expire < now`, so an unforced
+++  // call returned once it had, and arena ranges were only purged by a forced collect)
+++  if (!force && (arenas_expire == 0 || arenas_expire > now)) return;
++ 
++   const size_t max_arena = mi_atomic_load_acquire(&mi_arena_count);
++   if (max_arena == 0) return;
++ 
++   // allow only one thread to purge at a time
++   static mi_atomic_guard_t purge_guard;
++-  mi_atomic_guard(&purge_guard)
+++  // karouka: a forced purge (mi_collect(true)) waits for a purge running on another thread instead of
+++  // skipping it, so the arenas are purged when it returns; an unforced one still skips.
+++  uintptr_t guard_expected = 0;
+++  if (force) {
+++    while (!mi_atomic_cas_weak_acq_rel(&purge_guard, &guard_expected, (uintptr_t)1)) {
+++      guard_expected = 0;
+++      mi_atomic_yield();
+++    }
+++  }
+++  else if (!mi_atomic_cas_strong_acq_rel(&purge_guard, &guard_expected, (uintptr_t)1)) {
+++    return;
+++  }
++   {
++     // increase global expire: at most one purge per delay cycle
++     mi_atomic_storei64_release(&mi_arenas_purge_expire, now + mi_arena_purge_delay());
++@@ -651,6 +664,7 @@
++       mi_atomic_storei64_release(&mi_arenas_purge_expire, 0);
++     }
++   }
+++  mi_atomic_store_release(&purge_guard, (uintptr_t)0);
++ }
++ 
++ 
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake b/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake
+index 963ebba..a9eab6d 100644
+--- a/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake
+@@ -1,6 +1,7 @@
+ # karouka: vcpkg's mimalloc 2.2.7#0 port (vcpkg git-tree 5b9c09b6d159), plus
+ # karouka-reuse-purged-pages.patch: on macOS, recommit purged pages with MADV_FREE_REUSE before
+-# reuse so the physical footprint counts them.
++# reuse so the physical footprint counts them, and karouka-purge-expired-arenas.patch:
++# purge arena ranges once their deadline passes, not only in a forced collect.
+ 
+ vcpkg_from_github(
+     OUT_SOURCE_PATH SOURCE_PATH
+@@ -11,6 +12,7 @@ vcpkg_from_github(
+     PATCHES
+         pkgconfig-cxx.diff
+         karouka-reuse-purged-pages.patch
++        karouka-purge-expired-arenas.patch
+ )
+ 
+ vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json b/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json
+index 6145317..9a75ee3 100644
+--- a/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "mimalloc",
+   "version": "2.2.7",
+-  "port-version": 1,
++  "port-version": 2,
+   "description": "Compact general purpose allocator with excellent performance",
+   "homepage": "https://github.com/microsoft/mimalloc",
+   "license": "MIT",
+diff --git a/vcpkg.json b/vcpkg.json
+index 9662c83..d729345 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -388,7 +388,7 @@
+     },
+     {
+       "name": "mimalloc",
+-      "version": "2.2.7#1"
++      "version": "2.2.7#2"
+     },
+     {
+       "name": "mman",

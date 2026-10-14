@@ -1,0 +1,305 @@
+diff --git a/Libraries/LibWeb/DOM/Element.cpp b/Libraries/LibWeb/DOM/Element.cpp
+--- a/Libraries/LibWeb/DOM/Element.cpp
++++ b/Libraries/LibWeb/DOM/Element.cpp
+@@ -3548,7 +3548,9 @@
+ bool Element::is_potentially_scrollable(TreatOverflowClipOnBodyParentAsOverflowHidden treat_overflow_clip_on_body_parent_as_overflow_hidden = TreatOverflowClipOnBodyParentAsOverflowHidden::No) const
+ {
+     // NOTE: Ensure that layout is up-to-date before looking at metrics.
+-    const_cast<Document&>(document()).update_layout(UpdateLayoutReason::ElementIsPotentiallyScrollable);
++    // AD-HOC: Only when something invalidated layout, here and in the scroll getters, setters and methods below: a read
++    //         of a laid-out document (scrollTop in a scroll listener, a loop of them) reads its scroll state as it is.
++    const_cast<Document&>(document()).update_layout_if_needed(UpdateLayoutReason::ElementIsPotentiallyScrollable);
+ 
+     // NB: Since this should always be the body element, the body element must have a <html> element parent. See Document::body().
+     VERIFY(parent_element());
+@@ -3617,7 +3619,7 @@
+ 
+     // NOTE: Ensure that layout is up-to-date before looking at metrics.
+     Layout::ForcedReadScope read { document };
+-    const_cast<Document&>(document).update_layout(UpdateLayoutReason::ElementScrollTop);
++    const_cast<Document&>(document).update_layout_if_needed(UpdateLayoutReason::ElementScrollTop);
+ 
+     // 6. If the element is the root element return the value of scrollY on window.
+     if (document.document_element() == this)
+@@ -3663,7 +3665,7 @@
+ 
+     // NOTE: Ensure that layout is up-to-date before looking at metrics.
+     Layout::ForcedReadScope read { document };
+-    const_cast<Document&>(document).update_layout(UpdateLayoutReason::ElementScrollLeft);
++    const_cast<Document&>(document).update_layout_if_needed(UpdateLayoutReason::ElementScrollLeft);
+ 
+     // 6. If the element is the root element return the value of scrollX on window.
+     if (document.document_element() == this)
+@@ -3720,7 +3722,7 @@
+ 
+     // NOTE: Ensure that layout is up-to-date before looking at metrics or scrolling the page.
+     Layout::ForcedReadScope read { document };
+-    const_cast<Document&>(document).update_layout(UpdateLayoutReason::ElementSetScrollLeft);
++    const_cast<Document&>(document).update_layout_if_needed(UpdateLayoutReason::ElementSetScrollLeft);
+ 
+     // 9. If the element is the body element, document is in quirks mode, and the element is not potentially scrollable, invoke scroll() on window with x as first argument and scrollY on window as second argument, and terminate these steps.
+     if (document.body() == this && document.in_quirks_mode() && !is_potentially_scrollable()) {
+@@ -3779,7 +3781,7 @@
+ 
+     // NOTE: Ensure that layout is up-to-date before looking at metrics or scrolling the page.
+     Layout::ForcedReadScope read { document };
+-    const_cast<Document&>(document).update_layout(UpdateLayoutReason::ElementSetScrollTop);
++    const_cast<Document&>(document).update_layout_if_needed(UpdateLayoutReason::ElementSetScrollTop);
+ 
+     // 9. If the element is the body element, document is in quirks mode, and the element is not potentially scrollable, invoke scroll() on window with scrollX as first argument and y as second argument, and terminate these steps.
+     if (document.body() == this && document.in_quirks_mode() && !is_potentially_scrollable()) {
+@@ -3816,7 +3818,7 @@
+ 
+     // NOTE: Ensure that layout is up-to-date before looking at metrics.
+     Layout::ForcedReadScope read { document };
+-    document.update_layout(UpdateLayoutReason::ElementScrollWidth);
++    document.update_layout_if_needed(UpdateLayoutReason::ElementScrollWidth);
+     auto const* viewport_layout_node = document.layout_node(read);
+     VERIFY(viewport_layout_node && Painting::has_committed_box(*viewport_layout_node));
+     auto viewport_scrollable_overflow_rect = Painting::scrollable_overflow_rect(*viewport_layout_node);
+@@ -3861,7 +3863,7 @@
+ 
+     // NOTE: Ensure that layout is up-to-date before looking at metrics.
+     Layout::ForcedReadScope read { document };
+-    document.update_layout(UpdateLayoutReason::ElementScrollHeight);
++    document.update_layout_if_needed(UpdateLayoutReason::ElementScrollHeight);
+     auto const* viewport_layout_node = document.layout_node(read);
+     VERIFY(viewport_layout_node && Painting::has_committed_box(*viewport_layout_node));
+     auto viewport_scrollable_overflow_rect = Painting::scrollable_overflow_rect(*viewport_layout_node);
+@@ -4561,7 +4563,7 @@
+     // 7. If the element does not have any associated box, or is not available to user-agent features, then return a
+     //    resolved Promise and abort the remaining steps.
+     Layout::ForcedReadScope read { document() };
+-    document().update_layout(UpdateLayoutReason::ElementScrollIntoView);
++    document().update_layout_if_needed(UpdateLayoutReason::ElementScrollIntoView);
+     HTML::TemporaryExecutionContext temporary_execution_context { document().relevant_settings_object() };
+     if (!has_layout_box()) {
+         if (promise)
+@@ -5461,7 +5463,7 @@
+ 
+     // NB: Ensure that layout is up-to-date before looking at metrics.
+     Layout::ForcedReadScope read { document };
+-    document.update_layout(UpdateLayoutReason::ElementScroll);
++    document.update_layout_if_needed(UpdateLayoutReason::ElementScroll);
+ 
+     // 8. If the element is the root element, return the Promise returned by scroll() on window after the method is
+     //    invoked with scrollX on window as first argument and y as second argument, and abort the remaining steps.
+diff --git a/Libraries/LibWeb/Layout/UpdateLayout.cpp b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+--- a/Libraries/LibWeb/Layout/UpdateLayout.cpp
++++ b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+@@ -148,9 +148,28 @@
+         if (reason != UpdateLayoutReason::HTMLEventLoopRenderingUpdate && reason != UpdateLayoutReason::ChildDocumentStyleUpdate)
+             flush_throttled_animation_style_update();
+ 
++        // AD-HOC: An embedded document's update lays out its embedding documents first when they wait for it (their
++        //         layout may resize the frame), so its update is skipped only when the whole embedding chain is clean,
++        //         as update_layout_if_needed_for_node() asks too.
++        auto embedding_document_chain_is_clean = [&] {
++            auto const* embedded_document = this;
++            while (auto embedded_navigable = embedded_document->navigable()) {
++                auto embedding_document = embedded_navigable->container_document();
++                if (!embedding_document || embedding_document.ptr() == embedded_document)
++                    return true;
++                // The embedding document's state is that document's own read.
++                Layout::ForcedReadScope embedding_read { *embedding_document };
++                if (!embedding_document->is_clean_for_layout_geometry_read(embedding_read))
++                    return false;
++                embedded_document = embedding_document.ptr();
++            }
++            return true;
++        };
++
+         if (is_clean_for_layout_geometry_read(read)
+             && !m_needs_scroll_container_resnap
+-            && !m_scroll_state_query_containers.has_containers())
++            && !m_scroll_state_query_containers.has_containers()
++            && embedding_document_chain_is_clean())
+             return false;
+     }
+ 
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -340,7 +340,7 @@
+     auto viewport_position = document->visual_viewport()->map_to_layout_viewport(visual_viewport_position);
+ 
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;
+@@ -432,7 +432,7 @@
+     // NB: Dispatching an event may have disturbed the world.
+     if (m_navigable->active_document() != document)
+         return EventResult::Accepted;
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
+     if (!has_committed_root_box())
+         return EventResult::Accepted;
+ 
+@@ -459,8 +459,11 @@
+         return EventResult::Dropped;
+ 
+     auto viewport_position = document->visual_viewport()->map_to_layout_viewport(visual_viewport_position);
++    // AD-HOC: Only when something invalidated layout, here and at every other entry point of this file: a mouse move
++    //         over a document that the last update laid out (as every move over an unchanged page finds it) would
++    //         otherwise run a layout update that finds nothing to do, once or more an event.
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;
+@@ -473,7 +476,7 @@
+         if (!document->is_fully_active())
+             return;
+ 
+-        document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
+         if (!has_committed_root_box())
+             return;
+ 
+@@ -522,7 +525,7 @@
+             // NB: Dispatching an event may have disturbed the world.
+             if (m_navigable->active_document() != document)
+                 return EventResult::Accepted;
+-            document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
++            document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
+             if (!has_committed_root_box())
+                 return EventResult::Accepted;
+ 
+@@ -608,7 +611,7 @@
+     if (!m_middle_button_scroll_handler && !is_handling_mouse_selection())
+         return EventResult::Handled;
+ 
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
+     if (!has_committed_root_box())
+         return EventResult::Accepted;
+ 
+@@ -673,7 +676,7 @@
+ 
+     auto viewport_position = document->visual_viewport()->map_to_layout_viewport(visual_viewport_position);
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseUp);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseUp);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;
+@@ -745,7 +748,7 @@
+     if (click_target && !middle_button_autoscrolled) {
+         // NB: Mouseup listeners may have invalidated layout. Click offsets are relative to the click target,
+         //     which may differ from the mouseup target.
+-        document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseUp);
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseUp);
+         if (auto* click_layout_node = click_target->layout_node(read))
+             coordinates = compute_mouse_event_coordinates(visual_viewport_position, viewport_position, *click_layout_node);
+ 
+@@ -754,7 +757,7 @@
+         if (fire_click_events(*click_target, coordinates, screen_position, button, buttons, modifiers, click_count)
+             && !chrome_widget) {
+             // NB: Event dispatches above may have run JS that invalidated layout.
+-            document->update_layout(DOM::UpdateLayoutReason::EventHandlerRunActivationBehavior);
++            document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerRunActivationBehavior);
+ 
+             if (button == UIEvents::MouseButton::Middle && maybe_request_paste_for_middle_click(read, *document, visual_viewport_position))
+                 return EventResult::Handled;
+@@ -1179,7 +1182,7 @@
+         return EventResult::Dropped;
+ 
+     Layout::ForcedReadScope read { *m_navigable->active_document() };
+-    m_navigable->active_document()->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
++    m_navigable->active_document()->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;
+@@ -1212,7 +1215,7 @@
+ 
+     auto viewport_position = document->visual_viewport()->map_to_layout_viewport(visual_viewport_position);
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseMove);
+ 
+     if (!has_committed_root_box())
+         return;
+@@ -1670,14 +1673,14 @@
+         if (!scroll_target)
+             return false;
+         Layout::ForcedReadScope read { *document };
+-        document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleKeyDown);
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleKeyDown);
+         auto* scroll_target_layout_node = scroll_target->layout_node(read);
+         return scroll_target_layout_node
+             && Painting::wheel_scroll_along_containing_block_chain(*scroll_target_layout_node, delta_x, delta_y, scroll_kind) != nullptr;
+     };
+     auto perform_scroll_step_for_key_input = [&](CSSPixelPoint delta, Compositing::SnapSelectionStrategy::Type strategy_type) {
+         Layout::ForcedReadScope read { *document };
+-        document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleKeyDown);
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleKeyDown);
+         Layout::Node* target = nullptr;
+         if (auto scroll_target = scroll_target_for_key_input())
+             target = scroll_target->layout_node(read);
+@@ -1787,7 +1790,7 @@
+     auto viewport_position = document.visual_viewport()->map_to_layout_viewport(visual_viewport_position);
+ 
+     Layout::ForcedReadScope read { document };
+-    document.update_layout(DOM::UpdateLayoutReason::EventHandlerHandleDragAndDrop);
++    document.update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleDragAndDrop);
+ 
+     if (!has_committed_root_box())
+         return EventResult::Dropped;
+@@ -2656,7 +2659,7 @@
+ Optional<Painting::CaretPosition> EventHandler::prepare_mouse_selection(DOM::Document& document, CSSPixelPoint visual_viewport_position)
+ {
+     Layout::ForcedReadScope read { document };
+-    document.update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
++    document.update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
+     if (!has_committed_root_box())
+         return {};
+ 
+@@ -2681,7 +2684,7 @@
+         HTML::run_unfocusing_steps(focused_area);
+ 
+     // NB: Focusing may have invalidated layout.
+-    document.update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
++    document.update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
+     if (!has_committed_root_box())
+         return {};
+ 
+@@ -2718,7 +2721,7 @@
+         return false;
+ 
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseDown);
+     if (!has_committed_root_box())
+         return false;
+ 
+@@ -2836,7 +2839,7 @@
+         return;
+ 
+     Layout::ForcedReadScope read { document };
+-    document.update_layout(DOM::UpdateLayoutReason::EventHandlerHandleMouseUp);
++    document.update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerHandleMouseUp);
+     if (!has_committed_root_box())
+         return;
+ 
+@@ -2905,7 +2908,7 @@
+ 
+     // NB: Event dispatches above may have run JS that invalidated layout.
+     Layout::ForcedReadScope read { *document };
+-    document->update_layout(DOM::UpdateLayoutReason::EventHandlerShowContextMenu);
++    document->update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerShowContextMenu);
+ 
+     // AD-HOC: Retarget the user-agent context menu now that layout has potentially changed.
+     //
+@@ -3678,7 +3681,7 @@
+ 
+     // The events above may have changed layout, and chrome widgets are very likely to touch committed boxes.
+     if (chrome_widget || m_captured_chrome_widget)
+-        document.update_layout(DOM::UpdateLayoutReason::EventHandlerDispatchChromeWidgetEvent);
++        document.update_layout_if_needed(DOM::UpdateLayoutReason::EventHandlerDispatchChromeWidgetEvent);
+     if (!dispatch_chrome_widget_pointer_event(chrome_widget, pointer_event_name, button, coordinates.visual_viewport_position))
+         return PointerEventDispatchResult::SwallowedByChromeWidget;
+ 

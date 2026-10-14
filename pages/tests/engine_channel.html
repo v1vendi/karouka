@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^engine channel ok$">
+<title>pending</title>
+<style>
+  /* karouka's own page: the `engine` page <-> host channel. The
+     viewer's stand-in host answers trigger("echo") with an "echoed" event and resolves
+     call("echo") with its arguments; any other call rejects. The title reports every check, so
+     `KR_DEBUG=1 karouka_viewer engine_channel.html --headless --frames 30` shows the outcome. */
+  body { margin: 0; background: rgb(28, 32, 40); color: rgb(220, 220, 220); font: 20px sans-serif; }
+  #result { margin: 20px; padding: 16px; border-radius: 8px; background: rgb(120, 40, 40); white-space: pre-wrap; }
+  #result.ok { background: rgb(40, 110, 60); }
+</style>
+</head>
+<body>
+<div id="result">running</div>
+<script>
+  const failures = [];
+  const check = (what, ok) => { if (!ok) failures.push(what); };
+  const throwsType = (fn, type) => { try { fn(); return false; } catch (e) { return e instanceof type; } };
+
+  check("global", typeof engine === "object" && engine instanceof EventTarget);
+  check("non-enumerable", !Object.keys(window).includes("engine"));
+  check("read-only", (() => { const before = engine; try { engine = 1; } catch (e) {} return engine === before; })());
+  check("empty name", throwsType(() => engine.trigger(""), TypeError));
+  check("long name", throwsType(() => engine.trigger("x".repeat(257)), TypeError));
+  check("big payload", throwsType(() => engine.trigger("big", "x".repeat(70000)), RangeError));
+  check("cyclic", throwsType(() => { const o = {}; o.o = o; engine.trigger("cyc", o); }, TypeError));
+
+  const order = [];
+  const onEchoed = (a, b) => order.push("on:" + a + "," + b);
+  engine.on("echoed", onEchoed);
+  engine.addEventListener("echoed", (event) => order.push("event:" + event.detail.join(",") + ":" + event.bubbles));
+  engine.trigger("echo", 1, "two");
+  check("not synchronous", order.length === 0);
+
+  const results = {};
+  const calls = [
+    engine.call("echo", { a: 1 }, [2]).then((v) => { results.echo = JSON.stringify(v); }),
+    engine.call("nope").then(() => { results.nope = "resolved"; }, (e) => { results.nope = e.message; }),
+    engine.call("").then(() => { results.empty = "resolved"; }, (e) => { results.empty = e.name; }),
+  ];
+
+  Promise.all(calls).then(() => new Promise((r) => setTimeout(r, 0))).then(() => {
+    engine.off("echoed", onEchoed);
+    engine.trigger("echo", 3, 4);
+    return new Promise((r) => setTimeout(r, 0));
+  }).then(() => {
+    check("echo call " + results.echo, results.echo === '[{"a":1},[2]]');
+    check("rejected call " + results.nope, results.nope === "unknown call");
+    check("bad name call " + results.empty, results.empty === "TypeError");
+    check("order " + order.join("|"), order.join("|") === "on:1,two|event:1,two:false|event:3,4:false");
+    const ok = failures.length === 0;
+    const text = ok ? "engine channel ok" : "engine channel FAILED: " + failures.join("; ");
+    document.title = text;
+    const result = document.getElementById("result");
+    result.textContent = text;
+    result.className = ok ? "ok" : "";
+  }, (e) => { document.title = "engine channel FAILED: " + e; });
+</script>
+</body>
+</html>

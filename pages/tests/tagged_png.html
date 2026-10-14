@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^png untagged=ok cicp=ok icc=ok$">
+<meta name="karouka-check-pixels" content="32,32=#804020 112,32=#bc8963~2 192,32=#bc8963~2">
+<title>png pending</title>
+<style>
+  body { margin: 0; background: #fff; }
+  img { position: absolute; top: 0; width: 64px; height: 64px; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<!-- Colour-managed PNGs (LocalImageCodecPlugin hands LibWeb the decoder's color space). All three
+     files hold the same 32x32 pixels, rgb(128, 64, 32). The untagged one draws as it is. The cICP
+     one (BT.709 primaries, linear transfer) and the ICC one (sRGB primaries, linear TRC) mean
+     linear light, which is rgb(188, 137, 99) on the sRGB surface; drawn unconverted they would
+     show 128,64,32. The title checks drawImage's readback; the pixels meta checks the page paint. -->
+<img id="untagged" src="tagged_untagged.png" style="left: 0">
+<img id="cicp" src="tagged_cicp_linear.png" style="left: 80px">
+<img id="icc" src="tagged_icc_linear.png" style="left: 160px">
+<script>
+const expected = { untagged: [128, 64, 32], cicp: [188, 137, 99], icc: [188, 137, 99] };
+const ctx = new OffscreenCanvas(1, 1).getContext("2d");
+function verdict(img) {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.drawImage(img, 0, 0, 1, 1);
+    const px = Array.from(ctx.getImageData(0, 0, 1, 1).data);
+    const near = expected[img.id].every((v, i) => Math.abs(px[i] - v) <= 3) && px[3] === 255;
+    return near ? "ok" : px.join(",");
+}
+const images = Array.from(document.images);
+Promise.all(images.map(img => img.decode())).then(() => {
+    document.title = "png " + images.map(img => `${img.id}=${verdict(img)}`).join(" ");
+}, error => { document.title = `png failed ${error}`; });
+</script>
+</body>
+</html>

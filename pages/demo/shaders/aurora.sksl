@@ -1,0 +1,19 @@
+// Animated aurora: layered sine bands over a night gradient.
+uniform float2 uSize;
+uniform float uTime;
+uniform half4 tint;
+
+half4 main(float2 coord) {
+    float2 uv = coord / uSize;
+    half3 col = mix(half3(0.02, 0.03, 0.10), half3(0.05, 0.02, 0.15), half(uv.y));
+    for (int i = 0; i < 4; i++) {
+        float fi = float(i);
+        float y = 0.35 + 0.08 * fi + 0.06 * sin(uv.x * (3.0 + fi) + uTime * (0.6 + 0.2 * fi));
+        float band = exp(-abs(uv.y - y) * (18.0 + 6.0 * fi));
+        col += half3(tint.rgb) * half(band * (0.55 - 0.1 * fi));
+        col += half3(0.4, 0.1, 0.6) * half(band * 0.15 * fi);
+    }
+    float star = step(0.997, fract(sin(dot(floor(coord / 2.0), float2(12.9898, 78.233))) * 43758.5453));
+    col += half(star * (0.6 + 0.4 * sin(uTime * 3.0 + coord.x)));
+    return half4(col, 1.0);
+}

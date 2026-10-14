@@ -1,0 +1,115 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp
+index 6369595254..e9a246f510 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp
+@@ -104,18 +104,18 @@ struct DisplayListCachedNestedRasterResource {
+ struct DisplayListCachedTextBlobResource {
+     AK_ALLOC_WITH_KMALLOC;
+ 
+-    DisplayListCachedTextBlobResource(ByteBuffer glyph_bytes, sk_sp<SkTextBlob> blob, size_t byte_size, MonotonicTime last_used)
++    DisplayListCachedTextBlobResource(ByteBuffer glyph_bytes, sk_sp<SkTextBlob> blob, size_t byte_size, u64 last_used_frame)
+         : glyph_bytes(move(glyph_bytes))
+         , blob(move(blob))
+         , byte_size(byte_size)
+-        , last_used(last_used)
++        , last_used_frame(last_used_frame)
+     {
+     }
+ 
+     ByteBuffer glyph_bytes;
+     sk_sp<SkTextBlob> blob;
+     size_t byte_size { 0 };
+-    MonotonicTime last_used;
++    u64 last_used_frame { 0 };
+ };
+ 
+ struct DisplayListCachedVideoSinkImageResource {
+@@ -561,16 +561,22 @@ static sk_sp<SkTextBlob> make_text_blob(Gfx::Font const& font, float scale, Read
+ sk_sp<SkTextBlob> DisplayListResourceStorage::text_blob(FontResourceId font_id, float scale, ReadonlySpan<DisplayListGlyph> glyphs, u8 font_smoothing, TextRasterizationMode rasterization_mode) const
+ {
+     constexpr size_t max_text_blob_cache_bytes = 16 * MiB;
+-    constexpr auto text_blob_idle_duration = AK::Duration::from_milliseconds(250);
++    // NB: Ages count frames (m_text_blob_frame), not wall-clock time: a renderer without vsync (headless,
++    //     offscreen) draws far more frames a second than a display shows, and each frame may leave blobs behind.
++    constexpr u64 text_blob_idle_frames = 15;
++    // NB: Text that changes every frame (a counter, a clock) makes a new blob each frame and never asks for
++    //     the old one again. So on a miss, at most once every 60 frames, drop the blobs unused for 60 frames
++    //     even under the byte cap: such a page then keeps about 60 frames of blobs instead of growing to the cap.
++    constexpr u64 text_blob_unused_frames = 60;
+ 
+     ReadonlyBytes glyph_bytes { reinterpret_cast<u8 const*>(glyphs.data()), glyphs.size() * sizeof(DisplayListGlyph) };
+     DisplayListTextBlobCacheKey key { font_id.value(), bit_cast<u32>(scale), font_smoothing, text_blob_glyph_hash(glyphs), rasterization_mode };
+-    auto now = MonotonicTime::now();
++    auto const now = m_text_blob_frame;
+ 
+     if (auto cached = m_text_blobs.find(key); cached != m_text_blobs.end()) {
+         auto& resource = *cached->value;
+         if (resource.glyph_bytes.bytes() == glyph_bytes) {
+-            resource.last_used = now;
++            resource.last_used_frame = now;
+             return resource.blob;
+         }
+         m_text_blob_cache_bytes -= resource.byte_size;
+@@ -581,17 +587,24 @@ sk_sp<SkTextBlob> DisplayListResourceStorage::text_blob(FontResourceId font_id,
+     if (!blob)
+         return nullptr;
+ 
+-    auto byte_size = glyphs.size() * 24 + 256;
+-    if (m_text_blob_cache_bytes + byte_size > max_text_blob_cache_bytes) {
+-        if (now - m_text_blob_cache_sweep_time < text_blob_idle_duration)
+-            return blob;
+-        m_text_blob_cache_sweep_time = now;
++    auto remove_text_blobs_unused_for = [&](u64 frames) {
++        m_text_blob_cache_sweep_frame = now;
+         m_text_blobs.remove_all_matching([&](auto const&, auto const& resource) {
+-            if (now - resource->last_used < text_blob_idle_duration)
++            if (now - resource->last_used_frame < frames)
+                 return false;
+             m_text_blob_cache_bytes -= resource->byte_size;
+             return true;
+         });
++    };
++
++    if (now - m_text_blob_cache_sweep_frame >= text_blob_unused_frames)
++        remove_text_blobs_unused_for(text_blob_unused_frames);
++
++    auto byte_size = glyphs.size() * 24 + 256;
++    if (m_text_blob_cache_bytes + byte_size > max_text_blob_cache_bytes) {
++        if (now - m_text_blob_cache_sweep_frame < text_blob_idle_frames)
++            return blob;
++        remove_text_blobs_unused_for(text_blob_idle_frames);
+         if (m_text_blob_cache_bytes + byte_size > max_text_blob_cache_bytes)
+             return blob;
+     }
+@@ -839,6 +852,7 @@ DisplayListResourceTransaction DisplayListResourceStorage::create_transaction(
+ void DisplayListResourceStorage::apply_transaction(DisplayListResourceTransaction&& transaction)
+ {
+     m_has_resources_added_since_last_retain = true;
++    ++m_text_blob_frame;
+     for (auto& font : transaction.fonts)
+         set_font(font.id, move(font.font));
+     for (auto& frame : transaction.image_frames)
+@@ -866,6 +880,7 @@ void DisplayListResourceStorage::apply_transaction(DisplayListResourceTransactio
+ 
+ void DisplayListResourceStorage::retain_only(DisplayListResourceSet const& resource_set)
+ {
++    ++m_text_blob_frame;
+     m_fonts.remove_all_matching([&](auto id, auto const&) {
+         return !resource_set.fonts.contains(FontResourceId { id });
+     });
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h
+index 75400153d9..12a7683d02 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h
+@@ -178,7 +178,10 @@ private:
+     mutable HashMap<u64, NonnullOwnPtr<DisplayListCachedNestedRasterResource>> m_display_list_cached_nested_rasters;
+     mutable HashMap<DisplayListTextBlobCacheKey, NonnullOwnPtr<DisplayListCachedTextBlobResource>> m_text_blobs;
+     mutable size_t m_text_blob_cache_bytes { 0 };
+-    mutable MonotonicTime m_text_blob_cache_sweep_time { MonotonicTime::now() };
++    // NB: The text blob cache's clock: one tick each time the storage takes a frame's resources
++    //     (apply_transaction, retain_only).
++    u64 m_text_blob_frame { 0 };
++    mutable u64 m_text_blob_cache_sweep_frame { 0 };
+ };
+ 
+ }

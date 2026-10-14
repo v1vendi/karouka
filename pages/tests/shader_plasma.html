@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content='^shader\(url\("file:///[^"]*/plasma_still\.sksl"\), --speed 0, --scale 2, --tint rgb\(51, 170, 255\)\) \| shader\(url\("file:///[^"]*/plasma_still\.sksl"\), --speed 0, --scale 6, --tint rgb\(255, 85, 51\)\)$'>
+<meta name="karouka-check-pixels" content="27,78=#309fef~6 92,95=#246ca5~6 157,78=#7d2e25~6 222,95=#b53f2b~6 287,78=#337449~6 352,95=#2a543a~6 460,60=#222222 590,60=#222222 677,78=#309fef~6 742,95=#246ca5~6">
+<title>shader plasma pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 16px sans-serif; }
+  .box { position: absolute; top: 10px; width: 120px; height: 100px; background-color: #222; }
+  #a { left: 10px; background-image: shader(url(plasma_still.sksl), --speed 0.0, --scale 2.0, --tint #33aaff); }
+  #b { left: 140px; --s: 3; background-image: shader(url(plasma_still.sksl), --speed 0.0, --scale var(--s), --tint #ff5533); }
+  #c { left: 270px; background-image: shader(url(plasma_still.sksl), --speed 0.0, --scale 2.0, --tint rgb(80 255 140 / 40%)); }
+  #wrong { left: 400px; background-image: shader(url(plasma_still.sksl), --speed 0.0, --scale 2.0, --tint 7); }
+  #missing { left: 530px; background-image: shader(url(plasma_still.sksl), --speed 0.0, --tint #33aaff); }
+  #timed { left: 660px; background-image: shader(url(plasma.sksl), --speed 0.0, --scale 2.0, --tint #33aaff); }
+</style>
+</head>
+<body>
+<!-- Ported from css-shader-image's tests/m2-uniforms.html: one shader source, different output per element's
+     arguments. Each box is 120x100 on #222: scale 2 blue; scale 6 orange (a var() the script changes from 3
+     on the third frame, which re-records and repaints #b only); 40% alpha, where the #222 shows through a premultiplied
+     result; a <number> for the half4 tint and a missing --scale, which paint nothing and log one line each (the
+     m2 page's "decide and document": a missing uniform is refused, docs/ENGINE.md). plasma_still.sksl is
+     plasma.sksl without uTime; #timed uses plasma.sksl itself, which declares uTime, at --speed 0: it is live
+     (drawn, and its box damaged, every frame) but paints #a's still plasma at every time. -->
+<div class="box" id="a"></div>
+<div class="box" id="b"></div>
+<div class="box" id="c"></div>
+<div class="box" id="wrong"></div>
+<div class="box" id="missing"></div>
+<div class="box" id="timed"></div>
+<script>
+  // Three frames in, after the shaders have painted, so the change is a frame of its own: KR_DEBUG=1 shows
+  // its damage is #b's box, beside #timed's, which every frame damages.
+  let frames = 0;
+  requestAnimationFrame(function step() {
+    if (++frames < 3)
+      return requestAnimationFrame(step);
+    document.getElementById("b").style.setProperty("--s", "6");
+    document.title = ["a", "b"].map(id => getComputedStyle(document.getElementById(id)).backgroundImage).join(" | ");
+  });
+</script>
+</body>
+</html>

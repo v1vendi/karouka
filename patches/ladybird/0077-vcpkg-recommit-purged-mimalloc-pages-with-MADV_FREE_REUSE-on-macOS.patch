@@ -1,0 +1,224 @@
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/karouka-reuse-purged-pages.patch b/Meta/CMake/vcpkg/overlay-ports/mimalloc/karouka-reuse-purged-pages.patch
+new file mode 100644
+index 0000000000..371aa25f4a
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/karouka-reuse-purged-pages.patch
+@@ -0,0 +1,35 @@
++karouka: on macOS, mimalloc 2.2.7 decommits with MADV_FREE_REUSABLE but reports
++needs_recommit=false, so a purged range keeps its commit bit and is written again without
++MADV_FREE_REUSE. Those pages stay flagged reusable, and neither the physical footprint nor a
++dirty-page count of mimalloc's VM tag sees them until the kernel reclaims them. Have such a range
++recommitted before reuse, and make the recommit call MADV_FREE_REUSE.
++
++--- a/src/prim/unix/prim.c
+++++ b/src/prim/unix/prim.c
++@@ -454,6 +454,13 @@
++     err = errno;
++     unix_mprotect_hint(err);
++   }
+++  #if defined(__APPLE__) && defined(MADV_FREE_REUSE)
+++  // karouka: a range decommitted with MADV_FREE_REUSABLE (below) is still mapped; tell the kernel we
+++  // reuse it so its pages count toward the footprint again (on a range that was never made reusable
+++  // this is a no-op). Without it, pages written after a purge stay flagged reusable and the task's
+++  // physical footprint does not count them until the kernel reclaims them.
+++  if (err == 0) { (void)unix_madvise(start, size, MADV_FREE_REUSE); }
+++  #endif
++   return err;
++ }
++ 
++@@ -475,7 +482,11 @@
++     // decommit: use MADV_DONTNEED as it decreases rss immediately (unlike MADV_FREE)
++     err = unix_madvise(start, size, MADV_DONTNEED);
++   #endif
++-  #if !MI_DEBUG && MI_SECURE<=2
+++  #if !MI_DEBUG && MI_SECURE<=2 && defined(__APPLE__) && defined(MADV_FREE_REUSABLE)
+++    // karouka: the range stays accessible, but have it recommitted before reuse so that
+++    // _mi_prim_commit can undo MADV_FREE_REUSABLE with MADV_FREE_REUSE.
+++    *needs_recommit = true;
+++  #elif !MI_DEBUG && MI_SECURE<=2
++     *needs_recommit = false;
++   #else
++     *needs_recommit = true;
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/pkgconfig-cxx.diff b/Meta/CMake/vcpkg/overlay-ports/mimalloc/pkgconfig-cxx.diff
+new file mode 100644
+index 0000000000..52c0ac3537
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/pkgconfig-cxx.diff
+@@ -0,0 +1,19 @@
++diff --git a/CMakeLists.txt b/CMakeLists.txt
++index 5cc7ec5..578d235 100644
++--- a/CMakeLists.txt
+++++ b/CMakeLists.txt
++@@ -680,8 +680,13 @@ endif()
++ 
++ 
++ # pkg-config file support
+++set(mi_cxx_libraries "")
+++if(MI_USE_CXX)
+++  set(mi_cxx_libraries ${CMAKE_CXX_IMPLICIT_LINK_LIBRARIES})
+++  list(REMOVE_ITEM mi_cxx_libraries ${CMAKE_C_IMPLICIT_LINK_LIBRARIES})
+++endif()
++ set(mi_pc_libraries "")
++-foreach(item IN LISTS mi_libraries)
+++foreach(item IN LISTS mi_libraries mi_cxx_libraries)
++   if(item MATCHES " *[-].*")
++     set(mi_pc_libraries "${mi_pc_libraries} ${item}")
++   else()
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake b/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake
+new file mode 100644
+index 0000000000..963ebbafac
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/portfile.cmake
+@@ -0,0 +1,63 @@
++# karouka: vcpkg's mimalloc 2.2.7#0 port (vcpkg git-tree 5b9c09b6d159), plus
++# karouka-reuse-purged-pages.patch: on macOS, recommit purged pages with MADV_FREE_REUSE before
++# reuse so the physical footprint counts them.
++
++vcpkg_from_github(
++    OUT_SOURCE_PATH SOURCE_PATH
++    REPO microsoft/mimalloc
++    REF "v${VERSION}"
++    SHA512 19f5481c98822c6a279e2f2d26d6c54918e18bcafd515a76ca3a3845f3a5e599236ea042f9cadaf793dce0c1ede347d76cc2fc5503094288362a78034d4d8f71
++    HEAD_REF master
++    PATCHES
++        pkgconfig-cxx.diff
++        karouka-reuse-purged-pages.patch
++)
++
++vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
++    FEATURES
++        override    MI_OVERRIDE
++        secure      MI_SECURE
++)
++string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" MI_BUILD_STATIC)
++string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" MI_BUILD_SHARED)
++
++vcpkg_cmake_configure(
++    SOURCE_PATH "${SOURCE_PATH}"
++    OPTIONS
++        ${FEATURE_OPTIONS}
++        -DMI_USE_CXX=ON
++        -DMI_BUILD_OBJECT=OFF
++        -DMI_BUILD_TESTS=OFF
++        -DMI_BUILD_STATIC=${MI_BUILD_STATIC}
++        -DMI_BUILD_SHARED=${MI_BUILD_SHARED}
++        -DMI_INSTALL_TOPLEVEL=ON
++    OPTIONS_DEBUG
++        -DMI_DEBUG_FULL=ON
++    OPTIONS_RELEASE
++        -DMI_DEBUG_FULL=OFF
++)
++
++vcpkg_cmake_install()
++
++vcpkg_copy_pdbs()
++
++file(COPY
++    "${CMAKE_CURRENT_LIST_DIR}/vcpkg-cmake-wrapper.cmake"
++    "${CMAKE_CURRENT_LIST_DIR}/usage"
++    DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}"
++)
++vcpkg_cmake_config_fixup(CONFIG_PATH lib/cmake/mimalloc)
++
++if(VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
++    vcpkg_replace_string(
++        "${CURRENT_PACKAGES_DIR}/include/mimalloc.h"
++        "!defined(MI_SHARED_LIB)"
++        "0 // !defined(MI_SHARED_LIB)"
++    )
++endif()
++file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
++file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
++
++vcpkg_fixup_pkgconfig()
++
++vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/usage b/Meta/CMake/vcpkg/overlay-ports/mimalloc/usage
+new file mode 100644
+index 0000000000..df1eac2512
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/usage
+@@ -0,0 +1,9 @@
++mimalloc provides CMake targets:
++
++  find_package(mimalloc CONFIG REQUIRED)
++  target_link_libraries(main PRIVATE $<IF:$<TARGET_EXISTS:mimalloc-static>,mimalloc-static,mimalloc>)
++
++To ensure the mimalloc-override.dll is loaded at runtime on Windows with
++dynamic linkage, it is suggested to insert some call to the mimalloc API
++in the main function, eg. `mi_version()`. Cf.
++https://github.com/microsoft/mimalloc/blob/dev/readme.md#dynamic-override-on-windows
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg-cmake-wrapper.cmake b/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg-cmake-wrapper.cmake
+new file mode 100644
+index 0000000000..281d8ce1db
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg-cmake-wrapper.cmake
+@@ -0,0 +1,21 @@
++_find_package(${ARGS})
++
++if(CMAKE_CURRENT_LIST_DIR STREQUAL "${MIMALLOC_CMAKE_DIR}/${MIMALLOC_VERSION_DIR}")
++    set(MIMALLOC_INCLUDE_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
++    # As in vcpkg.cmake
++    if(NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE MATCHES "^[Dd][Ee][Bb][Uu][Gg]$")
++        set(MIMALLOC_LIBRARY_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib")
++    else()
++        set(MIMALLOC_LIBRARY_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib")
++    endif()
++    set(MIMALLOC_OBJECT_DIR "MIMALLOC_OBJECT_DIR-NOTFOUND") # not installed
++    set(MIMALLOC_TARGET_DIR "${MIMALLOC_LIBRARY_DIR}")
++endif()
++
++if(TARGET mimalloc AND NOT TARGET mimalloc-static)
++    add_library(mimalloc-static INTERFACE IMPORTED)
++    set_target_properties(mimalloc-static PROPERTIES INTERFACE_LINK_LIBRARIES mimalloc)
++elseif(TARGET mimalloc-static AND NOT TARGET mimalloc)
++    add_library(mimalloc INTERFACE IMPORTED)
++    set_target_properties(mimalloc PROPERTIES INTERFACE_LINK_LIBRARIES mimalloc-static)
++endif()
+diff --git a/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json b/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json
+new file mode 100644
+index 0000000000..6145317c7a
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/mimalloc/vcpkg.json
+@@ -0,0 +1,28 @@
++{
++  "name": "mimalloc",
++  "version": "2.2.7",
++  "port-version": 1,
++  "description": "Compact general purpose allocator with excellent performance",
++  "homepage": "https://github.com/microsoft/mimalloc",
++  "license": "MIT",
++  "supports": "!uwp",
++  "dependencies": [
++    {
++      "name": "vcpkg-cmake",
++      "host": true
++    },
++    {
++      "name": "vcpkg-cmake-config",
++      "host": true
++    }
++  ],
++  "features": {
++    "override": {
++      "description": "Override the standard malloc interface (i.e. define entry points for 'malloc', 'free', etc)",
++      "supports": "!windows | !static"
++    },
++    "secure": {
++      "description": "Use full security mitigations (like guard pages, allocation randomization, double-free mitigation, and free-list corruption detection)"
++    }
++  }
++}
+diff --git a/vcpkg.json b/vcpkg.json
+index 2c99703..9662c83 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -388,7 +388,7 @@
+     },
+     {
+       "name": "mimalloc",
+-      "version": "2.2.7#0"
++      "version": "2.2.7#1"
+     },
+     {
+       "name": "mman",

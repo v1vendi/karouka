@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^webassembly absent ok$">
+<title>pending</title>
+<style>
+  /* karouka's own page: a pruned build has no WebAssembly. The WebAssembly namespace is
+     not exposed, LibWasm is not linked, and a module script served as application/wasm (the empty
+     module no_webassembly.wasm) fails to import instead of instantiating. Resizable ArrayBuffers,
+     whose resize went through WebAssembly's host hook first, still resize. The title lists every
+     failed check. */
+  body { margin: 0; background: rgb(28, 32, 40); color: rgb(220, 220, 220); font: 20px sans-serif; }
+  #result { margin: 20px; padding: 16px; border-radius: 8px; background: rgb(120, 40, 40); white-space: pre-wrap; }
+  #result.ok { background: rgb(40, 110, 60); }
+</style>
+</head>
+<body>
+<div id="result">running</div>
+<script>
+  const failures = [];
+  const check = (what, ok) => { try { if (!ok()) failures.push(what); } catch (e) { failures.push(what + " threw " + e); } };
+
+  check("typeof WebAssembly", () => typeof WebAssembly === "undefined");
+  check("no global", () => !("WebAssembly" in globalThis) && Object.getOwnPropertyNames(globalThis).every(name => !/^WebAssembly/.test(name)));
+  check("resizable ArrayBuffer", () => {
+    const buffer = new ArrayBuffer(8, { maxByteLength: 16 });
+    buffer.resize(12);
+    return buffer.byteLength === 12 && buffer.resizable && buffer.maxByteLength === 16;
+  });
+
+  const finish = () => {
+    const result = document.getElementById("result");
+    const title = failures.length ? "webassembly FAILED: " + failures.join(", ") : "webassembly absent ok";
+    result.textContent = title;
+    result.className = failures.length ? "" : "ok";
+    document.title = title;
+  };
+  import("./no_webassembly.wasm").then(
+    () => { failures.push("wasm module imported"); finish(); },
+    () => finish());
+</script>
+</body>
+</html>

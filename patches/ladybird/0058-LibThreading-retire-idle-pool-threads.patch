@@ -1,0 +1,125 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibThreading: retire idle pool threads
+
+A pool thread started for a burst of work (a page load's script
+compiles and stylesheet parses) stayed for the rest of the process,
+blocked on the condition with its 8 MiB stack and its kmalloc heap. A
+thread that has collected its heap and then waits two more seconds
+without work now exits; submit() starts another when work comes again.
+
+A retiring thread leaves m_threads under the mutex but stays referenced
+and joinable, so its exit (the heap teardown, its Thread's last
+reference) is joined by the next thread start or by halt(). A halted
+pool's threads never retire, so none is still exiting when an embedder
+that halted the pool tears down.
+
+---
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index fe71adc201d199d55434c0dc080be4d9a9d1b208..b7144bae082fe497e45d833bf2f93d89e92228c8 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -12,6 +12,9 @@
+ static constexpr size_t THREAD_COUNT = 4;
+ static constexpr size_t THREAD_STACK_SIZE = 8 * MiB;
+ static constexpr auto THREAD_IDLE_MEMORY_COLLECTION_DELAY = AK::Duration::from_seconds(1);
++// How long a thread waits for work after that collection before it exits; submit() starts another when work
++// comes again.
++static constexpr auto THREAD_IDLE_RETIRE_DELAY = AK::Duration::from_seconds(2);
+ 
+ namespace Threading {
+ 
+@@ -40,7 +43,8 @@ void ThreadPool::start_thread_if_needed()
+ {
+     if (m_halted || m_threads.size() >= THREAD_COUNT || m_idle_threads >= m_work_queue.size())
+         return;
+-    auto name = ByteString::formatted("Pool/{}", m_threads.size());
++    join_retired_threads();
++    auto name = ByteString::formatted("Pool/{}", m_threads_started++);
+     auto thread = Thread::construct(name, [this]() -> intptr_t {
+         return worker_thread_func();
+     });
+@@ -62,11 +66,17 @@ intptr_t ThreadPool::worker_thread_func()
+             MutexLocker locker(m_mutex);
+ 
+             while (m_work_queue.is_empty() || m_halted) {
+-                if (collected_since_last_work || m_halted) {
++                if (m_halted) {
++                    // A halted pool keeps its threads: none exits while the embedder tears down.
+                     m_condition.wait();
+-                } else if (!m_condition.wait_for(THREAD_IDLE_MEMORY_COLLECTION_DELAY) && m_work_queue.is_empty()) {
+-                    should_collect = true;
+-                    break;
++                } else if (!collected_since_last_work) {
++                    if (!m_condition.wait_for(THREAD_IDLE_MEMORY_COLLECTION_DELAY) && m_work_queue.is_empty()) {
++                        should_collect = true;
++                        break;
++                    }
++                } else if (!m_condition.wait_for(THREAD_IDLE_RETIRE_DELAY) && m_work_queue.is_empty() && !m_halted) {
++                    retire_current_thread();
++                    return 0;
+                 }
+             }
+ 
+@@ -94,12 +104,38 @@ intptr_t ThreadPool::worker_thread_func()
+     }
+ }
+ 
++// Called with m_mutex held, on a pool thread that has waited THREAD_IDLE_MEMORY_COLLECTION_DELAY and then
++// THREAD_IDLE_RETIRE_DELAY for work and is about to return from worker_thread_func(). It stops counting as one
++// of the pool's threads now, so a submit() after this starts another, and it stays joinable: what it still
++// runs on its way out (its kmalloc heap's teardown, its Thread's last reference drop) is done before
++// join_retired_threads() returns, which halt() calls before an embedder tears down and exits.
++void ThreadPool::retire_current_thread()
++{
++    auto self = pthread_self();
++    auto index = m_threads.find_first_index_if([&](auto const& thread) { return pthread_equal(thread->tid(), self); });
++    VERIFY(index.has_value());
++    // This reference keeps the Thread alive past its own thread's exit, so it is joined here, not destroyed
++    // (and joined) from the exiting thread itself.
++    m_retired_threads.append(m_threads.take(*index));
++    --m_idle_threads;
++}
++
++// Called with m_mutex held. A retired thread no longer takes m_mutex, so joining it under it cannot deadlock.
++void ThreadPool::join_retired_threads()
++{
++    for (auto& thread : m_retired_threads)
++        (void)thread->join();
++    m_retired_threads.clear();
++}
++
+ void ThreadPool::halt()
+ {
+     MutexLocker locker(m_mutex);
+     while (!m_halted && (m_running > 0 || !m_work_queue.is_empty()))
+         m_idle.wait();
+     m_halted = true;
++    // No thread retires once the pool is halted; the ones that did are gone before halt() returns.
++    join_retired_threads();
+ }
+ 
+ void ThreadPool::halt_if_started()
+diff --git a/Libraries/LibThreading/ThreadPool.h b/Libraries/LibThreading/ThreadPool.h
+index 53dd1ab700a7e305e69a869216d002c8b6b8b69d..155ac08ff5dad613a1fbc7791abc9f3406e85e2d 100644
+--- a/Libraries/LibThreading/ThreadPool.h
++++ b/Libraries/LibThreading/ThreadPool.h
+@@ -50,6 +50,8 @@ private:
+ 
+     intptr_t worker_thread_func();
+     void start_thread_if_needed();
++    void retire_current_thread();
++    void join_retired_threads();
+ 
+     Mutex m_mutex;
+     ConditionVariable m_condition { m_mutex };
+@@ -60,7 +62,10 @@ private:
+     size_t m_idle_threads { 0 };
+     bool m_halted { false };
+     Queue<Function<void()>> m_work_queue;
++    // The threads that take work, and the ones that retired after idling but are not joined yet.
+     Vector<NonnullRefPtr<Thread>> m_threads;
++    Vector<NonnullRefPtr<Thread>> m_retired_threads;
++    size_t m_threads_started { 0 };
+ };
+ 
+ }

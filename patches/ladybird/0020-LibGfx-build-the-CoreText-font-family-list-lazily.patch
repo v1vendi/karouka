@@ -1,0 +1,99 @@
+diff --git a/Libraries/LibGfx/Font/TypefaceSkia.cpp b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+index 2c869c9339..260f6f129b 100644
+--- a/Libraries/LibGfx/Font/TypefaceSkia.cpp
++++ b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+@@ -26,6 +26,7 @@
+ #include <core/SkTypeface.h>
+ #include <harfbuzz/hb-ot.h>
+ #include <harfbuzz/hb.h>
++#include <mutex>
+ #if defined(AK_OS_ANDROID)
+ #    include <ports/SkFontMgr_android.h>
+ #elif defined(AK_OS_WINDOWS)
+@@ -94,13 +95,85 @@ struct TypefaceSkia::Impl {
+ #endif
+ };
+ 
++#ifdef AK_OS_MACOS
++// SkFontMgr_New_CoreText(nullptr) lists every installed font family up front
++// (CTFontManagerCopyAvailableFontFamilyNames: ~12 ms of process startup, most of it waiting on
++// fontd). Only enumerating families by index needs that list; matching by name or character and
++// making typefaces from data do not (Skia's CoreText manager only reads its collection to build
++// the list). So those go to a CoreText manager built over a one-family collection, and the full
++// manager is built the first time something enumerates the families.
++class LazyFamilyListFontMgr final : public SkFontMgr {
++public:
++    explicit LazyFamilyListFontMgr(sk_sp<SkFontMgr> matcher)
++        : m_matcher(move(matcher))
++    {
++    }
++
++protected:
++    int onCountFamilies() const override { return full().countFamilies(); }
++    void onGetFamilyName(int index, SkString* family_name) const override { full().getFamilyName(index, family_name); }
++    sk_sp<SkFontStyleSet> onCreateStyleSet(int index) const override { return full().createStyleSet(index); }
++
++    sk_sp<SkFontStyleSet> onMatchFamily(char const family_name[]) const override { return m_matcher->matchFamily(family_name); }
++    sk_sp<SkTypeface> onMatchFamilyStyle(char const family_name[], SkFontStyle const& style) const override { return m_matcher->matchFamilyStyle(family_name, style); }
++    sk_sp<SkTypeface> onMatchFamilyStyleCharacter(char const family_name[], SkFontStyle const& style, char const* bcp47[], int bcp47_count, SkUnichar character) const override
++    {
++        return m_matcher->matchFamilyStyleCharacter(family_name, style, bcp47, bcp47_count, character);
++    }
++
++    sk_sp<SkTypeface> onMakeFromData(sk_sp<SkData> data, int ttc_index) const override { return m_matcher->makeFromData(std::move(data), ttc_index); }
++    sk_sp<SkTypeface> onMakeFromStreamIndex(std::unique_ptr<SkStreamAsset> stream, int ttc_index) const override { return m_matcher->makeFromStream(std::move(stream), ttc_index); }
++    sk_sp<SkTypeface> onMakeFromStreamArgs(std::unique_ptr<SkStreamAsset> stream, SkFontArguments const& arguments) const override { return m_matcher->makeFromStream(std::move(stream), arguments); }
++    sk_sp<SkTypeface> onMakeFromFile(char const path[], int ttc_index) const override { return m_matcher->makeFromFile(path, ttc_index); }
++    sk_sp<SkTypeface> onLegacyMakeTypeface(char const family_name[], SkFontStyle style) const override { return m_matcher->legacyMakeTypeface(family_name, style); }
++
++private:
++    SkFontMgr& full() const
++    {
++        std::call_once(m_full_once, [this] { m_full = SkFontMgr_New_CoreText(nullptr); });
++        return *m_full;
++    }
++
++    sk_sp<SkFontMgr> m_matcher;
++    mutable std::once_flag m_full_once;
++    mutable sk_sp<SkFontMgr> m_full;
++};
++
++static sk_sp<SkFontMgr> create_core_text_font_manager()
++{
++    // A collection of one family that every macOS has. Skia's constructor lists the families of
++    // the collection's matching descriptors, and reads a null array if nothing matches, so check.
++    CFTypeRef keys[] = { kCTFontFamilyNameAttribute };
++    CFTypeRef values[] = { CFSTR("Helvetica") };
++    auto attributes = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++    auto descriptor = CTFontDescriptorCreateWithAttributes(attributes);
++    CFTypeRef descriptor_values[] = { descriptor };
++    auto descriptors = CFArrayCreate(kCFAllocatorDefault, descriptor_values, 1, &kCFTypeArrayCallBacks);
++    auto collection = CTFontCollectionCreateWithFontDescriptors(descriptors, nullptr);
++    auto matching = collection ? CTFontCollectionCreateMatchingFontDescriptors(collection) : nullptr;
++    sk_sp<SkFontMgr> font_manager;
++    if (matching && CFArrayGetCount(matching) > 0)
++        font_manager = sk_make_sp<LazyFamilyListFontMgr>(SkFontMgr_New_CoreText(collection));
++    else
++        font_manager = SkFontMgr_New_CoreText(nullptr);
++    if (matching)
++        CFRelease(matching);
++    if (collection)
++        CFRelease(collection);
++    CFRelease(descriptors);
++    CFRelease(descriptor);
++    CFRelease(attributes);
++    return font_manager;
++}
++#endif
++
+ static SkFontMgr& font_manager()
+ {
+     auto& font_manager = skia_font_manager();
+     if (!font_manager) {
+ #ifdef AK_OS_MACOS
+         if (!Gfx::FontDatabase::the().force_freetype_rasterization()) {
+-            font_manager = SkFontMgr_New_CoreText(nullptr);
++            font_manager = create_core_text_font_manager();
+         }
+ #endif
+ #if defined(AK_OS_ANDROID)

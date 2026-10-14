@@ -1,0 +1,6 @@
+# The vendored WPT reftest corpus, third_party/wpt/: a subset of upstream WPT, copied from a
+# source repository's third_party/wpt/ at source-commit, byte for byte (git tree `tree`; README.md since rewritten). Upstream WPT:
+# wpt-commit. Re-vendor with tools/wpt_vendor.sh --from DIR; verify with tools/wpt_vendor.sh --check.
+source-commit: 198cc36fdcb0a6a08be6742add06f88786264b62
+tree: 096effd298dd7002920758c8445bb42a72273614
+wpt-commit: 54f8f933629e7c010ae98a246729af01f8abcda5

@@ -1,0 +1,142 @@
+diff --git a/Libraries/LibMedia/CMakeLists.txt b/Libraries/LibMedia/CMakeLists.txt
+index 315fe0b144..85c2a79310 100644
+--- a/Libraries/LibMedia/CMakeLists.txt
++++ b/Libraries/LibMedia/CMakeLists.txt
+@@ -1,5 +1,48 @@
+ include(audio)
+ 
++# karouka: embedders that never play media can build LibMedia as a small static library that keeps
++# the plain data types (tracks, codec strings, time ranges, video frame plumbing) LibWeb and
++# LibCompositing compile against, with no decoders, demuxers, ffmpeg or Audio/VideoToolbox. Media
++# elements still parse, lay out and fire their load algorithm; nothing ever decodes or plays.
++if (KAROUKA_SOURCE_DIR)
++    set(LADYBIRD_MEDIA_STUB_DEFAULT ON)
++else()
++    set(LADYBIRD_MEDIA_STUB_DEFAULT OFF)
++endif()
++option(LADYBIRD_MEDIA_STUB "Build LibMedia/LibMediaClient as a no-playback stub without ffmpeg" ${LADYBIRD_MEDIA_STUB_DEFAULT})
++
++if (LADYBIRD_MEDIA_STUB)
++    set(SOURCES
++        Audio/AudioDevices.cpp
++        Audio/AudioRingBuffer.cpp
++        Audio/NullPlaybackStream.cpp
++        Audio/PlaybackStream.cpp
++        Audio/RecordStream.cpp
++        Audio/SpscAudioFrameRing.cpp
++        CodecParameters.cpp
++        Codecs/AV1.cpp
++        Codecs/H264.cpp
++        Codecs/H265.cpp
++        Codecs/MPEG4Audio.cpp
++        Codecs/VP9.cpp
++        Color/CodingIndependentCodePoints.cpp
++        ContainerID.cpp
++        DecoderError.cpp
++        MediaTime.cpp
++        Stub/MediaStub.cpp
++        TimeRanges.cpp
++        Track.cpp
++        VideoFrame.cpp
++        VideoFrameHandle.cpp
++        VideoFramePool.cpp
++        VideoPresentation/PresentedFramePage.cpp
++        VideoSurface.cpp
++    )
++    ladybird_lib(LibMedia media EXPLICIT_SYMBOL_EXPORT TYPE STATIC)
++    target_link_libraries(LibMedia PRIVATE LibCore LibCrypto LibIPC LibGfx LibThreading LibUnicode)
++    return()
++endif()
++
+ set(SOURCES
+     Audio/AudioDevices.cpp
+     Audio/AudioRingBuffer.cpp
+diff --git a/Libraries/LibMedia/Stub/MediaStub.cpp b/Libraries/LibMedia/Stub/MediaStub.cpp
+new file mode 100644
+index 0000000000..037a012843
+--- /dev/null
++++ b/Libraries/LibMedia/Stub/MediaStub.cpp
+@@ -0,0 +1,65 @@
++/*
++ * karouka: no-playback stand-ins for the LibMedia entry points that LibWeb, LibCompositing and
++ * LibMediaClient reference when LibMedia is built with LADYBIRD_MEDIA_STUB. Nothing here decodes:
++ * codec support queries answer "no", the audio converter cannot be created, and the IPC
++ * serializers refuse (there is no MediaServer to talk to).
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibIPC/Decoder.h>
++#include <LibIPC/Encoder.h>
++#include <LibMedia/FFmpeg/FFmpegAudioConverter.h>
++#include <LibMedia/MediaSourceExtensions/ISOBMFFByteStreamParser.h>
++#include <LibMedia/MediaSourceExtensions/SourceBufferProcessor.h>
++#include <LibMedia/MediaSourceExtensions/WebMByteStreamParser.h>
++#include <LibMedia/MediaSupport.h>
++
++namespace Media {
++
++Optional<CodecID> codec_implied_by_file_container(ContainerMimeType)
++{
++    return {};
++}
++
++}
++
++namespace Media::MediaSourceExtensions {
++
++bool WebMByteStreamParser::supports_codec(StringView, Media::CodecID) { return false; }
++bool ISOBMFFByteStreamParser::supports_codec(StringView, Media::CodecID) { return false; }
++
++}
++
++namespace Media::FFmpeg {
++
++FFmpegAudioConverter::FFmpegAudioConverter() = default;
++FFmpegAudioConverter::~FFmpegAudioConverter() = default;
++ErrorOr<NonnullOwnPtr<FFmpegAudioConverter>> FFmpegAudioConverter::try_create() { return Error::from_string_literal("Media playback is not built in"); }
++ErrorOr<void> FFmpegAudioConverter::set_output_sample_specification(Audio::SampleSpecification) { return Error::from_string_literal("Media playback is not built in"); }
++ErrorOr<void> FFmpegAudioConverter::push_block(AudioBlock const&) { return Error::from_string_literal("Media playback is not built in"); }
++DecoderErrorOr<void> FFmpegAudioConverter::retrieve_block(AudioBlock&) { return DecoderError::not_implemented(); }
++void FFmpegAudioConverter::signal_end_of_stream() { }
++void FFmpegAudioConverter::flush() { }
++
++}
++
++namespace IPC {
++
++#define KAROUKA_NO_MEDIA_IPC(Type)                                                                  \
++    template<>                                                                                      \
++    ErrorOr<void> encode(Encoder&, Type const&)                                                     \
++    {                                                                                               \
++        return Error::from_string_literal("Media IPC is not built in");                             \
++    }                                                                                               \
++    template<>                                                                                      \
++    ErrorOr<Type> decode(Decoder&)                                                                  \
++    {                                                                                               \
++        return Error::from_string_literal("Media IPC is not built in");                             \
++    }
++
++KAROUKA_NO_MEDIA_IPC(Media::DecoderCapabilities)
++KAROUKA_NO_MEDIA_IPC(Media::MediaSupportInfo)
++KAROUKA_NO_MEDIA_IPC(Media::MediaSourceExtensions::PublishedState)
++
++}
+diff --git a/Libraries/LibMediaClient/CMakeLists.txt b/Libraries/LibMediaClient/CMakeLists.txt
+index 1b48865907..109d63dd97 100644
+--- a/Libraries/LibMediaClient/CMakeLists.txt
++++ b/Libraries/LibMediaClient/CMakeLists.txt
+@@ -13,5 +13,12 @@ set(GENERATED_SOURCES
+     ../../Services/MediaServer/MediaServerEndpoint.h
+ )
+ 
+-ladybird_lib(LibMediaClient mediaclient)
++# karouka: with LADYBIRD_MEDIA_STUB (see LibMedia) this links statically into its users instead of
++# shipping as its own dylib. Without a MediaServer transport, Client::acquire() fails and callers
++# fall back to "cannot play".
++if (LADYBIRD_MEDIA_STUB)
++    ladybird_lib(LibMediaClient mediaclient TYPE STATIC)
++else()
++    ladybird_lib(LibMediaClient mediaclient)
++endif()
+ target_link_libraries(LibMediaClient PRIVATE LibCore LibGfx LibIPC LibMedia)

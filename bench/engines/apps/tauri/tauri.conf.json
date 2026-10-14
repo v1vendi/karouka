@@ -1,0 +1,8 @@
+{
+  "productName": "bench-tauri",
+  "version": "0.1.0",
+  "identifier": "dev.karouka.bench-tauri",
+  "build": { "frontendDist": "dist" },
+  "app": { "windows": [], "security": { "csp": null } },
+  "bundle": { "active": false }
+}

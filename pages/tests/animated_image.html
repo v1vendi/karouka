@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>animated image</title>
+<meta name="karouka-check-animated" content="three looping animated images (GIF and WebP) advance a frame every 70 ms">
+<style>
+  body { margin: 0; background: #202830; color: #e8eef4; font-family: sans-serif; }
+  img { width: 144px; height: 144px; margin: 16px; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<!-- Each frame has its own hue and a white bar as long as its index. The 12-frame GIF and WebP are
+     longer than LibWeb's 8-frame pool, so they play from a streaming session that LocalImageCodecPlugin
+     feeds as LibWeb asks for frames; the 6-frame GIF is decoded whole up front. An image that
+     showed its first frame only would fail check for capturing the same pixels at frames 30 and 60. -->
+<img src="animated_gif_stream.gif" alt="">
+<img src="animated_webp_stream.webp" alt="">
+<img src="animated_gif_pool.gif" alt="">
+</body>
+</html>

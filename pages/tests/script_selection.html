@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^selection ok$">
+<meta name="karouka-check-pixels" content="54,43=#843533~2 120,43=#ffffff">
+<title>selection pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 40px sans-serif; }
+  p { margin: 0; position: absolute; left: 20px; top: 20px; white-space: pre; }
+</style>
+</head>
+<body>
+<!-- A selection made by script paints in the palette's Selection color (Engine.cpp's PageClient
+     theme; LibWeb blends it for the highlight): with the role left at 0 the selection is
+     transparent and (54,43) would be white. The text is no-break spaces, so no glyph covers the
+     sampled pixel. The title checks the selection itself; the pixels meta checks its paint. -->
+<p id="selected">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</p>
+<script>
+getSelection().selectAllChildren(document.getElementById("selected"));
+document.title = getSelection().toString().length === 8 ? "selection ok" : `selection got ${getSelection().toString().length}`;
+</script>
+</body>
+</html>

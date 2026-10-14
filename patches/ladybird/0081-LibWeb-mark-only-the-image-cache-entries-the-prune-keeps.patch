@@ -1,0 +1,252 @@
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -827,6 +827,13 @@ WebIDL::ExceptionOr<void> Document::populate_with_html_head_and_body()
+     return {};
+ }
+ 
++// An image a CSS resource uses stays out of the image caches' accounting (prune_image_resource_caches).
++static bool is_used_by_css_image_resource(Document& document, URL::URL const& url, HTML::SharedResourceRequest const& request)
++{
++    auto* css_image_resource = document.css_image_resource(url);
++    return css_image_resource && css_image_resource->decoded_image_data() == request.image_data();
++}
++
+ void Document::visit_edges(Cell::Visitor& visitor)
+ {
+     Base::visit_edges(visitor);
+@@ -897,7 +904,22 @@ void Document::visit_edges(Cell::Visitor& visitor)
+     visitor.visit(m_list_owners_pending_item_renumber);
+     visitor.visit(m_list_owners_with_stale_item_counters);
+ 
+-    visitor.visit(m_shared_resource_requests);
++    // karouka: only the requests prune_image_resource_caches would keep if every image in use
++    // went away; see ListOfAvailableImages::visit_cached_images. A request that dies leaves the map in
++    // its finalize().
++    {
++        Vector<HTML::ListOfAvailableImages::CachedImage, 32> images;
++        for (auto& it : m_shared_resource_requests) {
++            auto request = it.value;
++            auto image_data = request ? request->image_data() : nullptr;
++            if (!image_data || is_used_by_css_image_resource(*this, it.key, *request)) {
++                visitor.visit(request);
++                continue;
++            }
++            images.append({ request, image_data, request->cache_touch_serial() });
++        }
++        HTML::ListOfAvailableImages::visit_cached_images(visitor, images);
++    }
+     for (auto& resource : m_css_image_resources)
+         resource.value->visit_edges(visitor);
+ 
+@@ -7246,13 +7268,8 @@ void Document::remove_css_image_resource_if_unused(URL::URL const& url)
+ 
+ void Document::prune_image_resource_caches()
+ {
+-    static constexpr size_t decoded_image_resource_cache_limit = 8 * MiB;
+-    static constexpr size_t decoded_image_resource_cache_count_limit = 96;
+-
+-    auto is_used_by_css_image_resource = [&](URL::URL const& url, HTML::SharedResourceRequest const& request) {
+-        auto* css_image_resource = this->css_image_resource(url);
+-        return css_image_resource && css_image_resource->decoded_image_data() == request.image_data();
+-    };
++    static constexpr size_t decoded_image_resource_cache_limit = HTML::ListOfAvailableImages::decoded_image_cache_limit;
++    static constexpr size_t decoded_image_resource_cache_count_limit = HTML::ListOfAvailableImages::decoded_image_cache_count_limit;
+ 
+     struct CacheSize {
+         size_t decoded_image_size { 0 };
+@@ -7267,7 +7284,7 @@ void Document::prune_image_resource_caches()
+             auto const& request = *it.value;
+             if (!request.can_be_pruned_from_memory_cache())
+                 continue;
+-            if (is_used_by_css_image_resource(it.key, request))
++            if (is_used_by_css_image_resource(*this, it.key, request))
+                 continue;
+             ++count;
+             if (auto image_data = request.image_data())
+@@ -7287,7 +7304,7 @@ void Document::prune_image_resource_caches()
+             auto const& request = *it.value;
+             if (!request.can_be_pruned_from_memory_cache())
+                 continue;
+-            if (is_used_by_css_image_resource(it.key, request))
++            if (is_used_by_css_image_resource(*this, it.key, request))
+                 continue;
+             if (request.cache_touch_serial() >= least_recently_used_serial)
+                 continue;
+diff --git a/Libraries/LibWeb/HTML/ListOfAvailableImages.cpp b/Libraries/LibWeb/HTML/ListOfAvailableImages.cpp
+--- a/Libraries/LibWeb/HTML/ListOfAvailableImages.cpp
++++ b/Libraries/LibWeb/HTML/ListOfAvailableImages.cpp
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <AK/QuickSort.h>
+ #include <LibGC/Heap.h>
+ #include <LibWeb/HTML/DecodedImageData.h>
+ #include <LibWeb/HTML/ListOfAvailableImages.h>
+@@ -14,7 +15,10 @@ GC_DEFINE_ALLOCATOR(ListOfAvailableImages);
+ 
+ static u64 s_next_available_image_cache_touch_serial;
+ 
+-ListOfAvailableImages::ListOfAvailableImages() = default;
++ListOfAvailableImages::ListOfAvailableImages()
++    : GC::WeakContainer(GC::Heap::the())
++{
++}
+ ListOfAvailableImages::~ListOfAvailableImages() = default;
+ 
+ GC::Ref<ListOfAvailableImages> ListOfAvailableImages::create()
+@@ -39,11 +43,50 @@ u32 ListOfAvailableImages::Key::hash() const
+     });
+ }
+ 
++// karouka: an image cache (this list, or a document's shared resource requests) marks only
++// the entries that Document::prune_image_resource_caches would keep if every client of every entry
++// went away in this collection: the most recently used ones within its limits. An entry beyond them
++// is dropped in this collection if nothing else reaches its data (remove_dead_cells() below, or
++// SharedResourceRequest::finalize for the document's map), instead of after the next one: data in
++// use is kept alive by its clients (a live <img> reaches it through its image request), and unused
++// data beyond the limits is what the prune would drop anyway.
++//
++// Marking every entry, as upstream does, keeps the pixels of a replaced <img> through the collection
++// that finalizes it: the prune skips entries with clients, so it could drop them only after that
++// collection, and another collection would be needed to free them. Since data that survives a
++// collection without clients is within the prune's limits, nothing needs to prune after one: the
++// prune runs when an image finishes loading.
++//
++// Where the prune differs: it keeps unused data within its limits without counting data still in
++// use. When images loaded after an unused one stay in use, this marking counts them and may drop
++// that unused data in this collection where the prune would have kept it, so a later load of its
++// URL fetches and decodes it again.
++void ListOfAvailableImages::visit_cached_images(JS::Cell::Visitor& visitor, Span<CachedImage> images)
++{
++    quick_sort(images, [](auto const& a, auto const& b) { return a.cache_touch_serial > b.cache_touch_serial; });
++    size_t size = 0;
++    size_t count = 0;
++    for (auto& image : images) {
++        size += image.image_data->external_memory_size();
++        ++count;
++        if (size <= decoded_image_cache_limit && count <= decoded_image_cache_count_limit)
++            visitor.visit(image.cell);
++    }
++}
++
+ void ListOfAvailableImages::visit_edges(JS::Cell::Visitor& visitor)
+ {
+     Base::visit_edges(visitor);
++    Vector<CachedImage, 32> images;
++    images.ensure_capacity(m_images.size());
+     for (auto& it : m_images)
+-        visitor.visit(it.value->image_data);
++        images.unchecked_append({ it.value->image_data, it.value->image_data, it.value->cache_touch_serial });
++    visit_cached_images(visitor, images);
++}
++
++void ListOfAvailableImages::remove_dead_cells(Badge<GC::Heap>)
++{
++    m_images.remove_all_matching([](auto const&, auto const& entry) { return !entry->image_data->is_marked(); });
+ }
+ 
+ void ListOfAvailableImages::add(Key const& key, GC::Ref<DecodedImageData> image_data, bool ignore_higher_layer_caching)
+diff --git a/Libraries/LibWeb/HTML/ListOfAvailableImages.h b/Libraries/LibWeb/HTML/ListOfAvailableImages.h
+--- a/Libraries/LibWeb/HTML/ListOfAvailableImages.h
++++ b/Libraries/LibWeb/HTML/ListOfAvailableImages.h
+@@ -8,6 +8,7 @@
+ 
+ #include <AK/HashMap.h>
+ #include <AK/Utf16String.h>
++#include <LibGC/WeakContainer.h>
+ #include <LibJS/Heap/Cell.h>
+ #include <LibURL/Origin.h>
+ #include <LibURL/URL.h>
+@@ -17,11 +18,27 @@
+ namespace Web::HTML {
+ 
+ // https://html.spec.whatwg.org/multipage/images.html#list-of-available-images
+-class ListOfAvailableImages : public JS::Cell {
++class ListOfAvailableImages
++    : public JS::Cell
++    , public GC::WeakContainer {
+     GC_CELL(ListOfAvailableImages, JS::Cell);
+     GC_DECLARE_ALLOCATOR(ListOfAvailableImages);
+ 
+ public:
++    // What Document::prune_image_resource_caches keeps of unused decoded images, in this list and in
++    // the document's shared resource requests.
++    static constexpr size_t decoded_image_cache_limit = 8 * MiB;
++    static constexpr size_t decoded_image_cache_count_limit = 96;
++
++    // karouka: an image cache entry; the caches mark only those the prune would keep if
++    // every client went away (ListOfAvailableImages.cpp).
++    struct CachedImage {
++        GC::Ptr<GC::Cell> cell;
++        GC::Ptr<DecodedImageData> image_data;
++        u64 cache_touch_serial { 0 };
++    };
++    static void visit_cached_images(JS::Cell::Visitor&, Span<CachedImage>);
++
+     struct Key {
+         Utf16String url;
+         HTML::CORSSettingAttribute mode;
+@@ -61,6 +78,9 @@ public:
+ 
+     void visit_edges(JS::Cell::Visitor& visitor) override;
+ 
++    virtual GC::Cell const& owner_cell(Badge<GC::Heap>) const override { return *this; }
++    virtual void remove_dead_cells(Badge<GC::Heap>) override;
++
+ private:
+     HashMap<Key, NonnullOwnPtr<Entry>> m_images;
+ };
+diff --git a/Libraries/LibWeb/HTML/HTMLImageElement.cpp b/Libraries/LibWeb/HTML/HTMLImageElement.cpp
+--- a/Libraries/LibWeb/HTML/HTMLImageElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLImageElement.cpp
+@@ -776,6 +776,10 @@ void HTMLImageElement::update_the_image_data_impl(bool restart_animations, bool
+ 
+         // 4. If the list of available images contains an entry for key, then:
+         if (auto* entry = document().list_of_available_images().get(key)) {
++            // karouka: a collection drops entries whose image data it didn't mark, and this
++            // element is about to stop being a client of that data; this keeps the data, and the entry, alive.
++            GC::Ref entry_image_data = entry->image_data;
++
+             // 1. Set the ignore higher-layer caching flag for that entry.
+             entry->ignore_higher_layer_caching = true;
+ 
+@@ -789,7 +793,7 @@ void HTMLImageElement::update_the_image_data_impl(bool restart_animations, bool
+ 
+             // 4. Set the current request to a new image request whose image data is that of the entry and whose state is completely available.
+             m_current_request = ImageRequest::create();
+-            m_current_request->set_image_data(entry->image_data);
++            m_current_request->set_image_data(entry_image_data);
+             m_current_request->set_state(ImageRequest::State::CompletelyAvailable);
+             register_with_decoded_image_data_if_needed();
+ 
+@@ -965,6 +969,7 @@ after_step_7:
+         if (m_cors_setting != CORSSettingAttribute::NoCORS)
+             key.origin = document().origin();
+         if (auto* entry = document().list_of_available_images().get(key)) {
++            GC::Ref entry_image_data = entry->image_data; // karouka: see update_the_image_data_impl.
+             entry->ignore_higher_layer_caching = true;
+ 
+             unregister_with_decoded_image_data_if_needed();
+@@ -974,7 +979,7 @@ after_step_7:
+             m_load_event_delayer.clear();
+ 
+             m_current_request = ImageRequest::create();
+-            m_current_request->set_image_data(entry->image_data);
++            m_current_request->set_image_data(entry_image_data);
+             m_current_request->set_state(ImageRequest::State::CompletelyAvailable);
+             m_current_request->set_current_pixel_density(pixel_density.value_or(1.0f));
+             register_with_decoded_image_data_if_needed();
+@@ -1327,8 +1332,9 @@ void HTMLImageElement::react_to_changes_in_the_environment()
+     // 15. If the list of available images contains an entry for key, then set image request's image data to that of the entry.
+     //     Continue to the next step.
+     if (auto* entry = document().list_of_available_images().get(key)) {
+-        image_request->set_image_data(entry->image_data);
+-        step_16(selected_source.value(), *image_request, key, entry->image_data);
++        GC::Ref entry_image_data = entry->image_data; // karouka: see update_the_image_data_impl.
++        image_request->set_image_data(entry_image_data);
++        step_16(selected_source.value(), *image_request, key, entry_image_data);
+     }
+     // Otherwise:
+     else {

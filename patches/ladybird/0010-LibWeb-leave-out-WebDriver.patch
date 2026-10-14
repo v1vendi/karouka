@@ -1,0 +1,9 @@
+diff --git a/Libraries/LibWeb/Embedder/Prune/WebDriver.cmake b/Libraries/LibWeb/Embedder/Prune/WebDriver.cmake
+new file mode 100644
+index 0000000000..4383f3fcf2
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/WebDriver.cmake
+@@ -0,0 +1,3 @@
++# karouka: WebDriver. Only the WebContent service drives these (WebDriverConnection); an embedder
++# that runs LibWeb in process has no WebDriver session.
++list(APPEND LIBWEB_PRUNED_FAMILIES WebDriver)

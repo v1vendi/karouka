@@ -1,0 +1,130 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 7604b6243a..433965a222 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -281,6 +281,7 @@ set(SOURCES
+     DOM/DocumentFragment.cpp
+     DOM/DocumentLoadEventDelayer.cpp
+     DOM/DocumentLoading.cpp
++    Embedder/InPlaceLoad.cpp
+     DOM/DocumentObserver.cpp
+     DOM/DocumentType.cpp
+     DOM/DOMEventListener.cpp
+diff --git a/Libraries/LibWeb/Embedder/InPlaceLoad.cpp b/Libraries/LibWeb/Embedder/InPlaceLoad.cpp
+new file mode 100644
+index 0000000000..7e55881d02
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/InPlaceLoad.cpp
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibHTTP/HeaderList.h>
++#include <LibURL/URL.h>
++#include <LibWeb/DOM/Document.h>
++#include <LibWeb/DOM/DocumentLoading.h>
++#include <LibWeb/Embedder/InPlaceLoad.h>
++#include <LibWeb/Fetch/Infrastructure/HTTP/Bodies.h>
++#include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
++#include <LibWeb/HTML/DocumentState.h>
++#include <LibWeb/HTML/LocalTraversableNavigable.h>
++#include <LibWeb/HTML/NavigationParams.h>
++#include <LibWeb/HTML/PolicyContainers.h>
++#include <LibWeb/HTML/Scripting/Environments.h>
++#include <LibWeb/HTML/SessionHistoryEntry.h>
++
++namespace Web::Embedder {
++
++GC::Ptr<DOM::Document> load_html_in_place(HTML::LocalTraversableNavigable& traversable, URL::URL const& url, ReadonlyBytes html, HTML::CrossProcessId cross_process_id)
++{
++    auto old_document = traversable.active_document();
++    if (!old_document)
++        return nullptr;
++    auto& realm = HTML::relevant_realm(*old_document);
++    auto& heap = GC::Heap::the();
++
++    auto response = Fetch::Infrastructure::Response::create(realm.vm());
++    response->url_list().append(url);
++    response->set_header_list(HTTP::HeaderList::create({ { "Content-Type"sv, "text/html"sv } }));
++    response->set_body(Fetch::Infrastructure::byte_sequence_as_body(realm, html));
++
++    auto origin = url.origin();
++    auto coop = HTML::OpenerPolicy {};
++    HTML::OpenerPolicyEnforcementResult coop_enforcement_result {
++        .url = url,
++        .origin = origin,
++        .opener_policy = coop,
++    };
++    // Same arguments as create_document_for_inline_content(), with the page's own origin.
++    auto navigation_params = heap.allocate<HTML::NavigationParams>(
++        OptionalNone {},
++        traversable,
++        nullptr,
++        response,
++        nullptr,
++        nullptr,
++        move(coop_enforcement_result),
++        nullptr,
++        origin,
++        heap.allocate<HTML::PolicyContainer>(heap),
++        HTML::SandboxingFlagSet {},
++        ReferrerPolicy::ReferrerPolicy::EmptyString,
++        move(coop),
++        Bindings::NavigationTimingType::Navigate,
++        OptionalNone {},
++        HTML::UserNavigationInvolvement::None);
++
++    auto document = load_document(*navigation_params, html);
++    if (!document)
++        return nullptr;
++
++    auto document_state = HTML::DocumentState::create(cross_process_id);
++    document_state->set_initiator_origin(origin);
++    document_state->set_origin(origin);
++    document_state->set_ever_populated(true);
++    auto entry = HTML::SessionHistoryEntry::create();
++    entry->set_url(url);
++    entry->set_document_state(document_state);
++
++    traversable.activate_history_entry(entry, *document);
++
++    // What applying the history step does for a new document: set its latest entry, scroll to the
++    // fragment, and let scripts run, which starts the parser.
++    document->update_for_history_step_application(entry, false, 1, 0, Bindings::NavigationType::Push, Vector<NonnullRefPtr<HTML::SessionHistoryEntry>> { entry });
++    return document;
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/InPlaceLoad.h b/Libraries/LibWeb/Embedder/InPlaceLoad.h
+new file mode 100644
+index 0000000000..c4e9f4ff06
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/InPlaceLoad.h
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Span.h>
++#include <LibGC/Ptr.h>
++#include <LibURL/Forward.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
++#include <LibWebCommon/HTML/CrossProcessId.h>
++
++namespace Web::Embedder {
++
++// Loads an HTML document into a top-level traversable without a navigation: no UI process, no
++// fetch. The response is built in place from the given bytes, the way WebContent would receive it
++// for a file: URL, then the document becomes the traversable's active history entry. For embedders
++// that render pages in a single process.
++WEB_API GC::Ptr<DOM::Document> load_html_in_place(HTML::LocalTraversableNavigable&, URL::URL const&, ReadonlyBytes html, HTML::CrossProcessId);
++
++}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-input" content="--scroll 0,40@4..8">
+<meta name="karouka-check-title" content="^wheel ok ">
+<style>
+  /* A wheel gesture that starts over text. Five 40px wheel steps on frames 4..8 land at
+     the view's centre, which is over the paragraph's text on every step. If LibWeb latched the
+     gesture to the Text node, whose own layout node has no box to dispatch to, every step after
+     the first would be dropped: one wheel event, scrollY 40 (trellis would render 3 frames of a
+     480-step scroll). The page needs all five wheel events and scrollY 200, or none of them and scrollY 0
+     (the multi-view check also renders it without input); anything in between is a dropped step.
+     The title carries the verdict and the counts, and the fixed corner turns green on a pass and
+     red on a failure. */
+  @font-face { font-family: "Noto"; src: url(../fonts/NotoSans-Regular.ttf); }
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); font: 32px/40px "Noto", sans-serif; color: rgb(40, 40, 40); }
+  #verdict { position: fixed; right: 0; top: 0; width: 40px; height: 40px; background: rgb(128, 128, 128); }
+</style>
+</head>
+<body>
+<p id="text"></p>
+<div id="verdict"></div>
+<script>
+  const words = "wheel steps over text scroll the page ".repeat(16);
+  const text = document.getElementById("text");
+  for (let i = 0; i < 12; i++)
+    text.appendChild(document.createTextNode(words));
+  let wheels = 0;
+  addEventListener("wheel", () => { wheels++; });
+  function report() {
+    const ok = (wheels === 0 && scrollY === 0) || (wheels === 5 && scrollY === 200);
+    document.title = (ok ? "wheel ok" : "wheel bad") + " wheels=" + wheels + " scrollY=" + scrollY;
+    document.getElementById("verdict").style.background = ok ? "rgb(0, 160, 0)" : "rgb(200, 0, 0)";
+    requestAnimationFrame(report);
+  }
+  requestAnimationFrame(report);
+</script>
+</body>
+</html>

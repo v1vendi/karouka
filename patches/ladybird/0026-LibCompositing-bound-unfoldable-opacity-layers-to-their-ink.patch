@@ -1,0 +1,353 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+@@ -1424,7 +1424,10 @@
+             m_folded_opacities.append({ canvas.getSaveCount(), layer.opacity * folded_opacity() });
+             return;
+         }
+-        canvas.saveLayer(nullptr, &paint);
++        // The replay knows where the content can paint; a layer sized to it instead of the whole
++        // clip spares a surface-sized offscreen texture per opacity group over text or several draws.
++        auto bounds = to_skia_rect(layer.bounds);
++        canvas.saveLayer(layer.has_bounds ? &bounds : nullptr, &paint);
+         return;
+     }
+ 
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/commands.rs b/Libraries/LibCompositing/Rust/src/display_list/commands.rs
+--- a/Libraries/LibCompositing/Rust/src/display_list/commands.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/commands.rs
+@@ -204,6 +204,11 @@
+     // (recorded directly under it, with no nested effect) draws inside it; u32::MAX otherwise. A
+     // painter may then fold the opacity into the run's draw instead of allocating a layer.
+     pub sole_run: u32,
++    // When has_bounds, everything the layer's content can paint lies inside bounds, in the space
++    // the painter's matrix is in at push_layer. A painter may size the offscreen layer to it instead
++    // of the whole clip. Never set for a layer whose own filter can paint outside its content.
++    pub bounds: FloatRect,
++    pub has_bounds: bool,
+ }
+ 
+ pub const REPLAY_LAYER_NO_SOLE_RUN: u32 = u32::MAX;
+@@ -1212,7 +1217,15 @@
+ impl DisplayListCommand for StrokePath {
+     const COMMAND_TYPE: DisplayListCommandType = DisplayListCommandType::StrokePath;
+     fn bounding_rect(&self) -> Option<IntRect> {
+-        Some(enclosing_int_rect(self.path_bounding_rect))
++        // path_bounding_rect reaches half the thickness past the path. A square cap's corner reaches
++        // half the diagonal and a miter join up to miter_limit half-thicknesses, and replay bounds
++        // layers by this rect, so it must cover them too.
++        let reach = match self.join_style {
++            JoinStyle::Miter => self.miter_limit.max(std::f32::consts::SQRT_2),
++            JoinStyle::Round | JoinStyle::Bevel => std::f32::consts::SQRT_2,
++        };
++        let extra = self.thickness * (reach - 1.0);
++        Some(enclosing_int_rect(self.path_bounding_rect.inflated(extra, extra)))
+     }
+ }
+ 
+@@ -1228,7 +1241,9 @@
+ impl DisplayListCommand for DrawEllipse {
+     const COMMAND_TYPE: DisplayListCommandType = DisplayListCommandType::DrawEllipse;
+     fn bounding_rect(&self) -> Option<IntRect> {
+-        Some(self.rect)
++        // The stroke is centred on the oval, so half of it lies outside the rect.
++        let outset = self.thickness.max(0) / 2 + 1;
++        Some(self.rect.inflated_edges(outset, outset, outset, outset))
+     }
+ }
+ 
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/replay.rs b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+--- a/Libraries/LibCompositing/Rust/src/display_list/replay.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+@@ -16,7 +16,10 @@
+     resolve_leaf_to_context_matrices, should_cull_back_face,
+ };
+ use libgfx_rust::path::OwnedPath;
+-use libgfx_rust::{CornerRadii, FloatMatrix4x4, FloatPoint, FloatVector3, IntRect, WindingRule, translation_matrix};
++use libgfx_rust::{
++    CompositingAndBlendingOperator, CornerRadii, FloatMatrix4x4, FloatPoint, FloatRect, FloatVector3, IntRect,
++    WindingRule, translation_matrix,
++};
+ use std::cell::RefCell;
+ 
+ pub trait ReplayPainter {
+@@ -66,6 +69,15 @@
+     target: Vec<Applied>,
+     run_counts_by_effect: Vec<u32>,
+     sole_runs_by_effect: Vec<u32>,
++    layer_ink_by_effect: Vec<LayerInk>,
++}
++
++// What the runs under an effect's subtree can paint, in device space.
++#[derive(Clone, Copy, Debug, PartialEq)]
++enum LayerInk {
++    Nothing,
++    Within(FloatRect),
++    Unbounded,
+ }
+ 
+ thread_local! {
+@@ -87,6 +99,7 @@
+     storage.target.clear();
+     storage.run_counts_by_effect.clear();
+     storage.sole_runs_by_effect.clear();
++    storage.layer_ink_by_effect.clear();
+     WARM_REPLAY_SCRATCH_STORAGE.with(|slot| {
+         let mut slot = slot.borrow_mut();
+         let slot_has_larger_palette = slot.as_ref().is_some_and(|kept| {
+@@ -124,6 +137,8 @@
+     target: Vec<Applied>,
+     // fill_sole_runs_by_effect's answer per effect index.
+     sole_runs_by_effect: Vec<u32>,
++    // fill_layer_ink_by_effect's answer per effect index.
++    layer_ink_by_effect: Vec<LayerInk>,
+     applied_context: Option<(ClipNodeIndex, EffectNodeIndex)>,
+ }
+ 
+@@ -135,7 +150,12 @@
+     }
+ }
+ 
+-fn replay_layer_of(effects: &crate::visual_context::EffectsData, effect: EffectNodeIndex, sole_run: u32) -> ReplayLayer {
++fn replay_layer_of(
++    effects: &crate::visual_context::EffectsData,
++    effect: EffectNodeIndex,
++    sole_run: u32,
++    bounds: Option<FloatRect>,
++) -> ReplayLayer {
+     let (filter_bytes, filter_bytes_size) = match &effects.filter {
+         Some(bytes) => (bytes.as_ptr(), bytes.len()),
+         None => (std::ptr::null(), 0),
+@@ -161,6 +181,30 @@
+         backdrop_corner_radii,
+         effect,
+         sole_run,
++        bounds: bounds.unwrap_or_default(),
++        has_bounds: bounds.is_some(),
++    }
++}
++
++// Whether compositing a layer with this operator leaves the destination alone wherever the layer
++// is transparent. Normal and the blend modes do; Porter-Duff operators like copy or source-in clear
++// or rewrite it, so their layer's reach is not its content's ink.
++fn operator_keeps_destination_outside_ink(operator: CompositingAndBlendingOperator) -> bool {
++    use CompositingAndBlendingOperator as Op;
++    (Op::Normal as i32..=Op::Luminosity as i32).contains(&(operator as i32)) || operator == Op::SourceOver
++}
++
++// Whether an effect can paint outside the ink of the content under it: a filter (blur,
++// drop-shadow, ...) grows it, a backdrop filter paints its region, and some operators touch the
++// destination where the content is transparent.
++fn effect_can_paint_outside_its_ink(data: &EffectNodeData) -> bool {
++    match data {
++        EffectNodeData::Effects(effects) => {
++            effects.filter.is_some()
++                || effects.backdrop_filter.is_some()
++                || !operator_keeps_destination_outside_ink(effects.blend_mode)
++        }
++        EffectNodeData::Mask(_) | EffectNodeData::BackgroundColorAnimation | EffectNodeData::Dead => false,
+     }
+ }
+ 
+@@ -317,6 +361,71 @@
+         );
+     }
+ 
++    // The device-space union of what every effect's subtree can paint, so a layer that cannot be
++    // folded (group opacity over text or over several draws) is sized to its content instead of
++    // the whole clip. A run without known bounds or outside a 2D-affine space, or a descendant
++    // effect that can paint outside its content's ink, leaves the effects above it unbounded.
++    // 3D sorting contexts replay through plane clips and are left unbounded altogether.
++    fn fill_layer_ink_by_effect(&mut self) {
++        let tree = self.tree;
++        let effect_count = tree.effect_nodes.len();
++        self.layer_ink_by_effect.clear();
++        let fill = if self.tree_has_sorting_contexts { LayerInk::Unbounded } else { LayerInk::Nothing };
++        self.layer_ink_by_effect.resize(effect_count, fill);
++        if self.tree_has_sorting_contexts {
++            return;
++        }
++        for run in self.command_runs {
++            let mut effect = run.context.effect;
++            if effect.is_none() {
++                continue;
++            }
++            let mut device_ink = (!run.has_unbounded_draw)
++                .then(|| {
++                    let space = self.palette.draw_spaces[run.context.spatial.0 as usize];
++                    let matrix = self.palette.to_root_matrices[space.0 as usize];
++                    matrix
++                        .is_2d_affine()
++                        .then(|| matrix.extract_2d_affine().map_rect(run.ink_bounds.to_float()))
++                })
++                .flatten();
++            while !effect.is_none() && (effect.0 as usize) < effect_count {
++                let index = effect.0 as usize;
++                let entry = &mut self.layer_ink_by_effect[index];
++                *entry = match (*entry, device_ink) {
++                    (LayerInk::Unbounded, _) | (_, None) => LayerInk::Unbounded,
++                    (LayerInk::Nothing, Some(rect)) => LayerInk::Within(rect),
++                    (LayerInk::Within(united), Some(rect)) => LayerInk::Within(united.united(rect)),
++                };
++                let node = &tree.effect_nodes[index];
++                if effect_can_paint_outside_its_ink(&node.data) {
++                    device_ink = None;
++                }
++                effect = node.parent;
++            }
++        }
++    }
++
++    // The bounds a layer's content can paint within, in the space of the layer's spatial node (the
++    // canvas matrix at push_layer), or None when they are unknown or the layer's own effect can
++    // paint outside them. Two device pixels of slack on every side cover antialiased edges.
++    fn layer_bounds(&self, effect: EffectNodeIndex, spatial: SpatialNodeIndex) -> Option<FloatRect> {
++        let node = &self.tree.effect_nodes[effect.0 as usize];
++        if effect_can_paint_outside_its_ink(&node.data) {
++            return None;
++        }
++        let LayerInk::Within(device_ink) = self.layer_ink_by_effect[effect.0 as usize] else {
++            return None;
++        };
++        let space = self.palette.draw_spaces[spatial.0 as usize];
++        let matrix = self.palette.to_root_matrices[space.0 as usize];
++        if !matrix.is_2d_affine() {
++            return None;
++        }
++        let device_to_layer = matrix.extract_2d_affine().inverse()?;
++        Some(device_to_layer.map_rect(device_ink.inflated(4.0, 4.0)))
++    }
++
+     fn ensure_ctm_space(&mut self, spatial: SpatialNodeIndex) {
+         let space = self.palette.draw_spaces[spatial.0 as usize];
+         if self.current_ctm_space == Some(space) {
+@@ -478,7 +587,8 @@
+                             if tree.effect_pushes_layer_at_replay(effect) {
+                                 self.ensure_ctm_space(node.spatial);
+                                 let sole_run = self.sole_runs_by_effect[effect.0 as usize];
+-                                self.painter.push_layer(&replay_layer_of(effects, effect, sole_run));
++                                let bounds = self.layer_bounds(effect, node.spatial);
++                                self.painter.push_layer(&replay_layer_of(effects, effect, sole_run, bounds));
+                             }
+                         }
+                         EffectNodeData::Mask(mask) => {
+@@ -625,9 +735,11 @@
+         applied: scratch.applied,
+         target: scratch.target,
+         sole_runs_by_effect: scratch.sole_runs_by_effect,
++        layer_ink_by_effect: scratch.layer_ink_by_effect,
+         applied_context: None,
+     };
+     driver.build_transform_palette(scroll_offsets);
++    driver.fill_layer_ink_by_effect();
+     driver.execute();
+     return_replay_scratch_storage(ReplayScratchStorage {
+         palette: std::mem::take(&mut driver.palette),
+@@ -636,6 +748,7 @@
+         target: std::mem::take(&mut driver.target),
+         run_counts_by_effect: scratch.run_counts_by_effect,
+         sole_runs_by_effect: std::mem::take(&mut driver.sole_runs_by_effect),
++        layer_ink_by_effect: std::mem::take(&mut driver.layer_ink_by_effect),
+     });
+ }
+ 
+@@ -769,6 +882,7 @@
+         events: Vec<PainterEvent>,
+         base_matrix: FloatMatrix4x4,
+         fully_clipped_x: i32,
++        layer_bounds: Vec<Option<FloatRect>>,
+     }
+ 
+     impl RecordingPainter {
+@@ -777,6 +891,7 @@
+                 events: Vec::new(),
+                 base_matrix: translation_matrix(100.0, 200.0, 0.0),
+                 fully_clipped_x: i32::MIN,
++                layer_bounds: Vec::new(),
+             }
+         }
+     }
+@@ -799,6 +914,7 @@
+         }
+         fn push_layer(&mut self, layer: &ReplayLayer) {
+             self.events.push(PainterEvent::PushLayer(layer.opacity));
++            self.layer_bounds.push(layer.has_bounds.then_some(layer.bounds));
+         }
+         fn push_mask(&mut self, mask: &ReplayMask) {
+             self.events.push(PainterEvent::PushMask(mask.rect));
+@@ -975,6 +1091,57 @@
+         assert_eq!(painter.events, vec![PainterEvent::SetMatrix(base)]);
+     }
+ 
++    fn blurred(opacity: f32) -> EffectNodeData {
++        EffectNodeData::Effects(EffectsData {
++            opacity,
++            blend_mode: CompositingAndBlendingOperator::Normal,
++            filter: Some(std::sync::Arc::new(vec![0u8; 4])),
++            backdrop_filter: None,
++        })
++    }
++
++    #[test]
++    fn an_opacity_layer_is_bounded_by_the_union_of_its_runs_ink() {
++        let mut tree = identity_tree();
++        let layer = effect_under(&mut tree, effects(0.5), EffectNodeIndex::NONE, ClipNodeIndex::NONE);
++        let layer_context = ContextRef {
++            clip: ClipNodeIndex::NONE,
++            effect: layer,
++            ..ContextRef::default()
++        };
++        let runs = [
++            run(VISUAL_VIEWPORT_NODE_INDEX, layer_context, IntRect::new(10, 10, 20, 20)),
++            run(VISUAL_VIEWPORT_NODE_INDEX, layer_context, IntRect::new(50, 0, 10, 10)),
++        ];
++        let mut painter = RecordingPainter::new();
++        replay(&tree, &runs, &mut painter);
++        // Layer space is the run space here; two pixels of slack on every side.
++        assert_eq!(painter.layer_bounds, vec![Some(FloatRect::new(8.0, -2.0, 54.0, 34.0))]);
++    }
++
++    #[test]
++    fn a_filter_leaves_its_own_layer_and_every_layer_above_it_unbounded() {
++        let mut tree = identity_tree();
++        let outer = effect_under(&mut tree, effects(0.5), EffectNodeIndex::NONE, ClipNodeIndex::NONE);
++        let blur = effect_under(&mut tree, blurred(1.0), outer, ClipNodeIndex::NONE);
++        let sibling = effect_under(&mut tree, effects(0.25), outer, ClipNodeIndex::NONE);
++        let context_of = |effect| ContextRef {
++            clip: ClipNodeIndex::NONE,
++            effect,
++            ..ContextRef::default()
++        };
++        let runs = [
++            run(VISUAL_VIEWPORT_NODE_INDEX, context_of(blur), IntRect::new(10, 10, 20, 20)),
++            run(VISUAL_VIEWPORT_NODE_INDEX, context_of(sibling), IntRect::new(10, 10, 20, 20)),
++        ];
++        let mut painter = RecordingPainter::new();
++        replay(&tree, &runs, &mut painter);
++        assert_eq!(
++            painter.layer_bounds,
++            vec![None, None, Some(FloatRect::new(8.0, 8.0, 24.0, 24.0))]
++        );
++    }
++
+     #[test]
+     fn a_fully_clipped_layer_is_culled_and_the_next_run_pushes_the_stack_again() {
+         let mut tree = identity_tree();
+@@ -1348,7 +1515,7 @@
+                 corner_radii: radii,
+             }),
+         };
+-        let layer = replay_layer_of(&with_backdrop, EffectNodeIndex(3));
++        let layer = replay_layer_of(&with_backdrop, EffectNodeIndex(3), REPLAY_LAYER_NO_SOLE_RUN, None);
+         assert_eq!(layer.opacity, 0.5);
+         assert_eq!(layer.backdrop_filter_bytes, filter.as_ptr());
+         assert_eq!(layer.backdrop_filter_bytes_size, 3);
+@@ -1359,7 +1526,7 @@
+         let EffectNodeData::Effects(without_backdrop) = effects(0.5) else {
+             unreachable!()
+         };
+-        let layer = replay_layer_of(&without_backdrop, EffectNodeIndex(4));
++        let layer = replay_layer_of(&without_backdrop, EffectNodeIndex(4), REPLAY_LAYER_NO_SOLE_RUN, None);
+         assert!(layer.backdrop_filter_bytes.is_null());
+         assert_eq!(layer.backdrop_filter_bytes_size, 0);
+         assert_eq!(layer.backdrop_region, IntRect::default());

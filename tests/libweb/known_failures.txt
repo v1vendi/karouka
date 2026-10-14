@@ -1,0 +1,108 @@
+# Ladybird Tests/LibWeb image tests karouka is allowed not to pass: tools/libweb_tests.py's ratchet
+# (tools/dev.sh libweb; rules in its docstring). `<kind> <test> <STATUS>  # why`: that test may end
+# with STATUS. A test not listed must pass; a listed one that passes, ends with another STATUS or
+# isn't run fails the run: update or delete its line (--write-known rewrites the file from a run).
+# Causes, by test: docs/ENGINE.md (Ladybird's image tests).
+
+ref force-dark-inverts-images-like-fills.html NEEDS_INTERNALS  # needs setForceDarkEnabled
+ref object-fit-with-zoom-0.5.html NEEDS_INTERNALS  # needs setBrowserZoom
+ref object-fit-with-zoom-2.0.html NEEDS_INTERNALS  # needs setBrowserZoom
+ref object-fit-with-zoom-4.0.html NEEDS_INTERNALS  # needs setBrowserZoom
+ref svg/preferred-color-scheme-normal.html NEEDS_INTERNALS  # needs setPreferredColorScheme
+ref wpt-import/css/css-contain/contain-size-013.html FAIL  # renders right; its .xht reference loads as HTML and drops its CDATA-wrapped style
+text DOM/document-named-property-invalidates-cached-lookups.html FAIL  # needs an iframe document, and karouka has no child navigables
+text DOM/input-shadow-tree-materialization.html NEEDS_INTERNALS  # needs hasShadowRoot
+text Editing/caret-navigation-sceditor.html NEEDS_INTERNALS  # needs inline-internals
+text Editing/caret-walk-through-inline-bidi-and-shadow-content.html NEEDS_INTERNALS  # needs sendKey
+text Editing/clipboard-copy-rendered-text.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SUPER,sendKey
+text Editing/clipboard-paste-sanitization.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/contenteditable-paste-placeholder.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/editing-caret-canonicalization.html NEEDS_INTERNALS  # needs sendText
+text Editing/insertParagraph-caret-outside-wrap-container.html NEEDS_INTERNALS  # needs sendKey
+text Editing/rich-clipboard-sceditor.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-editing-sceditor.html NEEDS_INTERNALS  # needs sendText
+text Editing/rich-paste-atomic-whitespace.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-block-fragment.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-integrated-paragraph-whitespace.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-interchange-newline.html NO_REPORT  # needs an iframe document, and karouka has no child navigables; it also needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-partial-block-wrapper.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-partial-legacy-font.html NO_REPORT  # needs an iframe document, and karouka has no child navigables; it also needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-preserve-placeholder.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-replacement-boundary.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/rich-paste-tracked-start.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SHIFT,MOD_SUPER,sendKey
+text Editing/select-all-editing-host-boundaries.html NEEDS_INTERNALS  # needs MOD_CTRL,MOD_SUPER,sendKey
+text Fetch/image-accept-header.html NEEDS_INTERNALS  # needs echoServer
+text HTML/HTMLInputElement-image-already-loaded-releases-load-delay.html NO_REPORT  # needs an iframe document, and karouka has no child navigables
+text HTML/canvas-toDataURL-toBlob-origin-clean.html NEEDS_INTERNALS  # needs pruned-XMLHttpRequest
+text HTML/detached-image-load-survives-gc.html NEEDS_INTERNALS  # needs echoServer
+text HTML/document-open-cancels-parser-completion.html NEEDS_INTERNALS  # needs echoServer
+text HTML/drag-and-drop-element.html NEEDS_INTERNALS  # needs mouseDown
+text HTML/form-image-submission.html NEEDS_INTERNALS  # needs click
+text HTML/frame-in-flight/layout-flight-gc-finalizers.html NO_REPORT  # needs an iframe document, and karouka has no child navigables; it also needs holdNextFrame
+text HTML/frame-in-flight/layout-flight-retirement-drops-frame-effects.html NO_REPORT  # needs an iframe document, and karouka has no child navigables; it also needs holdNextFrame
+text HTML/frame-in-flight/svg-image-frame-presented-from-commit.html NEEDS_INTERNALS  # needs holdNextFrame
+text HTML/frame-in-flight/task-beside-flight-image-and-svg.html NEEDS_INTERNALS  # needs holdNextFrame
+text HTML/image-decode-rejects-if-current-request-changes.html NEEDS_INTERNALS  # needs echoServer
+text HTML/image-error-after-document-destroy.html NEEDS_INTERNALS  # needs echoServer
+text HTML/image-load-after-adoption-from-removed-iframe.html NO_REPORT  # needs an iframe document, and karouka has no child navigables
+text HTML/image-load-after-document-destroy.html NEEDS_INTERNALS  # needs echoServer
+text HTML/image-load-after-iframe-navigation.html NEEDS_INTERNALS  # needs echoServer
+text HTML/image-request-cache-after-adoption.html NEEDS_INTERNALS  # needs echoServer
+text HTML/image-srcset-density-corrected-intrinsic-size.html NEEDS_INTERNALS  # needs setDevicePixelRatio
+text HTML/image-srcset-device-pixel-ratio.html NEEDS_INTERNALS  # needs setDevicePixelRatio
+text HTML/image-srcset-load-after-document-destroy.html NEEDS_INTERNALS  # needs echoServer
+text HTML/image-webp-served-from-svg-url.html NEEDS_INTERNALS  # needs echoServer
+text HTML/img-pending-load-renders-blank-not-alt-text.html NEEDS_INTERNALS  # needs echoServer
+text HTML/img-src-change-swaps-alt-and-image-representation.html NEEDS_INTERNALS  # needs echoServer
+text HTML/load-event-wakes-up-after-subframe-delayer-clears.html NEEDS_INTERNALS  # needs echoServer
+text HTML/multiple-images-load-after-document-destroy.html NEEDS_INTERNALS  # needs echoServer
+text HTML/namespaced-image-crossorigin.html NEEDS_INTERNALS  # needs echoServer
+text HTML/picture-image-load-after-document-destroy.html NEEDS_INTERNALS  # needs echoServer
+text HTML/sizes-attribute-parsing.html NEEDS_INTERNALS  # needs resetStyleFfiCounters
+text HTML/speculative-html-parser/script-text-is-not-scanned.html NEEDS_INTERNALS  # needs echoServer
+text HTML/window-stop-releases-image-load-delay.html NEEDS_INTERNALS  # needs echoServer
+text IntersectionObserver/img-lazy-loading-not-blocked-by-img-outside-viewport.html NEEDS_INTERNALS  # needs inline-internals
+text SVG/svg-image-network-request.html NEEDS_INTERNALS  # needs echoServer
+text SVG/svg-images-share-a-single-environment.html NEEDS_INTERNALS  # needs dumpGCGraph
+text SiteIsolation/iframe/lazy-image-in-isolated-iframe-loads-when-scrolled-into-view.html NEEDS_INTERNALS  # needs echoServer
+text SiteIsolation/iframe/remote-iframe-with-a-loading-image-delays-its-container-load-event.html NEEDS_INTERNALS  # needs dumpSiteIsolationProcessTree,pruned-XMLHttpRequest
+text SiteIsolation/iframe/srcdoc-in-an-isolated-iframe-inherits-this-documents-csp.html NEEDS_INTERNALS  # needs echoServer
+text UIEvents/context-menu-target.html NEEDS_INTERNALS  # needs mouseDown
+text UIEvents/image-map-context-menu-target-after-mutation.html NEEDS_INTERNALS  # needs mouseDown
+text UIEvents/image-map-context-menu-target.html NEEDS_INTERNALS  # needs mouseDown
+text canvas/tainted-canvas-taints-destination.html NEEDS_INTERNALS  # needs echoServer
+text content-blocker-svg-image-skips-cosmetic-css.html NEEDS_INTERNALS  # needs setContentBlockers
+text context-menu-selects-text.html NEEDS_INTERNALS  # needs BUTTON_RIGHT,click
+text css/animated-img-restart-shared-resource.html NEEDS_INTERNALS  # needs imageAnimationStateForURL
+text css/cursor-gradient-image.html NEEDS_INTERNALS  # needs mouseMove
+text css/cursor-image-set-loads.html NEEDS_INTERNALS  # needs mouseMove
+text css/native-image-computation.html NEEDS_INTERNALS  # needs resetStyleFfiCounters
+text display_list/clipped-svg-background-stays-vector.html NEEDS_INTERNALS  # needs dumpDisplayList
+text display_list/image-object-fit-cover-clip.html NEEDS_INTERNALS  # needs dumpDisplayList
+text display_list/svg-in-img-is-nested.html NEEDS_INTERNALS  # needs dumpDisplayList
+text hit_testing/image-map-area-inserted-after-load.html NEEDS_INTERNALS  # needs click
+text hit_testing/image-map-area-mutations.html NEEDS_INTERNALS  # needs click
+text hit_testing/image-map-click.html NEEDS_INTERNALS  # needs click
+text hit_testing/image-map-default-area.html NEEDS_INTERNALS  # needs click
+text hit_testing/image-map-live-association.html NEEDS_INTERNALS  # needs click
+text hit_testing/pointer-events.html NEEDS_INTERNALS  # needs hitTest
+text navigation/replaced-document-is-collectable-while-next-load-is-stalled.html NEEDS_INTERNALS  # needs echoServer
+text selection-drag-across-image-and-heading.html NEEDS_INTERNALS  # needs mouseDown
+text selection-drag-past-overflowing-text-and-image.html NEEDS_INTERNALS  # needs mouseDown
+text selection-drag-past-short-logo-in-row.html NEEDS_INTERNALS  # needs mouseDown
+text wpt-import/accname/name/comp_host_language_label.html NEEDS_INTERNALS  # needs getComputedLabel
+text wpt-import/accname/name/comp_label.html NEEDS_INTERNALS  # needs getComputedLabel
+text wpt-import/accname/name/comp_labelledby.html NEEDS_INTERNALS  # needs getComputedLabel
+text wpt-import/accname/name/comp_name_from_content.html NEEDS_INTERNALS  # needs getComputedLabel
+text wpt-import/accname/name/comp_tooltip.html NEEDS_INTERNALS  # needs getComputedLabel
+text wpt-import/accname/name/comp_tooltip.tentative.html NEEDS_INTERNALS  # needs getComputedLabel
+text wpt-import/content-security-policy/img-src/img-src-self-unique-origin.html NO_REPORT  # needs an iframe document, and karouka has no child navigables
+text wpt-import/cors/image-tainting-in-cross-origin-iframe.sub.html NO_REPORT  # no .sub substitution
+text wpt-import/css/cssom-view/elementFromPoint.html FAIL  # differs from Ladybird's expectation in its iframe subtest
+text wpt-import/html-aam/roles-contextual.html NEEDS_INTERNALS  # needs getComputedRole
+text wpt-import/html-aam/roles.html NEEDS_INTERNALS  # needs getComputedRole
+text wpt-import/html/canvas/element/manual/imagebitmap/createImageBitmap-invalid-args.html FAIL  # video sources never load (media is a no-playback stub) and the Blob source needs XMLHttpRequest (pruned)
+text wpt-import/html/rendering/pixel-length-attributes.html FAIL  # passes all 546 subtests; Ladybird's expectation lists 588 (stale)
+text wpt-import/html/semantics/embedded-content/the-img-element/naturalWidth-naturalHeight-width-height.tentative.html FAIL  # 25 subtests differ from the expectation both ways (SVG natural size with negative width/height and a viewBox)
+text wpt-import/html/semantics/interactive-elements/the-dialog-element/dialog-form-submission.html NEEDS_INTERNALS  # needs click
+text wpt-import/resize-observer/observe.html NO_REPORT  # needs an iframe document, and karouka has no child navigables

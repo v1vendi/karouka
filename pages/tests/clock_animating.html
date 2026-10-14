@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-animated" content="still moving at frame 30 by design">
+<style>
+  /* Still moving at the check's last frame (30) and long after, on every clock LibWeb
+     has, so tools/dev.sh multi_view_check sees a view whose clock runs ahead, behind or at
+     another rate than the page alone:
+       row 1  a transform animation (the visual context tree samples it at render time),
+       row 2  a width animation (the style path, at the rendering update),
+       row 3  rAF timestamp minus the first one, 1px per 4 ms,
+       row 4  rAF callbacks counted, 4px each (an extra rendering update per frame shows here),
+       row 5  setInterval(50 ms) ticks, 10px each (timers on the host clock),
+       row 6  performance.now() at the last rAF minus at load, 1px per 4 ms.
+     Every row would take 8 s or more to reach the edge. Text-free, so the capture does not
+     depend on a font. multi_view_check puts it first, so it leads a group of four in the
+     multi-view check and sits third beside each page with scripted input. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  .row { position: absolute; left: 0; height: 30px; }
+  #slide { top: 0; width: 60px; background: rgb(200, 40, 40); animation: slide 10s linear; }
+  #grow { top: 40px; width: 0; background: rgb(40, 140, 40); animation: grow 10s linear; }
+  #raf_time { top: 80px; background: rgb(40, 80, 200); }
+  #raf_count { top: 120px; background: rgb(200, 140, 0); }
+  #ticks { top: 160px; background: rgb(120, 40, 160); }
+  #perf { top: 200px; background: rgb(0, 140, 160); }
+  @keyframes slide { from { transform: translateX(0); } to { transform: translateX(800px); } }
+  @keyframes grow { from { width: 0; } to { width: 800px; } }
+</style>
+</head>
+<body>
+<div class="row" id="slide"></div>
+<div class="row" id="grow"></div>
+<div class="row" id="raf_time"></div>
+<div class="row" id="raf_count"></div>
+<div class="row" id="ticks"></div>
+<div class="row" id="perf"></div>
+<script>
+  const loaded = performance.now();
+  const rafTime = document.getElementById("raf_time");
+  const rafCount = document.getElementById("raf_count");
+  const perf = document.getElementById("perf");
+  let first = null, frames = 0;
+  function frame(timestamp) {
+    if (first === null)
+      first = timestamp;
+    frames++;
+    rafTime.style.width = Math.round((timestamp - first) / 4) + "px";
+    rafCount.style.width = (frames * 4) + "px";
+    perf.style.width = Math.round((performance.now() - loaded) / 4) + "px";
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  const ticks = document.getElementById("ticks");
+  let tickCount = 0;
+  setInterval(() => { tickCount++; ticks.style.width = (tickCount * 10) + "px"; }, 50);
+</script>
+</body>
+</html>

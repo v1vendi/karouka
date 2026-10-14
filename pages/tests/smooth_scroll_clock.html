@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-animated" content="a smooth scroll is still moving at frame 30 and done by frame 60">
+<meta name="karouka-check-title" content="^(scrolling|scrolled 600)$">
+<style>
+  /* A smooth scroll on the main thread (karouka has no compositor) moves on the host
+     clock. A timer at 450 ms of host time calls scrollTo({ behavior: "smooth" }), so frame 30
+     (500 ms) captures the scroll a few frames in, and frame 60 (1000 ms) captures it done. Were
+     each step of the scroll to measure the real time since the last one, headless frames
+     taking microseconds would make the scroll crawl at its minimum step, frame 30's position
+     would depend on machine load, and four views to a system would scroll apart. The page is a column
+     of colored bands, so every scroll offset captures differently. The title reads "scrolling"
+     from the call to the scrollend, then "scrolled 600" (frame 60). Text-free. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  .band { height: 40px; }
+</style>
+</head>
+<body>
+<div id="bands"></div>
+<script>
+  const bands = document.getElementById("bands");
+  for (let i = 0; i < 60; ++i) {
+    const band = document.createElement("div");
+    band.className = "band";
+    band.style.background = `rgb(${(i * 37) % 256}, ${(i * 91) % 256}, ${(i * 53) % 256})`;
+    bands.appendChild(band);
+  }
+  setTimeout(() => {
+    document.title = "scrolling";
+    window.scrollTo({ top: 600, behavior: "smooth" });
+  }, 450);
+  window.addEventListener("scrollend", () => {
+    document.title = `scrolled ${Math.round(window.scrollY)}`;
+  });
+</script>
+</body>
+</html>

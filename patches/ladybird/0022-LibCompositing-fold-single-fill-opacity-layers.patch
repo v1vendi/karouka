@@ -1,0 +1,282 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+index a0cec771f7..022239351a 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+@@ -91,6 +91,9 @@ void DisplayListPlayerSkia::execute(
+         m_layer_image_filter_cache->backdrop_entries_by_tree_structural_epoch_and_effect.clear();
+         m_layer_image_filter_cache->tree_structural_epoch = visual_context_tree.structural_epoch();
+     }
++    // Folded layers belong to one replay of one surface's canvas.
++    auto outer_folded_opacities = move(m_folded_opacities);
++    m_folded_opacities.clear();
+     DisplayListPlayer::execute(
+         display_list,
+         visual_context_tree,
+@@ -98,6 +101,7 @@ void DisplayListPlayerSkia::execute(
+         scroll_state_snapshot,
+         move(surface),
+         canvas_surface_registry);
++    m_folded_opacities = move(outer_folded_opacities);
+ }
+ 
+ static SkRRect to_skia_rrect(auto const& rect, Gfx::CornerRadii const& corner_radii)
+@@ -260,6 +264,8 @@ void DisplayListPlayerSkia::play_command(FillRect const& command)
+         ? command.color
+         : active_visual_context_tree().sampled_background_color(command.background_color_animation_effect).value_or(command.color);
+     paint.setColor(to_skia_color(color));
++    if (auto opacity = folded_opacity(); opacity < 1.0f)
++        paint.setAlphaf(paint.getAlphaf() * opacity);
+     apply_compositing_and_blending_operator(paint, command.compositing_and_blending_operator);
+     canvas.drawRect(to_skia_rect(rect), paint);
+ }
+@@ -825,6 +831,8 @@ void DisplayListPlayerSkia::play_command(FillRectWithRoundedCorners const& comma
+         ? command.color
+         : active_visual_context_tree().sampled_background_color(command.background_color_animation_effect).value_or(command.color);
+     paint.setColor(to_skia_color(color));
++    if (auto opacity = folded_opacity(); opacity < 1.0f)
++        paint.setAlphaf(paint.getAlphaf() * opacity);
+     paint.setAntiAlias(true);
+ 
+     auto rounded_rect = to_skia_rrect(rect, command.corner_radii);
+@@ -1408,6 +1416,14 @@ void DisplayListPlayerSkia::push_layer(ReplayLayer const& layer)
+     }
+ 
+     if (!layer.backdrop_filter_bytes_size) {
++        // Group opacity over a single source-over fill equals the fill with its alpha scaled, so the
++        // offscreen layer (and the render pass it costs on the GPU) is skipped. The plain save
++        // balances the pop that closes the layer.
++        if (layer.sole_run != NumericLimits<u32>::max() && layer.opacity < 1.0f && run_is_one_foldable_fill(layer.sole_run)) {
++            canvas.save();
++            m_folded_opacities.append({ canvas.getSaveCount(), layer.opacity * folded_opacity() });
++            return;
++        }
+         canvas.saveLayer(nullptr, &paint);
+         return;
+     }
+@@ -1505,9 +1521,39 @@ void DisplayListPlayerSkia::pop_mask(ReplayMask const& mask, EffectNodeIndex eff
+     canvas.restore();
+ }
+ 
++bool DisplayListPlayerSkia::run_is_one_foldable_fill(u32 run_index) const
++{
++    auto runs = active_display_list().command_runs();
++    if (run_index >= runs.size())
++        return false;
++    size_t draw_count = 0;
++    bool foldable = true;
++    DisplayList::for_each_command_header(active_display_list().command_bytes_of_run(runs[run_index]), [&](DisplayListCommandHeader const& header, ReadonlyBytes payload) {
++        if (display_list_command_is_compositor_metadata(header.command_type))
++            return;
++        ++draw_count;
++        if (header.command_type == DisplayListCommandType::FillRectWithRoundedCorners)
++            return;
++        if (header.command_type == DisplayListCommandType::FillRect
++            && read_display_list_command_payload<FillRect>(payload).compositing_and_blending_operator == Gfx::CompositingAndBlendingOperator::Normal)
++            return;
++        foldable = false;
++    });
++    return foldable && draw_count == 1;
++}
++
++float DisplayListPlayerSkia::folded_opacity() const
++{
++    if (m_folded_opacities.is_empty())
++        return 1.0f;
++    return m_folded_opacities.last().opacity;
++}
++
+ void DisplayListPlayerSkia::pop()
+ {
+     surface().canvas().restore();
++    while (!m_folded_opacities.is_empty() && m_folded_opacities.last().save_count > surface().canvas().getSaveCount())
++        m_folded_opacities.take_last();
+ }
+ 
+ void DisplayListPlayerSkia::push_device_space_plane_clip(Gfx::Path const& path)
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
+index b7cd8e5639..5934f8631c 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
+@@ -10,6 +10,7 @@
+ #include <AK/NonnullOwnPtr.h>
+ #include <AK/NonnullRefPtr.h>
+ #include <AK/RefPtr.h>
++#include <AK/Vector.h>
+ #include <LibCompositing/DisplayList/CompositedContext.h>
+ #include <LibCompositing/DisplayList/DisplayList.h>
+ #include <LibCompositing/DisplayList/DisplayListCommand.h>
+@@ -74,6 +75,8 @@ private:
+     sk_sp<SkImageFilter> layer_image_filter(ReplayLayer const&);
+     sk_sp<SkImageFilter> backdrop_image_filter(ReplayLayer const&, bool limited_to_region);
+     sk_sp<SkImageFilter> image_filter_from_bytes(ReadonlyBytes);
++    bool run_is_one_foldable_fill(u32 run_index) const;
++    float folded_opacity() const;
+     Gfx::Path path_from_data(DisplayListDataSpan) const;
+     sk_sp<SkImage> rasterize_records_into_tile(ReadonlyBytes tile_records, Gfx::IntRect tile_rect);
+     ReadonlySpan<Color> gradient_colors(DisplayListGradientColorStops) const;
+@@ -86,6 +89,15 @@ private:
+     // context tree's structure changes, so a replayed frame does not rebuild them.
+     struct LayerImageFilterCache;
+     NonnullOwnPtr<LayerImageFilterCache> m_layer_image_filter_cache;
++
++    // Opacity-only layers whose content is a single fill are not allocated: the fill draws with its
++    // alpha scaled instead (see ReplayLayer::sole_run). Each entry lives while the canvas save it
++    // opened is on the stack.
++    struct FoldedOpacity {
++        int save_count { 0 };
++        float opacity { 1.0f };
++    };
++    Vector<FoldedOpacity, 4> m_folded_opacities;
+ };
+ 
+ }
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/commands.rs b/Libraries/LibCompositing/Rust/src/display_list/commands.rs
+index f21366656a..711cacea60 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/commands.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/commands.rs
+@@ -200,8 +200,14 @@ pub struct ReplayLayer {
+     pub backdrop_region: IntRect,
+     pub backdrop_corner_radii: CornerRadii,
+     pub effect: EffectNodeIndex,
++    // The only run drawn under this layer, when the layer is opacity-only and nothing but that run
++    // (recorded directly under it, with no nested effect) draws inside it; u32::MAX otherwise. A
++    // painter may then fold the opacity into the run's draw instead of allocating a layer.
++    pub sole_run: u32,
+ }
+ 
++pub const REPLAY_LAYER_NO_SOLE_RUN: u32 = u32::MAX;
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[repr(C)]
+ pub struct ReplayMask {
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/replay.rs b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+index f45fbacd11..54120f9b7a 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/replay.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/replay.rs
+@@ -5,7 +5,8 @@
+  */
+ 
+ use crate::display_list::commands::{
+-    ClipNodeIndex, DisplayListCommandRun, EffectNodeIndex, ReplayClip, ReplayLayer, ReplayMask, SpatialNodeIndex,
++    ClipNodeIndex, DisplayListCommandRun, EffectNodeIndex, REPLAY_LAYER_NO_SOLE_RUN, ReplayClip, ReplayLayer,
++    ReplayMask, SpatialNodeIndex,
+ };
+ use crate::display_list::depth_sorted_plan::{DepthSortedReplayStepKind, build_depth_sorted_replay_plan};
+ use crate::display_list::effect_clip_plan::EffectClipPlan;
+@@ -63,6 +64,8 @@ struct ReplayScratchStorage {
+     culling: TreeCullingScratch,
+     applied: Vec<Applied>,
+     target: Vec<Applied>,
++    run_counts_by_effect: Vec<u32>,
++    sole_runs_by_effect: Vec<u32>,
+ }
+ 
+ thread_local! {
+@@ -82,6 +85,8 @@ fn return_replay_scratch_storage(mut storage: ReplayScratchStorage) {
+     storage.culling.clear();
+     storage.applied.clear();
+     storage.target.clear();
++    storage.run_counts_by_effect.clear();
++    storage.sole_runs_by_effect.clear();
+     WARM_REPLAY_SCRATCH_STORAGE.with(|slot| {
+         let mut slot = slot.borrow_mut();
+         let slot_has_larger_palette = slot.as_ref().is_some_and(|kept| {
+@@ -117,6 +122,8 @@ struct ReplayDriver<'a, Painter: ReplayPainter> {
+     // pair the applied stack currently serves.
+     applied: Vec<Applied>,
+     target: Vec<Applied>,
++    // fill_sole_runs_by_effect's answer per effect index.
++    sole_runs_by_effect: Vec<u32>,
+     applied_context: Option<(ClipNodeIndex, EffectNodeIndex)>,
+ }
+ 
+@@ -128,7 +135,7 @@ fn replay_clip_of(clip: &crate::visual_context::ClipData) -> ReplayClip {
+     }
+ }
+ 
+-fn replay_layer_of(effects: &crate::visual_context::EffectsData, effect: EffectNodeIndex) -> ReplayLayer {
++fn replay_layer_of(effects: &crate::visual_context::EffectsData, effect: EffectNodeIndex, sole_run: u32) -> ReplayLayer {
+     let (filter_bytes, filter_bytes_size) = match &effects.filter {
+         Some(bytes) => (bytes.as_ptr(), bytes.len()),
+         None => (std::ptr::null(), 0),
+@@ -153,6 +160,45 @@ fn replay_layer_of(effects: &crate::visual_context::EffectsData, effect: EffectN
+         backdrop_region,
+         backdrop_corner_radii,
+         effect,
++        sole_run,
++    }
++}
++
++// For every effect, the only run its subtree draws when that run is recorded directly under the
++// effect, else REPLAY_LAYER_NO_SOLE_RUN. Only opacity-only, non-root layers keep the entry: a
++// single draw under a group opacity composites the same as the draw with its alpha scaled, so the
++// painter can skip the offscreen layer (an animated `opacity` on a box is the common case).
++fn fill_sole_runs_by_effect(
++    tree: &VisualContextTree,
++    command_runs: &[DisplayListCommandRun],
++    run_counts: &mut Vec<u32>,
++    sole_runs: &mut Vec<u32>,
++) {
++    let effect_count = tree.effect_nodes.len();
++    run_counts.clear();
++    run_counts.resize(effect_count, 0);
++    sole_runs.clear();
++    sole_runs.resize(effect_count, REPLAY_LAYER_NO_SOLE_RUN);
++    for (run_index, run) in command_runs.iter().enumerate() {
++        let mut effect = run.context.effect;
++        let direct = effect;
++        while !effect.is_none() && (effect.0 as usize) < effect_count {
++            let index = effect.0 as usize;
++            run_counts[index] = run_counts[index].saturating_add(1);
++            sole_runs[index] = if effect == direct { run_index as u32 } else { REPLAY_LAYER_NO_SOLE_RUN };
++            effect = tree.effect_nodes[index].parent;
++        }
++    }
++    for (index, node) in tree.effect_nodes.iter().enumerate() {
++        let foldable = run_counts[index] == 1
++            && tree.root_isolation_effect != Some(EffectNodeIndex(index as u32))
++            && matches!(&node.data, EffectNodeData::Effects(effects)
++                if effects.blend_mode == libgfx_rust::CompositingAndBlendingOperator::Normal
++                    && effects.filter.is_none()
++                    && effects.backdrop_filter.is_none());
++        if !foldable {
++            sole_runs[index] = REPLAY_LAYER_NO_SOLE_RUN;
++        }
+     }
+ }
+ 
+@@ -431,7 +477,8 @@ impl<Painter: ReplayPainter> ReplayDriver<'_, Painter> {
+                         EffectNodeData::Effects(effects) => {
+                             if tree.effect_pushes_layer_at_replay(effect) {
+                                 self.ensure_ctm_space(node.spatial);
+-                                self.painter.push_layer(&replay_layer_of(effects, effect));
++                                let sole_run = self.sole_runs_by_effect[effect.0 as usize];
++                                self.painter.push_layer(&replay_layer_of(effects, effect, sole_run));
+                             }
+                         }
+                         EffectNodeData::Mask(mask) => {
+@@ -561,6 +608,7 @@ pub fn replay_display_list(
+     let replay_base_matrix = painter.canvas_matrix();
+     let mut scratch = take_replay_scratch_storage();
+     tree.fill_culling_scratch(&mut scratch.culling);
++    fill_sole_runs_by_effect(tree, command_runs, &mut scratch.run_counts_by_effect, &mut scratch.sole_runs_by_effect);
+     let mut driver = ReplayDriver {
+         tree,
+         command_runs,
+@@ -576,6 +624,7 @@ pub fn replay_display_list(
+         current_ctm_space: None,
+         applied: scratch.applied,
+         target: scratch.target,
++        sole_runs_by_effect: scratch.sole_runs_by_effect,
+         applied_context: None,
+     };
+     driver.build_transform_palette(scroll_offsets);
+@@ -585,6 +634,8 @@ pub fn replay_display_list(
+         culling: std::mem::take(&mut driver.culling),
+         applied: std::mem::take(&mut driver.applied),
+         target: std::mem::take(&mut driver.target),
++        run_counts_by_effect: scratch.run_counts_by_effect,
++        sole_runs_by_effect: std::mem::take(&mut driver.sole_runs_by_effect),
+     });
+ }
+ 

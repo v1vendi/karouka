@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>resource churn</title>
+<meta name="karouka-check-animated" content="the label shows the frame number and cycles its font size every frame">
+<style>
+  body { margin: 0; background: #202830; color: #e8eef4; font-family: sans-serif; }
+  #frame { width: 256px; height: 256px; display: block; margin: 16px; }
+  #label { margin: 0 16px; }
+</style>
+</head>
+<body>
+<!-- Every frame paints a new decoded image and a new font size, so every recording adds display-list
+     resources (image frames, fonts) the previous one used and this one doesn't. The view's resource
+     storage has to drop them: run it under `tools/dev.sh mem pages/tests/resource_churn.html`. -->
+<img id="frame" alt="">
+<p id="label">frame 0</p>
+<script>
+  const label = document.getElementById("label");
+  let frame = 0;
+  let images = 0;
+  // A new image goes in once the one before it has loaded: a src changed every frame never decodes.
+  // Each URL is its own resource, so each is decoded into a new 1 MB frame.
+  function next_image() {
+    ++images;
+    const decoded = new Image();
+    decoded.id = "frame";
+    decoded.onload = () => {
+      document.getElementById("frame").replaceWith(decoded);
+      next_image();
+    };
+    decoded.src = `churn.png?${images}`;
+  }
+  function step() {
+    ++frame;
+    // The image count depends on load timing; only the title, which the capture doesn't show, says it.
+    label.textContent = `frame ${frame}`;
+    label.style.fontSize = `${12 + (frame % 48)}px`;
+    document.title = `resource churn ${frame} ${images}`;
+    requestAnimationFrame(step);
+  }
+  next_image();
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

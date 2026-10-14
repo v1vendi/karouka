@@ -1,0 +1,1208 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>shader() gallery</title>
+<!-- The page chrome. Each example's own CSS is the <style> inside its <section>, and the code panel beside it
+     is built from that <style> and the example's markup at load, so what you read is what renders. -->
+<style>
+  @font-face { font-family: "Inter"; src: url(fonts/Inter-Regular.ttf); font-weight: 400; }
+  @font-face { font-family: "Inter"; src: url(fonts/Inter-SemiBold.ttf); font-weight: 600; }
+  @font-face { font-family: "Inter"; src: url(fonts/Inter-Bold.ttf); font-weight: 800; }
+  :root { --bg: #12141f; --panel: #1a1c2a; --line: #262636; --dim: #9a9ab0; }
+  body { margin: 0; background: var(--bg); color: #eee; font: 15px/1.5 Inter, sans-serif; }
+  .page-head { padding: 30px 40px 26px; background-image: shader(url(shaders/aurora.sksl), --tint var(--tint));
+               --tint: #3cffa0; cursor: pointer; }
+  .page-head h1 { margin: 0; font-size: 64px; line-height: 1.05; font-weight: 800; letter-spacing: -1px;
+                  background-clip: text; color: transparent;
+                  background-image: shader("uniform float2 uSize; uniform float uTime;\
+                    half4 main(float2 c) { float2 p = c / 90.0;\
+                      float v = sin(p.x * 2.0 + uTime) + sin(p.y * 3.0 - uTime * 1.4) + sin((p.x - p.y) * 1.5 + uTime * 0.6);\
+                      return half4(half3(0.6 + 0.4 * cos(v + float3(0, 2, 4))), 1); }"); }
+  .page-head p { margin: 10px 0 0; max-width: 720px; color: #cfd; }
+  .ex { display: none; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 28px; padding: 28px 40px 40px; }
+  .ex.on { display: grid; animation: enter .45s ease-out; }
+  @keyframes enter { from { opacity: 0; transform: translateY(10px); } }
+  .tabs { position: sticky; top: 0; z-index: 10; display: flex; gap: 2px; height: 64px; padding: 0 32px;
+          box-sizing: border-box;
+          background-image: shader("uniform float2 uSize; uniform float uTime;\
+            half4 main(float2 c) {\
+              float line = uSize.y - 14.0;\
+              float2 p = c / 60.0;\
+              float v = sin(p.x * 1.3 + uTime * 0.5 + sin(p.y * 2.0 + uTime * 0.3)) * sin(p.y * 1.7 - uTime * 0.4);\
+              float3 col = float3(0.035, 0.035, 0.06) + float3(0.10, 0.06, 0.18) * smoothstep(0.5, 1.0, v);\
+              if (c.y > line) col = float3(0.0706, 0.0784, 0.1216);\
+              float core = smoothstep(1.3, 0.2, abs(c.y - line));\
+              col = mix(col, float3(0.35, 0.85, 1.0), core);\
+              col += float3(0.35, 0.85, 1.0) * 0.5 * exp(-max(line - c.y, 0.0) * 0.3) * step(c.y, line);\
+              return half4(half3(col), 1);\
+            }"); }
+  .tab { position: relative; z-index: 2; height: 64px; padding: 0 18px 14px; border: 0; background: none;
+         color: #8d8da6; font: 600 14px Inter, sans-serif; cursor: pointer; white-space: nowrap; }
+  .tab:hover:not(.on) { color: #fff; background-image: shader(url(shaders/tab-goo.sksl), --mode 1); }
+  .tab.on { color: #fff; }
+  .pill { position: absolute; left: 0; top: 0; height: 64px; z-index: 1; pointer-events: none;
+          transition: transform .55s cubic-bezier(.3, 1.35, .5, 1), width .55s cubic-bezier(.3, 1.35, .5, 1); }
+  .pill.instant { transition: none; }
+  .pill i { position: absolute; inset: 0; background-image: shader(url(shaders/tab-goo.sksl), --mode 0); }
+  .pill.moving i { animation: stretch .55s ease-out; }
+  @keyframes stretch { 35% { transform: scaleX(1.18); } 70% { transform: scaleX(.95); } }
+  .ex > header { grid-column: 1 / -1; }
+  .ex > header h2 { margin: 0; font-size: 24px; font-weight: 800; }
+  .ex > header p { margin: 4px 0 0; color: var(--dim); max-width: 900px; }
+  .stage { position: relative; min-height: 300px; border-radius: 14px; background: var(--panel); overflow: hidden; }
+  pre.code { margin: 0; padding: 16px 18px; max-height: 420px; overflow: auto; background: #0f0f17;
+             border: 1px solid var(--line); border-radius: 12px; font: 12px/1.55 Menlo, monospace; color: #c9c9d9;
+             white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; }
+  .code-wrap { display: flex; flex-direction: column; min-width: 0; }
+  .code-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .code-tabs button { padding: 5px 11px; border: 1px solid var(--line); border-radius: 8px; background: #0f0f17;
+                      color: #8d8da6; font: 12px Menlo, monospace; cursor: pointer; }
+  .code-tabs button:hover { color: #fff; }
+  .code-tabs button.on { color: #fff; border-color: #3a5a78; background: #142233; }
+  pre.code .k { color: #c792ea; }
+  pre.code .n { color: #f78c6c; }
+  pre.code .c { color: #6b6b85; }
+  pre.code .f { color: #ff8fd0; }
+  pre.code .v { color: #8fd8ff; }
+  pre.code .p { color: #ffd27a; }
+  pre.code .t { color: #9fe39f; }
+  code { color: #8fd8ff; font: 13px Menlo, monospace; }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <h1>shader() as a CSS image</h1>
+  <p>SkSL in place of any CSS &lt;image&gt;: borders, masks, text fills, transforms, list layout, canvas inputs.
+     The shaders live in files, in CSS strings, in &lt;script&gt; blocks and in style attributes. Click here to
+     recolor the aurora (a <code>--tint</code> uniform set through <code>var()</code>). This title is filled with an inline plasma
+     through <code>background-clip: text</code>.</p>
+</header>
+
+<nav class="tabs"><div class="pill instant"><i></i></div></nav>
+
+<!-- ======================================================================== -->
+<section class="ex" id="neon">
+<header><h2>Neon frame: border-image</h2>
+<p>An inline SkSL string as <code>border-image-source</code>, sliced with <code>fill</code> so the shader also paints the
+card's glass interior. Two comets run around the frame in opposite directions at a constant speed along the edge, light the glass as they
+pass, and bloom into <code>border-image-outset</code>. Slice and width are equal, so each of the nine pieces maps 1:1
+back onto the shader. Hover swaps the <code>--c1</code>/<code>--c2</code> colors.</p></header>
+<style>
+.neon-card {
+  margin: 64px auto;
+  width: 74%;
+  padding: 22px 30px;
+  box-sizing: border-box;
+  color: #fff;
+  border: 16px solid transparent;
+  border-image-source: shader("\
+    uniform float2 uSize; uniform float uTime; uniform half4 c1; uniform half4 c2;\
+    float box(float2 p, float2 b, float r) {\
+      float2 q = abs(p) - b + r;\
+      return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\
+    }\
+    float along(float2 p, float2 b) {\
+      float2 q = clamp(p, -b, b); float s;\
+      if (abs(p.x) / b.x > abs(p.y) / b.y) s = p.x > 0.0 ? 2.0 * b.x + b.y + q.y : 4.0 * b.x + 3.0 * b.y - q.y;\
+      else s = p.y < 0.0 ? b.x + q.x : 3.0 * b.x + 2.0 * b.y - q.x;\
+      return s / (4.0 * (b.x + b.y));\
+    }\
+    float comet(float u, float head) {\
+      float x = fract(head - u);\
+      return smoothstep(0.0, 0.006, x) * pow(1.0 - x, 12.0);\
+    }\
+    float2 at(float t, float2 b) {\
+      float s = fract(t) * 4.0 * (b.x + b.y);\
+      if (s < 2.0 * b.x) return float2(s - b.x, -b.y);\
+      s -= 2.0 * b.x; if (s < 2.0 * b.y) return float2(b.x, s - b.y);\
+      s -= 2.0 * b.y; if (s < 2.0 * b.x) return float2(b.x - s, b.y);\
+      return float2(-b.x, b.y - (s - 2.0 * b.x));\
+    }\
+    float bloom(float2 p, float2 b, float head, float dir) {\
+      float g = 0.0;\
+      for (int i = 0; i < 5; i++) g += pow(0.6, float(i)) * exp(-length(p - at(head - dir * 0.015 * float(i), b)) * 0.03);\
+      return g;\
+    }\
+    half4 main(float2 c) {\
+      float2 p = c - 0.5 * uSize;\
+      float2 b = 0.5 * uSize - 36.0;\
+      float d = box(p, b, 14.0);\
+      float u = along(p, b);\
+      float ha = fract(uTime * 0.16), hb = fract(uTime * 0.16 + 0.5);\
+      float ka = comet(u, ha), kb = comet(1.0 - u, hb);\
+      float3 A = float3(c1.rgb), B = float3(c2.rgb);\
+      float3 light = A * ka + B * kb;\
+      float3 glow = A * bloom(p, b, ha, 1.0) + B * bloom(p, b, 1.0 - hb, -1.0);\
+      float3 base = mix(A, B, 0.5 + 0.5 * sin(u * 12.566 - uTime * 0.7));\
+      float line = smoothstep(1.8, 0.4, abs(d));\
+      float3 col = line * (0.45 * base + 1.8 * light + 0.9 * float3(ka + kb));\
+      col += exp(-abs(d) * 0.16) * (0.16 * base + 0.6 * glow);\
+      float corner = step(b.x - 26.0, abs(p.x)) * step(b.y - 26.0, abs(p.y));\
+      col += corner * smoothstep(1.4, 0.3, abs(box(p, b + 9.0, 22.0))) * (0.7 * base + 0.5 * glow);\
+      float a = clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0);\
+      if (d < 0.0) {\
+        float3 glass = float3(0.03, 0.035, 0.06) + 0.10 * base * exp(d * 0.045) + 0.28 * glow;\
+        glass += 0.018 * step(0.5, fract(c.y / 3.0));\
+        col += glass; a = 1.0;\
+      }\
+      return half4(half3(min(col, float3(a))), half(a));\
+    }", --c1 var(--c1), --c2 var(--c2));
+  border-image-slice: 48 fill;
+  border-image-width: 48px;
+  border-image-outset: 32px;
+  --c1: #18e0ff;
+  --c2: #ff3ccf;
+}
+
+.neon-card:hover {
+  --c1: #b6ff3c;
+  --c2: #ffb020;
+}
+
+.neon-card small {
+  letter-spacing: 3px;
+  font-weight: 800;
+  font-size: 11px;
+  color: var(--c1);
+}
+
+.neon-card h3 {
+  margin: 4px 0 2px;
+  font-size: 30px;
+}
+
+.neon-card p {
+  margin: 0 0 14px;
+  color: #b9c2dc;
+}
+
+.neon-card .bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font: 12px Menlo, monospace;
+  color: #8a93b0;
+}
+
+.neon-card .bar i {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--c1) 58%, #2a2e44 58%);
+}
+</style>
+<div class="stage">
+  <div class="neon-card">
+    <small>NOW PLAYING</small>
+    <h3>Midnight Arcade</h3>
+    <p>Neon Drive · the frame and the glass behind this text are one border-image</p>
+    <div class="bar">02:14 <i></i> 03:48</div>
+  </div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="liquid">
+<header><h2>Liquid glass</h2>
+<p>One shader draws both the backdrop and the glass. A shader can't read the page behind it, so the backdrop is a
+function in <code>liquid-glass.sksl</code>: drifting color blobs, stripes, a dot grid and rings. The glass evaluates
+that same function at bent coordinates, pulled along its edge normal most near the rim, split by color and
+frosted, so the stripes and rings visibly bend at its edges. Its shapes are joined with smooth-min, so the droplets
+melt into the toolbar as they drift. The text on the glass is HTML laid out over the matching shapes.</p></header>
+<style>
+#liquid .stage {
+  height: 380px;
+}
+
+.liquid {
+  position: absolute;
+  inset: 0;
+  background-image: shader(url(shaders/liquid-glass.sksl));
+}
+
+
+.glass-card {
+  position: absolute;
+  left: 32px;
+  top: 28px;
+  width: 236px;
+  height: 128px;
+  padding: 18px 22px;
+  box-sizing: border-box;
+  color: #fff;
+}
+
+.glass-card b {
+  display: block;
+  font-size: 40px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.glass-card span {
+  opacity: .85;
+  font-size: 13px;
+}
+
+.glass-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 26px;
+  width: 340px;
+  height: 60px;
+  margin-left: -170px;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.glass-bar span:first-child {
+  color: #ffe08a;
+}
+</style>
+<div class="stage">
+  <div class="liquid"></div>
+  <div class="glass-card">
+    <b>18°</b>
+    <span>Lisbon · clear, light wind</span>
+  </div>
+  <div class="glass-bar">
+    <span>Home</span>
+    <span>Search</span>
+    <span>Library</span>
+    <span>Profile</span>
+  </div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="dissolve">
+<header><h2>Dissolve transition: mask-image + an edge layer</h2>
+<p>Two stacked panels of real text. The top one is masked by <code>dissolve.sksl</code> (<code>--mode 0</code>, alpha only)
+and an overlay draws the same noise's burning edge (<code>--mode 1</code>). Both read the frame's <code>uTime</code>,
+so the edge stays on the mask's border.</p></header>
+<style>
+.swap {
+  position: absolute;
+  inset: 0;
+  padding: 36px 40px;
+}
+
+.swap h3 {
+  margin: 0 0 10px;
+  font-size: 34px;
+}
+
+.swap.day {
+  background: linear-gradient(135deg, #ffe7a3, #ff9a7a);
+  color: #3a1a10;
+}
+
+.swap.night {
+  background: linear-gradient(135deg, #1b1f4a, #3b1f5c);
+  color: #dcd6ff;
+  mask-image: shader(url(shaders/dissolve.sksl), --mode 0);
+}
+
+.burn {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: shader(url(shaders/dissolve.sksl), --mode 1);
+}
+</style>
+<div class="stage">
+  <div class="swap day">
+    <h3>Good morning</h3>
+    <p>7:42 · 18°C, clear. Two meetings before noon.</p>
+  </div>
+  <div class="swap night">
+    <h3>Good night</h3>
+    <p>23:10 · 9°C, a few stars. Alarm set for 6:45.</p>
+  </div>
+  <div class="burn"></div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="halftone">
+<header><h2>Halftone wave: a mask over text</h2>
+<p>An inline shader used as <code>mask-image</code> computed on a 9px grid: each cell is one dot whose radius
+follows a wave sweeping across the block, so a headline, a gradient and a paragraph break into moving dots together.</p></header>
+<style>
+.halftone {
+  margin: 30px;
+  padding: 30px;
+  border-radius: 12px;
+  background: linear-gradient(120deg, #ff3c7a, #ffb03c 50%, #3cffd0);
+  color: #120a18;
+}
+
+.halftone h3 {
+  margin: 0;
+  font-size: 46px;
+  line-height: 1;
+  font-weight: 800;
+}
+
+.halftone p {
+  margin: 10px 0 0;
+  font-weight: 600;
+}
+
+.halftone-wave {
+  mask-image: shader("\
+    uniform float2 uSize; uniform float uTime;\
+    half4 main(float2 c) {\
+      float2 cell = floor(c / 9.0);\
+      float2 f = fract(c / 9.0) - 0.5;\
+      float w = 0.5 + 0.5 * sin(cell.x * 0.18 - cell.y * 0.1 - uTime * 2.4);\
+      float r = mix(0.12, 0.72, w);\
+      return half4(half(smoothstep(r, r - 0.08, length(f))));\
+    }");
+}
+</style>
+<div class="stage">
+  <div class="halftone halftone-wave">
+    <h3>PRINT IS<br>NOT DEAD</h3>
+    <p>Every pixel of this block, text included, goes through one shader mask.</p>
+  </div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="crossfade">
+<header><h2>Cross-fading slideshow</h2>
+<p>LibWeb has no <code>cross-fade()</code> yet, so the fade is three stacked layers with keyframed <code>opacity</code>
+and <code>transform</code>, each a live shader with a caption over it. The raymarcher, Mandelbrot and ocean
+keep animating through the fade.</p></header>
+<style>
+.slides {
+  position: absolute;
+  inset: 0;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  display: flex;
+  align-items: flex-end;
+  animation: show 12s infinite;
+}
+
+.slide:nth-child(1) {
+  background-image: shader(url(shaders/raymarch.sksl));
+  animation-delay: 0s;
+}
+
+.slide:nth-child(2) {
+  background-image: shader(url(shaders/mandelbrot.sksl));
+  animation-delay: -8s;
+}
+
+.slide:nth-child(3) {
+  background-image: shader(url(shaders/ocean.sksl));
+  animation-delay: -4s;
+}
+
+.slide h3 {
+  margin: 0 0 22px 24px;
+  padding: 8px 14px;
+  font-size: 22px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.55);
+  color: #fff;
+  animation: rise 12s infinite;
+  animation-delay: inherit;
+}
+
+@keyframes show {
+  0% {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+  8%, 33% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  41%, 100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@keyframes rise {
+  0%, 4% {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+  12%, 33% {
+    transform: none;
+    opacity: 1;
+  }
+  41%, 100% {
+    opacity: 0;
+  }
+}
+</style>
+<div class="stage">
+  <div class="slides">
+    <div class="slide">
+      <h3>Raymarched SDFs</h3>
+    </div>
+    <div class="slide">
+      <h3>Mandelbrot, endless zoom</h3>
+    </div>
+    <div class="slide">
+      <h3>Ocean at sunset</h3>
+    </div>
+  </div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="transforms">
+<header><h2>Transforms with text on top</h2>
+<p>A shader background takes any transform, in 2D or with perspective. The card swings in 3D with a live
+fractal behind its text. The ribbon is a tiled inline shader, rotated and skewed, and the badge spins.</p></header>
+<style>
+.scene {
+  position: absolute;
+  inset: 0;
+  perspective: 700px;
+}
+
+.tilt {
+  position: absolute;
+  left: 40px;
+  top: 40px;
+  width: 300px;
+  height: 210px;
+  border-radius: 16px;
+  padding: 22px;
+  box-sizing: border-box;
+  color: #fff;
+  background-image: shader(url(shaders/kali.sksl));
+  animation: swing 6s ease-in-out infinite alternate;
+}
+
+.tilt b {
+  display: block;
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.tilt small {
+  opacity: .85;
+}
+
+@keyframes swing {
+  from {
+    transform: rotateY(-28deg) rotateX(8deg);
+  }
+  to {
+    transform: rotateY(28deg) rotateX(-6deg);
+  }
+}
+
+.ribbon {
+  position: absolute;
+  right: -40px;
+  top: 46px;
+  width: 300px;
+  padding: 8px 0;
+  text-align: center;
+  transform: rotate(35deg) skewX(-12deg);
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #111;
+  background-image: shader("\
+    uniform float2 uSize; uniform float uTime;\
+    half4 main(float2 c) {\
+      float s = step(0.5, fract((c.x + c.y) / 24.0 - uTime * 0.8));\
+      return half4(mix(half3(1.0, 0.82, 0.1), half3(1.0, 0.95, 0.6), half(s)), 1);\
+    }");
+}
+
+.badge {
+  position: absolute;
+  right: 70px;
+  bottom: 40px;
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  color: #fff;
+  background-image: shader(url(shaders/tunnel.sksl));
+  animation: spin 9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>
+<div class="stage">
+  <div class="scene">
+    <div class="tilt">
+      <b>Kali set</b>
+      <small>rotateY · rotateX · perspective</small>
+    </div>
+  </div>
+  <div class="ribbon">LIVE SHADER</div>
+  <div class="badge">NEW</div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="layout">
+<header><h2>Shaders inside layout</h2>
+<p>Each bar is a flex item whose height is keyframed, so the layout changes every frame. With
+<code>background-attachment: fixed</code> every bar opens a window onto one continuous field instead of
+restarting the shader per box. The drop cap is a <code>::first-letter</code> float filled through
+<code>background-clip: text</code>, and the inline status dots sit in the text and wrap with it.</p></header>
+<style>
+#layout .stage {
+  min-height: 330px;
+}
+
+.eq {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  top: 24px;
+  height: 150px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.eq i {
+  flex: 1;
+  border-radius: 4px 4px 0 0;
+  animation: eq 1.6s ease-in-out infinite alternate;
+  background-image: shader("\
+    uniform float2 uSize; uniform float uTime;\
+    half4 main(float2 c) {\
+      float2 p = c / 260.0;\
+      float v = sin(p.x * 9.0 + uTime) + sin(p.y * 11.0 - uTime * 1.3) + sin((p.x + p.y) * 6.0 + uTime * 0.7);\
+      return half4(half3(0.5 + 0.5 * cos(v + float3(0, 2, 4))), 1);\
+    }");
+  background-attachment: fixed;
+}
+
+.eq i:nth-child(3n) {
+  animation-delay: -0.4s;
+  animation-duration: 1.1s;
+}
+
+.eq i:nth-child(3n+1) {
+  animation-delay: -0.9s;
+  animation-duration: 1.9s;
+}
+
+.eq i:nth-child(4n) {
+  animation-delay: -1.3s;
+}
+
+@keyframes eq {
+  from {
+    height: 12%;
+  }
+  to {
+    height: 100%;
+  }
+}
+
+.prose {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  top: 190px;
+  color: #c9c9d9;
+  font-size: 15px;
+}
+
+.prose::first-letter {
+  float: left;
+  font-size: 64px;
+  line-height: 0.9;
+  font-weight: 800;
+  margin: 4px 8px 0 0;
+  background-image: shader(url(shaders/voronoi.sksl));
+  background-clip: text;
+  color: transparent;
+}
+
+.dot {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  vertical-align: -0.1em;
+  background-image: shader(url(shaders/dot.sksl), --phase var(--ph, 0));
+}
+</style>
+<div class="stage">
+  <div class="eq">
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+    <i></i>
+  </div>
+  <p class="prose">
+    Shaders are images, so they flow.
+    Build <span class="dot"></span> passing,
+    deploy <span class="dot" style="--ph: 2"></span> running,
+    canary <span class="dot" style="--ph: 4"></span> waiting.
+    Each dot is an inline-block with its own <code>--phase</code>,
+    and the paragraph wraps around the float.
+  </p>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="embedded">
+<header><h2>Shaders embedded in HTML</h2>
+<p>The fire's SkSL sits in a <code>&lt;script type="text/x-sksl"&gt;</code> block. Six lines of script turn it into a
+<code>shader("…")</code> string, escaping newlines as <code>\A</code> so its <code>//</code> comments survive. The
+cursor is a shader written straight into a <code>style</code> attribute: the viewer draws no
+<code>cursor: url()</code> images, so the cursor is an element moved by <code>transform</code>. Moving an element adds
+no new shader argument, so the registry doesn't grow. Move the pointer over the fire.</p></header>
+<style>
+.hearth {
+  position: absolute;
+  inset: 0;
+  cursor: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #fff;
+}
+
+.hearth h3 {
+  margin: 0;
+  font-size: 44px;
+  font-weight: 800;
+  mix-blend-mode: overlay;
+}
+
+.fire {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 75%;
+}
+
+.cursor {
+  position: absolute;
+  left: 70%;
+  top: 30%;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  pointer-events: none;
+  mix-blend-mode: difference;
+}
+</style>
+<div class="stage">
+  <script type="text/x-sksl" id="fire-sksl">
+    // Rising fbm flames, premultiplied so the panel shows through.
+    uniform float2 uSize;
+    uniform float uTime;
+    float hash(float2 p) { return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453); }
+    float noise(float2 p) {
+        float2 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + float2(1, 0)), f.x),
+                   mix(hash(i + float2(0, 1)), hash(i + float2(1, 1)), f.x), f.y);
+    }
+    half4 main(float2 c) {
+        float2 uv = c / uSize;
+        float2 p = float2(uv.x * 7.0, uv.y * 4.0 + uTime * 2.2);
+        float n = 0.0, a = 0.5;
+        for (int i = 0; i < 5; i++) {
+            n += a * noise(p);
+            p = p * 2.1 + float2(0.0, uTime * 0.6);
+            a *= 0.5;
+        }
+        float f = clamp(n * 1.9 - (1.0 - uv.y) * 1.25, 0.0, 1.0);
+        half3 col = half3(1.6 * f, 1.4 * f * f, 0.9 * f * f * f * f);
+        return half4(col * half(f), half(f));
+    }
+  </script>
+  <div class="hearth">
+    <div class="fire" data-shader="fire-sksl"></div>
+    <h3>WARM START</h3>
+    <div class="cursor" style="background-image: shader('\
+      uniform float2 uSize; uniform float uTime;\
+      half4 main(float2 c) {\
+        float2 p = c - 0.5 * uSize;\
+        float r = length(p), a = atan(p.y, p.x);\
+        float R = 0.5 * uSize.x - 4.0;\
+        float v = smoothstep(2.5, 1.0, abs(r - R)) * step(0.0, sin(a * 6.0 + uTime * 5.0))\
+                + smoothstep(1.5, 0.4, abs(r - R * 0.4))\
+                + smoothstep(3.0, 2.0, r);\
+        return half4(half(clamp(v, 0.0, 1.0)));\
+      }')"></div>
+  </div>
+  <script class="src">
+    for (const el of document.querySelectorAll('[data-shader]')) {
+      const src = document.getElementById(el.dataset.shader).textContent;
+      const css = src.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\A ');
+      el.style.backgroundImage = `shader("${css}")`;
+    }
+  </script>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="canvas">
+<header><h2>Canvas input: a CRT</h2>
+<p><code>--tex element(#paint)</code> binds an off-screen 2D canvas as the shader's <code>uniform shader tex</code>.
+Script draws into the canvas each frame at 2x, and <code>crt.sksl</code> scales it to cover the screen (<code>--res</code> is the canvas's size), warps it, splits RGB and adds scanlines. The
+caption is ordinary text over the result.</p></header>
+<style>
+.tv {
+  position: absolute;
+  inset: 22px;
+  border-radius: 26px;
+  background-image: shader(url(shaders/crt.sksl), --tex element(#paint), --res 1120 512);
+  box-shadow: 0 0 0 10px #2a2a33, 0 0 0 12px #3b3b48;
+}
+
+.tv span {
+  position: absolute;
+  right: 24px;
+  top: 18px;
+  font: 800 13px Inter, sans-serif;
+  color: #f33;
+  letter-spacing: 2px;
+}
+
+#paint {
+  position: absolute;
+  left: -10000px;
+}
+</style>
+<div class="stage">
+  <div class="tv">
+    <span>● REC</span>
+  </div>
+  <canvas id="paint" width="1120" height="512"></canvas>
+  <script class="src">
+    const cx = document.getElementById('paint').getContext('2d');
+    cx.scale(2, 2);
+    let t = 0;
+    (function draw() {
+      t += 1 / 60;
+      cx.fillStyle = '#102030';
+      cx.fillRect(0, 0, 560, 256);
+      for (let i = 0; i < 7; i++) {
+        const a = t * (0.8 + i * 0.15) + i;
+        cx.fillStyle = `hsl(${(i * 50 + t * 40) % 360} 90% 60%)`;
+        cx.beginPath();
+        cx.arc(280 + Math.cos(a) * 200, 128 + Math.sin(a * 1.3) * 80, 22, 0, 7);
+        cx.fill();
+      }
+      cx.fillStyle = '#fff';
+      cx.font = 'bold 44px sans-serif';
+      cx.fillText('karouka', 190, 142);
+      requestAnimationFrame(draw);
+    })();
+  </script>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="ring">
+<header><h2>Glass progress ring</h2>
+<p>A progress bar as seven nested acrylic bands on a wooden table, ported from aladiN's "glass rainbow stacker"
+(shadertoy.com/view/sXdSz7): its closed-form glass, room and palettes, without its state buffers. Every ray crosses
+the bands with Fresnel, refraction, total reflection, Beer-Lambert tint and dispersion; the progress front glows with
+the light the glass pipes, and the window behind throws coloured shadows. CSS drives it: the uniforms are
+<code>@property</code>-registered custom properties, so Play and Orbit are <code>@keyframes</code> started by a
+checkbox through <code>:has()</code>, and the percentage is a <code>counter()</code> of the same property. Whole
+steps keep each run to the same images. The only script copies a slider's value into its property.</p></header>
+<style>
+@property --progress {
+  syntax: "<integer>";
+  inherits: true;
+  initial-value: 68;
+}
+
+@property --tilt {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 52;
+}
+
+@property --turn {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --fan {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 40;
+}
+
+@property --palette {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.ring {
+  position: relative;
+  height: 400px;
+  background-image: shader(url(shaders/glass-ring.sksl),
+    --progress var(--progress),
+    --tilt var(--tilt),
+    --turn var(--turn),
+    --fan var(--fan),
+    --palette var(--palette));
+}
+
+.ring output::before {
+  counter-reset: pct var(--progress);
+  content: counter(pct) "%";
+}
+
+.ring output {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 120px;
+  margin: -24px 0 0 -60px;
+  text-align: center;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 48px;
+  color: #3b2a1a;
+  text-shadow: 0 1px 0 rgba(255, 240, 220, .6);
+}
+
+@keyframes ring-fill {
+  from { --progress: 0; }
+  to { --progress: 100; }
+}
+
+@keyframes ring-orbit {
+  from { --turn: -180; }
+  to { --turn: 180; }
+}
+
+#ring .stage:has(.play:checked) .ring {
+  animation: ring-fill 4s steps(101, jump-none) infinite;
+}
+
+#ring .stage:has(.orbit:checked) {
+  animation: ring-orbit 24s steps(361, jump-none) infinite;
+}
+
+.knobs {
+  display: grid;
+  gap: 8px;
+  padding: 16px 20px 18px;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.knobs label {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  align-items: center;
+}
+
+.knobs input[type=range] {
+  width: 100%;
+  margin: 0;
+}
+
+.knobs .toggles {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.toggles label {
+  display: flex;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid #3a5a78;
+  border-radius: 8px;
+  background: #142233;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+</style>
+<div class="stage">
+  <div class="ring">
+    <output></output>
+  </div>
+  <div class="knobs">
+    <label>Progress <input name="progress" type="range" min="0" max="100" value="68"></label>
+    <label>Tilt <input name="tilt" type="range" min="12" max="83" value="52"></label>
+    <label>Turn <input name="turn" type="range" min="-180" max="180" value="0"></label>
+    <label>Fan <input name="fan" type="range" min="0" max="100" step="5" value="40"></label>
+    <label>Glass <input name="palette" type="range" min="0" max="2" step="0.1" value="0"></label>
+    <div class="toggles">
+      <label><input class="play" type="checkbox"> Play</label>
+      <label><input class="orbit" type="checkbox"> Orbit</label>
+    </div>
+  </div>
+  <script>
+    // A slider can't set a custom property by itself: each one copies its value into its own.
+    for (const input of document.querySelectorAll('.knobs [type=range]')) {
+      input.oninput = () => input.closest('.stage').style.setProperty('--' + input.name, input.value);
+    }
+  </script>
+</div>
+<pre class="code"></pre>
+</section>
+
+<!-- ======================================================================== -->
+<section class="ex" id="fire">
+<header><h2>Fire on the DOM</h2>
+<p>XT95's raymarched flame (shadertoy.com/view/MdX3zr, CC BY-NC-SA 3.0) in <code>flame.sksl</code>, with a
+transparent night so it composites over the page. One file serves every fire here: <code>--tongues</code> splits the
+box into flames with their own noise and height, <code>--seed</code> varies them, <code>--cool</code> turns them into
+a blue gas flame. The flames are pseudo-elements behind a heading and three cards. Hover
+a card to set it alight.</p></header>
+<style>
+#fire .stage {
+  min-height: 420px;
+  padding: 26px 28px;
+  box-sizing: border-box;
+  background: #0d0b10;
+}
+
+.molten {
+  position: relative;
+  z-index: 0;
+  width: max-content;
+  margin: 40px 0 6px;
+  font-size: 56px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -1px;
+  color: #fff1dc;
+  text-shadow: 0 0 18px rgba(255, 120, 30, .8);
+}
+
+.molten::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  right: -12px;
+  bottom: 18%;
+  height: 104px;
+  z-index: -1;
+  background-image: shader(url(shaders/flame.sksl),
+    --seed 3, --tongues 11, --cool 0);
+}
+
+.plans {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  gap: 18px;
+  margin-top: 96px;
+}
+
+.plan {
+  position: relative;
+  flex: 1;
+  padding: 22px 18px;
+  border-radius: 12px;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 800;
+  color: #fff;
+  background: #1c1820;
+  border: 1px solid #3a2a2a;
+}
+
+.plan:hover::before {
+  opacity: 1;
+  transform: none;
+}
+
+.plan:hover {
+  border-color: #ff7a2a;
+  box-shadow: 0 0 24px rgba(255, 110, 30, .35);
+}
+
+.plan::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  right: -6px;
+  bottom: 60%;
+  height: 120px;
+  z-index: -1;
+  opacity: 0;
+  transform: translateY(30px) scaleY(.4);
+  transform-origin: bottom;
+  transition: opacity .4s, transform .6s cubic-bezier(.3, 1.4, .5, 1);
+  background-image: shader(url(shaders/flame.sksl),
+    --seed var(--seed), --tongues 6, --cool var(--cool, 0));
+}
+</style>
+<div class="stage">
+  <h3 class="molten">Hot right now</h3>
+  <div class="plans">
+    <div class="plan" style="--seed: 2">Ember</div>
+    <div class="plan" style="--seed: 5">Blaze</div>
+    <div class="plan" style="--seed: 9; --cool: 1">Plasma</div>
+  </div>
+</div>
+<pre class="code"></pre>
+</section>
+
+<script>
+// Header click: recolor the aurora through its --tint argument.
+const tints = ['#3cffa0', '#ff4fd8', '#4fa8ff', '#ffd23c'];
+let ti = 0;
+document.querySelector('.page-head').addEventListener('click', e =>
+  e.currentTarget.style.setProperty('--tint', tints[++ti % tints.length]));
+
+// The shader cursor follows the pointer with a transform.
+const hearth = document.querySelector('.hearth'), cursor = hearth.querySelector('.cursor');
+hearth.addEventListener('pointermove', e => {
+  const r = hearth.getBoundingClientRect();
+  cursor.style.left = cursor.style.top = '0';
+  cursor.style.transform = `translate(${e.clientX - r.left}px, ${e.clientY - r.top}px)`;
+});
+
+// Code panels: each example's <style> plus its stage's markup, dedented and lightly highlighted.
+function dedent(text) {
+  const lines = text.replace(/^\n+|\s+$/g, '').split('\n');
+  const pad = Math.min(...lines.filter(l => l.trim()).map(l => l.match(/^ */)[0].length));
+  return lines.map(l => l.slice(pad)).join('\n');
+}
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function highlight(code) {
+  return esc(code)
+    .replace(/(\/\*[\s\S]*?\*\/|\/\/[^\n]*)/g, '<span class="c">$1</span>')
+    .replace(/\b(shader|element|var)\(/g, '<span class="f">$1</span>(')
+    .replace(/(^|[\s(,;"])(--[\w-]+)/g, '$1<span class="v">$2</span>')
+    .replace(/^(\s*)([a-z-]+)(:\s)/gm, '$1<span class="p">$2</span>$3')
+    .replace(/(&lt;\/?)([a-z0-9]+)/g, '$1<span class="t">$2</span>');
+}
+// SkSL files: comments, types and keywords, numbers.
+function highlightSksl(code) {
+  return esc(code)
+    .replace(/(\/\/[^\n]*)|\b(uniform|shader|return|for|if|else|const|bool|int|float[234]?|half[234]?)\b|\b(\d+\.?\d*)\b/g,
+             (m, c, k, n) => c ? `<span class="c">${c}</span>` : k ? `<span class="k">${k}</span>` : `<span class="n">${n}</span>`);
+}
+// Each panel: a tab for the example's HTML and CSS, and one per .sksl file they name, fetched when first shown.
+const sources = {};
+for (const ex of document.querySelectorAll('.ex')) {
+  const style = ex.querySelector(':scope > style');
+  const stage = ex.querySelector('.stage');
+  const markup = '<style>\n' + dedent(style.textContent) + '\n</style>\n\n' + dedent(stage.innerHTML);
+  const pre = ex.querySelector('pre.code');
+  const wrap = document.createElement('div');
+  wrap.className = 'code-wrap';
+  pre.replaceWith(wrap);
+  const bar = document.createElement('div');
+  bar.className = 'code-tabs';
+  wrap.append(bar, pre);
+  const files = [...new Set(markup.match(/shaders\/[\w-]+\.sksl/g) || [])];
+  const views = [{ label: 'HTML & CSS', show: () => { pre.innerHTML = highlight(markup); } }];
+  for (const file of files) {
+    views.push({ label: file.replace('shaders/', ''), show: async () => {
+      pre.textContent = 'loading ' + file + '…';
+      try {
+        sources[file] ??= await fetch(file).then(r => r.ok ? r.text() : Promise.reject(r.status));
+        pre.innerHTML = highlightSksl(sources[file]);
+      } catch (e) {
+        pre.textContent = 'could not load ' + file + ' (' + e + ')';
+      }
+      pre.scrollTop = 0;
+    } });
+  }
+  for (const view of views) {
+    const b = document.createElement('button');
+    b.textContent = view.label;
+    b.addEventListener('click', () => {
+      bar.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      view.show();
+    });
+    bar.appendChild(b);
+  }
+  bar.firstChild.classList.add('on');
+  views[0].show();
+}
+// Tabs: one per example. The liquid blob slides with a CSS transition (transform and width), never a new shader argument.
+const labels = { neon: 'Neon frame', liquid: 'Liquid glass', dissolve: 'Dissolve', halftone: 'Halftone',
+                 crossfade: 'Cross-fade', transforms: 'Transforms', layout: 'Layout', embedded: 'In HTML', canvas: 'Canvas', ring: 'Glass ring', fire: 'Fire' };
+const nav = document.querySelector('.tabs'), pill = nav.querySelector('.pill');
+const sections = [...document.querySelectorAll('.ex')];
+const tabs = sections.map(ex => {
+  const b = document.createElement('button');
+  b.className = 'tab'; b.textContent = labels[ex.id] || ex.id;
+  b.addEventListener('click', () => show(ex.id));
+  nav.appendChild(b);
+  return b;
+});
+function show(id) {
+  const i = Math.max(0, sections.findIndex(ex => ex.id === id));
+  sections.forEach((ex, j) => ex.classList.toggle('on', j === i));
+  tabs.forEach((b, j) => b.classList.toggle('on', j === i));
+  const b = tabs[i];
+  if (i !== current) { pill.classList.remove('moving'); void pill.offsetWidth; pill.classList.add('moving'); }
+  pill.style.width = (b.offsetWidth + 48) + 'px';
+  pill.style.transform = `translateX(${b.offsetLeft - 24}px)`;
+  history.replaceState(null, '', '#tab=' + sections[i].id);
+  current = i;
+}
+let current = -1;
+show(location.hash.replace('#tab=', ''));
+requestAnimationFrame(() => pill.classList.remove('instant'));
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input')) return;   // arrows move a focused slider, not the tabs
+  if (e.key === 'ArrowRight') show(sections[(current + 1) % sections.length].id);
+  if (e.key === 'ArrowLeft') show(sections[(current + sections.length - 1) % sections.length].id);
+});
+document.title = 'shader() gallery';
+</script>
+</body>
+</html>

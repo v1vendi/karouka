@@ -1,0 +1,224 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: leave out SubtleCrypto
+
+A LIBWEB_PRUNE_WEB_APIS build (karouka) leaves out WebCrypto's
+SubtleCrypto and CryptoKey, with CryptoAlgorithms and CryptoBindings
+behind them: about 1.1 MB of code, and LibCrypto's only users of OpenSSL.
+`crypto.subtle` doesn't exist, as in a browser without it;
+crypto.getRandomValues() and crypto.randomUUID() stay. Structured
+serialization drops CryptoKey and its key type and usage encodings.
+
+---
+diff --git a/Libraries/LibWeb/Crypto/Crypto.cpp b/Libraries/LibWeb/Crypto/Crypto.cpp
+index 12448e0ba0..e9d52b0d4f 100644
+--- a/Libraries/LibWeb/Crypto/Crypto.cpp
++++ b/Libraries/LibWeb/Crypto/Crypto.cpp
+@@ -10,7 +10,9 @@
+ #include <LibGC/Heap.h>
+ #include <LibJS/Runtime/TypedArray.h>
+ #include <LibWeb/Crypto/Crypto.h>
+-#include <LibWeb/Crypto/SubtleCrypto.h>
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
++#    include <LibWeb/Crypto/SubtleCrypto.h>
++#endif
+ #include <LibWeb/WebIDL/Buffers.h>
+ #include <LibWeb/WebIDL/QuotaExceededError.h>
+ 
+@@ -24,7 +26,9 @@ GC::Ref<Crypto> Crypto::create()
+ }
+ 
+ Crypto::Crypto()
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+     : m_subtle(SubtleCrypto::create())
++#endif
+ {
+ }
+ 
+@@ -33,13 +37,17 @@ Crypto::~Crypto() = default;
+ void Crypto::visit_edges(GC::Cell::Visitor& visitor)
+ {
+     Base::visit_edges(visitor);
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+     visitor.visit(m_subtle);
++#endif
+ }
+ 
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ GC::Ref<SubtleCrypto> Crypto::subtle() const
+ {
+     return *m_subtle;
+ }
++#endif
+ 
+ // https://w3c.github.io/webcrypto/#dfn-Crypto-method-getRandomValues
+ WebIDL::ExceptionOr<WebIDL::ArrayBufferViewVariant> Crypto::get_random_values(WebIDL::ArrayBufferViewVariant array) const
+diff --git a/Libraries/LibWeb/Crypto/Crypto.h b/Libraries/LibWeb/Crypto/Crypto.h
+index 53e64aa177..95f686f537 100644
+--- a/Libraries/LibWeb/Crypto/Crypto.h
++++ b/Libraries/LibWeb/Crypto/Crypto.h
+@@ -7,8 +7,11 @@
+ #pragma once
+ 
+ #include <LibWeb/Bindings/Wrappable.h>
+-#include <LibWeb/Crypto/SubtleCrypto.h>
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
++#    include <LibWeb/Crypto/SubtleCrypto.h>
++#endif
+ #include <LibWeb/Export.h>
++#include <LibWeb/WebIDL/Buffers.h>
+ #include <LibWeb/WebIDL/ExceptionOr.h>
+ 
+ namespace Web::Crypto {
+@@ -22,7 +25,9 @@ public:
+ 
+     virtual ~Crypto() override;
+ 
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+     GC::Ref<SubtleCrypto> subtle() const;
++#endif
+ 
+     WebIDL::ExceptionOr<WebIDL::ArrayBufferViewVariant> get_random_values(WebIDL::ArrayBufferViewVariant) const;
+     Utf16String random_uuid() const;
+@@ -33,7 +38,9 @@ protected:
+ private:
+     Crypto();
+ 
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+     GC::Ptr<SubtleCrypto> m_subtle;
++#endif
+ };
+ 
+ WEB_API String generate_random_uuid();
+diff --git a/Libraries/LibWeb/Embedder/Prune/SubtleCrypto.cmake b/Libraries/LibWeb/Embedder/Prune/SubtleCrypto.cmake
+new file mode 100644
+index 0000000000..cba24e11ad
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/SubtleCrypto.cmake
+@@ -0,0 +1,7 @@
++# karouka: WebCrypto's SubtleCrypto (`crypto.subtle`) and CryptoKey, with every algorithm behind them.
++# They are LibCrypto's only users of OpenSSL (LIBCRYPTO_COMMONCRYPTO, top-level CMakeLists.txt).
++# crypto.getRandomValues() and crypto.randomUUID() stay (Crypto/Crypto.cpp). SubtleCrypto is not a
++# directory, so this only defines LIBWEB_PRUNE_SUBTLECRYPTO.
++list(APPEND LIBWEB_PRUNED_FAMILIES SubtleCrypto)
++list(FILTER SOURCES EXCLUDE REGEX "^Crypto/(CryptoAlgorithms|CryptoBindings|CryptoKey|SubtleCrypto)\\.cpp$")
++list(APPEND LIBWEB_PRUNED_IDL Crypto/CryptoKey Crypto/SubtleCrypto)
+diff --git a/Libraries/LibWeb/HTML/StructuredSerialize.cpp b/Libraries/LibWeb/HTML/StructuredSerialize.cpp
+index 1a7f0e3061..554339ebf3 100644
+--- a/Libraries/LibWeb/HTML/StructuredSerialize.cpp
++++ b/Libraries/LibWeb/HTML/StructuredSerialize.cpp
+@@ -40,7 +40,9 @@
+ #include <LibJS/Runtime/StringObject.h>
+ #include <LibJS/Runtime/TypedArray.h>
+ #include <LibJS/Runtime/VM.h>
+-#include <LibWeb/Bindings/CryptoKey.h>
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
++#    include <LibWeb/Bindings/CryptoKey.h>
++#endif
+ #include <LibWeb/Bindings/DOMException.h>
+ #include <LibWeb/Bindings/DOMMatrix.h>
+ #include <LibWeb/Bindings/DOMMatrixReadOnly.h>
+@@ -62,7 +64,9 @@
+ #include <LibWeb/Bindings/Transferable.h>
+ #include <LibWeb/Bindings/TransformStream.h>
+ #include <LibWeb/Bindings/WritableStream.h>
+-#include <LibWeb/Crypto/CryptoKey.h>
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
++#    include <LibWeb/Crypto/CryptoKey.h>
++#endif
+ #include <LibWeb/FileAPI/Blob.h>
+ #include <LibWeb/FileAPI/File.h>
+ #include <LibWeb/FileAPI/FileList.h>
+@@ -128,7 +132,9 @@ static ErrorOr<String> utf16_to_utf8_text(Utf16String const& text)
+ // Explicit return types keep these non-capturing lambdas function-pointer compatible.
+ static constexpr auto s_serializable_storage_registry = to_array<SerializableRegistryEntry>({
+     { Bindings::InterfaceName::Blob, "Blob"sv },
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+     { Bindings::InterfaceName::CryptoKey, "CryptoKey"sv },
++#endif
+     { Bindings::InterfaceName::DOMException, "DOMException"sv },
+     { Bindings::InterfaceName::DOMMatrix, "DOMMatrix"sv },
+     { Bindings::InterfaceName::DOMMatrixReadOnly, "DOMMatrixReadOnly"sv },
+@@ -168,6 +174,7 @@ static ErrorOr<Bindings::InterfaceName> storage_identifier_to_serializable_inter
+     return Error::from_string_literal("Unknown structured serialize interface name");
+ }
+ 
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ static ErrorOr<StringView> key_type_to_storage_identifier(Bindings::KeyType key_type)
+ {
+     switch (key_type) {
+@@ -251,6 +258,7 @@ static ErrorOr<Bindings::KeyUsage> storage_identifier_to_key_usage(StringView id
+         return Bindings::KeyUsage::DecapsulateBits;
+     return Error::from_string_literal("Unknown structured serialize key usage");
+ }
++#endif
+ 
+ static ErrorOr<StringView> color_space_to_storage_identifier(Bindings::PredefinedColorSpace color_space)
+ {
+@@ -762,6 +770,7 @@ static void encode_value(StructuredSerializeDataEncoder& encoder, Bindings::Inte
+         encoder.encode(Utf16String::from_utf8(MUST(serializable_interface_name_to_storage_identifier(value))));
+ }
+ 
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ [[maybe_unused]] static void encode_value(StructuredSerializeDataEncoder& encoder, Bindings::KeyType value)
+ {
+     auto identifier = MUST(key_type_to_storage_identifier(value));
+@@ -784,6 +793,7 @@ static void encode_value(StructuredSerializeDataEncoder& encoder, Crypto::KeyTyp
+ {
+     encoder.encode(to_underlying(value));
+ }
++#endif
+ 
+ [[maybe_unused]] static void encode_value(StructuredSerializeDataEncoder& encoder, Bindings::PredefinedColorSpace value)
+ {
+@@ -1000,6 +1010,7 @@ static ErrorOr<void> decode_value(StructuredSerializeDataDecoder& decoder, Bindi
+     return {};
+ }
+ 
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ [[maybe_unused]] static ErrorOr<void> decode_value(StructuredSerializeDataDecoder& decoder, Bindings::KeyType& value)
+ {
+     if (decoder.type() == SerializationType::IPC) {
+@@ -1046,6 +1057,7 @@ static ErrorOr<void> decode_value(StructuredSerializeDataDecoder& decoder, Crypt
+     }
+     return Error::from_string_literal("Unknown structured serialize key type");
+ }
++#endif
+ 
+ [[maybe_unused]] static ErrorOr<void> decode_value(StructuredSerializeDataDecoder& decoder, Bindings::PredefinedColorSpace& value)
+ {
+@@ -1142,13 +1154,17 @@ template WEB_API void StructuredSerializeWriter::encode(Optional<::Crypto::ASN1:
+ template WEB_API void StructuredSerializeWriter::encode(Optional<double> const&);
+ template WEB_API void StructuredSerializeWriter::encode(Span<u8 const> const&);
+ template WEB_API void StructuredSerializeWriter::encode(Bindings::InterfaceName const&);
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ template WEB_API void StructuredSerializeWriter::encode(Bindings::KeyType const&);
+ template WEB_API void StructuredSerializeWriter::encode(Vector<Bindings::KeyUsage> const&);
+ template WEB_API void StructuredSerializeWriter::encode(Bindings::KeyUsage const&);
++#endif
+ template WEB_API void StructuredSerializeWriter::encode(Gfx::AlphaType const&);
+ template WEB_API void StructuredSerializeWriter::encode(Gfx::BitmapFormat const&);
+ template WEB_API void StructuredSerializeWriter::encode(Bindings::PredefinedColorSpace const&);
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ template WEB_API void StructuredSerializeWriter::encode(Crypto::KeyType const&);
++#endif
+ template WEB_API void StructuredSerializeWriter::encode(bool const&);
+ template WEB_API void StructuredSerializeWriter::encode(double const&);
+ template WEB_API void StructuredSerializeWriter::encode(int const&);
+@@ -1168,13 +1184,17 @@ template WEB_API ErrorOr<int> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Optional<::Crypto::ASN1::ObjectIdentifier>> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Optional<double>> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Bindings::InterfaceName> StructuredSerializeReader::decode();
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ template WEB_API ErrorOr<Bindings::KeyType> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Vector<Bindings::KeyUsage>> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Bindings::KeyUsage> StructuredSerializeReader::decode();
++#endif
+ template WEB_API ErrorOr<Gfx::AlphaType> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Gfx::BitmapFormat> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Bindings::PredefinedColorSpace> StructuredSerializeReader::decode();
++#ifndef LIBWEB_PRUNE_SUBTLECRYPTO
+ template WEB_API ErrorOr<Crypto::KeyType> StructuredSerializeReader::decode();
++#endif
+ template WEB_API ErrorOr<bool> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<double> StructuredSerializeReader::decode();
+ template WEB_API ErrorOr<Utf16String> StructuredSerializeReader::decode();

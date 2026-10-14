@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^placeholder ok 255,0,0,255 0,0,255,255 0,0,0,0 w=100 0,128,0,255$">
+<title>placeholder pending</title>
+<style>
+  body { margin: 0; background: #eee; font: 14px sans-serif; }
+  canvas { display: block; margin: 8px; }
+</style>
+</head>
+<body>
+<!-- transferControlToOffscreen: drawing into the OffscreenCanvas reaches its placeholder
+     canvas, which paints it and reads it back; an OffscreenCanvas resized after the transfer resizes
+     its placeholder. The title says what the readbacks saw. -->
+<canvas id="split" width="160" height="80"></canvas>
+<canvas id="resized" width="40" height="40"></canvas>
+<script>
+const split = document.getElementById("split");
+const sctx = split.transferControlToOffscreen().getContext("2d");
+sctx.fillStyle = "rgb(255, 0, 0)";
+sctx.fillRect(0, 0, 80, 80);
+sctx.fillStyle = "rgb(0, 0, 255)";
+sctx.fillRect(80, 0, 60, 80);
+
+const resized = document.getElementById("resized");
+const offscreen = resized.transferControlToOffscreen();
+offscreen.width = 100;
+const rctx = offscreen.getContext("2d");
+rctx.fillStyle = "rgb(0, 128, 0)";
+rctx.fillRect(0, 0, 100, 40);
+
+// A placeholder canvas is read back through its last committed frame.
+function pixel(canvas, x, y) {
+    const probe = document.createElement("canvas");
+    probe.width = canvas.width;
+    probe.height = canvas.height;
+    const pctx = probe.getContext("2d");
+    pctx.drawImage(canvas, 0, 0);
+    return Array.from(pctx.getImageData(x, y, 1, 1).data).join(",");
+}
+
+// The rendering update commits the frames; the resize lands in a task after it.
+requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => {
+    document.title = ["placeholder ok", pixel(split, 20, 40), pixel(split, 100, 40), pixel(split, 150, 40),
+        "w=" + resized.width, pixel(resized, 90, 20)].join(" ");
+}, 0)));
+</script>
+</body>
+</html>

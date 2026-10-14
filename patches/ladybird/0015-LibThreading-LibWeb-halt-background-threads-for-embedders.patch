@@ -1,0 +1,305 @@
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index d77a52506c..f4dac8ebce 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
++#include <AK/Atomic.h>
+ #include <AK/Time.h>
+ #include <AK/kmalloc.h>
+ #include <LibThreading/ThreadPool.h>
+@@ -14,6 +15,9 @@ static constexpr auto THREAD_IDLE_MEMORY_COLLECTION_DELAY = AK::Duration::from_s
+ 
+ namespace Threading {
+ 
++static Atomic<ThreadPool*> s_started_pool;
++static Atomic<bool> s_halt_requested;
++
+ ThreadPool& ThreadPool::the()
+ {
+     static ThreadPool* instance = new ThreadPool;
+@@ -22,6 +26,13 @@ ThreadPool& ThreadPool::the()
+ 
+ ThreadPool::ThreadPool()
+ {
++    // Published before the flag is read, and halt_if_started() sets the flag before it reads this: one of
++    // the two sees the other, so a pool constructed while it runs is still halted.
++    s_started_pool.store(this);
++    if (s_halt_requested.load()) {
++        m_halted = true;
++        return;
++    }
+     for (size_t i = 0; i < THREAD_COUNT; ++i) {
+         auto name = ByteString::formatted("Pool/{}", i);
+         auto thread = Thread::construct(name, [this]() -> intptr_t {
+@@ -43,8 +54,8 @@ intptr_t ThreadPool::worker_thread_func()
+         {
+             MutexLocker locker(m_mutex);
+ 
+-            while (m_work_queue.is_empty()) {
+-                if (collected_since_last_work) {
++            while (m_work_queue.is_empty() || m_halted) {
++                if (collected_since_last_work || m_halted) {
+                     m_condition.wait();
+                 } else if (!m_condition.wait_for(THREAD_IDLE_MEMORY_COLLECTION_DELAY) && m_work_queue.is_empty()) {
+                     should_collect = true;
+@@ -52,8 +63,10 @@ intptr_t ThreadPool::worker_thread_func()
+                 }
+             }
+ 
+-            if (!should_collect)
++            if (!should_collect) {
+                 work = m_work_queue.dequeue();
++                ++m_running;
++            }
+         }
+ 
+         if (should_collect) {
+@@ -64,9 +77,29 @@ intptr_t ThreadPool::worker_thread_func()
+ 
+         collected_since_last_work = false;
+         work();
++        work = {};
++
++        MutexLocker locker(m_mutex);
++        if (--m_running == 0 && m_work_queue.is_empty())
++            m_idle.broadcast();
+     }
+ }
+ 
++void ThreadPool::halt()
++{
++    MutexLocker locker(m_mutex);
++    while (!m_halted && (m_running > 0 || !m_work_queue.is_empty()))
++        m_idle.wait();
++    m_halted = true;
++}
++
++void ThreadPool::halt_if_started()
++{
++    s_halt_requested.store(true);
++    if (auto* pool = s_started_pool.load())
++        pool->halt();
++}
++
+ void ThreadPool::submit(Function<void()> work)
+ {
+     MutexLocker locker(m_mutex);
+diff --git a/Libraries/LibThreading/ThreadPool.h b/Libraries/LibThreading/ThreadPool.h
+index ecc598e9e1..de494e3745 100644
+--- a/Libraries/LibThreading/ThreadPool.h
++++ b/Libraries/LibThreading/ThreadPool.h
+@@ -24,6 +24,16 @@ public:
+ 
+     void submit(Function<void()>);
+ 
++    // Waits until the work submitted before is done, then runs no work submitted after, for the rest of the
++    // process. For an embedder that is done with LibWeb for good, so that no work (an off-thread script compile
++    // posting back to a destroyed event loop) races its teardown or exit()'s static destructors.
++    void halt();
++
++    // halt() for the pool if it was ever started (its first the() call). A pool that never started is not
++    // started just to halt it: it would spawn its worker threads for nothing. A later the() then makes a
++    // pool that starts no threads and runs no work, as halt() would have left it.
++    static void halt_if_started();
++
+ private:
+     ThreadPool();
+ 
+@@ -31,6 +41,9 @@ private:
+ 
+     Mutex m_mutex;
+     ConditionVariable m_condition { m_mutex };
++    ConditionVariable m_idle { m_mutex };
++    size_t m_running { 0 };
++    bool m_halted { false };
+     Queue<Function<void()>> m_work_queue;
+     Vector<NonnullRefPtr<Thread>> m_threads;
+ };
+diff --git a/Libraries/LibWeb/Embedder/StageThreads.cpp b/Libraries/LibWeb/Embedder/StageThreads.cpp
+new file mode 100644
+index 0000000000..300a53289a
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/StageThreads.cpp
+@@ -0,0 +1,17 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibWeb/Embedder/StageThreads.h>
++#include <LibWeb/Layout/TreeBuilderRustFFI.h>
++
++namespace Web::Embedder {
++
++void halt_stage_threads()
++{
++    Layout::RustFFI::stage_threads_halt();
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/StageThreads.h b/Libraries/LibWeb/Embedder/StageThreads.h
+new file mode 100644
+index 0000000000..6d4b6994ec
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/StageThreads.h
+@@ -0,0 +1,19 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Export.h>
++
++namespace Web::Embedder {
++
++// Waits until the jobs handed to the StyleLayout and Paint threads are done, then stops those
++// threads for the rest of the process: no layout or paint runs after it, and anything that waits for
++// one waits forever. For an embedder that is done with LibWeb for good, so that a job still running
++// on a stage thread does not race exit()'s static destructors (Skia's typeface cache among them).
++WEB_API void halt_stage_threads();
++
++}
+diff --git a/Libraries/LibWeb/Rust/src/paint_stage.rs b/Libraries/LibWeb/Rust/src/paint_stage.rs
+index cb0eb9e739..a1aeed6cac 100644
+--- a/Libraries/LibWeb/Rust/src/paint_stage.rs
++++ b/Libraries/LibWeb/Rust/src/paint_stage.rs
+@@ -46,8 +46,9 @@ struct PaintStage {
+     sink: Option<FrameSinkBox>,
+ }
+ 
++static PAINT_THREAD: OnceLock<PaintThread> = OnceLock::new();
++
+ fn the_paint_thread() -> &'static PaintThread {
+-    static PAINT_THREAD: OnceLock<PaintThread> = OnceLock::new();
+     PAINT_THREAD.get_or_init(|| PaintThread {
+         thread: StageThread::spawn("Paint"),
+         stage: StageCell(RefCell::default()),
+@@ -59,6 +60,11 @@ pub(crate) fn paint_thread() -> &'static StageThread {
+     &the_paint_thread().thread
+ }
+ 
++/// The Paint thread, if anything has started it.
++pub(crate) fn paint_thread_if_started() -> Option<&'static StageThread> {
++    PAINT_THREAD.get().map(|paint_thread| &paint_thread.thread)
++}
++
+ /// A reference to a `Web::Compositor::CompositorFrameSink`, which only the Paint stage holds. The pointer makes it
+ /// neither [`Send`] nor [`Sync`]: it never leaves the Paint thread.
+ struct FrameSinkBox(NonNull<c_void>);
+diff --git a/Libraries/LibWeb/Rust/src/stage_thread.rs b/Libraries/LibWeb/Rust/src/stage_thread.rs
+index e738162d55..7e20f1bc5f 100644
+--- a/Libraries/LibWeb/Rust/src/stage_thread.rs
++++ b/Libraries/LibWeb/Rust/src/stage_thread.rs
+@@ -70,6 +70,8 @@ struct Shared {
+     /// The jobs handed to the thread and not taken yet, the last one handed first, each linked to the one handed
+     /// before it.
+     handed: AtomicPtr<JobHeader>,
++    /// Whether the thread was halted: it runs no job handed after the one that halted it.
++    halted: AtomicBool,
+     /// What names the thread to ThreadSanitizer, which sees the ordering the hand-off gives only through it.
+     tsan_key: AtomicBool,
+ }
+@@ -102,6 +104,7 @@ impl StageThread {
+     pub(crate) fn spawn(name: &str) -> Self {
+         let shared: &'static Shared = Box::leak(Box::new(Shared {
+             handed: AtomicPtr::new(std::ptr::null_mut()),
++            halted: AtomicBool::new(false),
+             tsan_key: AtomicBool::new(false),
+         }));
+         let spawned = std::thread::Builder::new()
+@@ -123,6 +126,13 @@ impl StageThread {
+                             next = job.as_ref().next.get();
+                             (job.as_ref().run)(job, &shared.tsan_key);
+                         }
++                        if shared.halted.load(Ordering::Acquire) {
++                            // The jobs handed after the halt never run, and what they own is never dropped: the
++                            // process is on its way out, and its static destructors must not race this thread.
++                            loop {
++                                std::thread::park();
++                            }
++                        }
+                     }
+                 }
+             })
+@@ -133,6 +143,18 @@ impl StageThread {
+         }
+     }
+ 
++    /// Halts this thread for the rest of the process: the calling thread waits until the jobs handed to it before are
++    /// done, and no job handed after runs. Whoever then waits for this thread waits forever, so only an embedder
++    /// that is done with LibWeb for good halts it, before `exit()` runs the static destructors (Skia's typeface
++    /// cache among them) that a job still running here would read.
++    pub(crate) fn halt(&self) {
++        if self.is_current() || self.shared.halted.load(Ordering::Acquire) {
++            return;
++        }
++        let shared = self.shared;
++        self.run(move || shared.halted.store(true, Ordering::Release));
++    }
++
+     /// Whether the calling thread is this one.
+     pub(crate) fn is_current(&self) -> bool {
+         std::thread::current().id() == self.thread.id()
+@@ -683,6 +705,19 @@ fn wait_for<T>(mut ready: impl FnMut() -> Option<T>) -> T {
+ 
+ static STYLE_LAYOUT_THREAD: OnceLock<StageThread> = OnceLock::new();
+ 
++/// Halts the stage threads that were started: the StyleLayout thread first, as its jobs may wait for the Paint
++/// thread's, then the Paint thread, once the jobs handed to it before (by the StyleLayout thread too) are done. For
++/// embedders that are done with LibWeb for good: no layout or paint runs after it. See [`StageThread::halt`].
++#[unsafe(no_mangle)]
++pub extern "C" fn stage_threads_halt() {
++    if let Some(thread) = STYLE_LAYOUT_THREAD.get() {
++        thread.halt();
++    }
++    if let Some(thread) = crate::paint_stage::paint_thread_if_started() {
++        thread.halt();
++    }
++}
++
+ /// The StyleLayout thread, which every document's render state lives on.
+ pub(crate) fn style_layout_thread() -> &'static StageThread {
+     STYLE_LAYOUT_THREAD.get_or_init(|| StageThread::spawn("StyleLayout"))
+@@ -710,6 +745,24 @@ mod tests {
+         type JoinRight = ();
+     }
+ 
++    #[test]
++    fn a_halted_thread_runs_the_jobs_handed_before_and_none_after() {
++        static RAN: AtomicUsize = AtomicUsize::new(0);
++        let thread = StageThread::spawn("Halted");
++        thread.post(|| {
++            RAN.fetch_add(1, Ordering::Relaxed);
++        });
++        thread.halt();
++        assert_eq!(RAN.load(Ordering::Relaxed), 1);
++        thread.post(|| {
++            RAN.fetch_add(1, Ordering::Relaxed);
++        });
++        // A second halt answers at once, and the job handed after the first never runs.
++        thread.halt();
++        std::thread::sleep(std::time::Duration::from_millis(20));
++        assert_eq!(RAN.load(Ordering::Relaxed), 1);
++    }
++
+     #[test]
+     fn a_job_runs_on_the_stage_thread() {
+         assert_eq!(
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -282,6 +282,7 @@
+     DOM/DocumentLoadEventDelayer.cpp
+     DOM/DocumentLoading.cpp
+     Embedder/InPlaceLoad.cpp
++    Embedder/StageThreads.cpp
+     DOM/DocumentObserver.cpp
+     DOM/DocumentType.cpp
+     DOM/DOMEventListener.cpp

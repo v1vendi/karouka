@@ -1,0 +1,592 @@
+diff --git a/Libraries/LibWeb/CSS/StyleEngineInput.cpp b/Libraries/LibWeb/CSS/StyleEngineInput.cpp
+index aafbc1a133..af52e5e63d 100644
+--- a/Libraries/LibWeb/CSS/StyleEngineInput.cpp
++++ b/Libraries/LibWeb/CSS/StyleEngineInput.cpp
+@@ -56,8 +56,12 @@
+ #include <LibWeb/SVG/SVGSwitchElement.h>
+ #include <LibWeb/StyleValueRustFFI.h>
+ 
++// Not in the generated header, so that adding it rebuilt only this file (see lazy_user_agent_rules.rs).
++extern "C" void karouka_style_engine_take_user_agent_rules_for_arrivals(Web::Layout::RustFFI::DocumentHost const*, FlatPtr const* names, size_t count, FlatPtr const* attribute_names, size_t attribute_count, void* context, void (*publish)(void*, u32, u64));
++
+ namespace Web::CSS {
+ 
++static void publish_user_agent_rules_for_arrivals(DOM::Document&, ReadonlySpan<FlatPtr> names, ReadonlySpan<Utf16FlyString> attribute_names);
+ static void record_element_heading_level(DOM::Element&);
+ static void record_element_initial_features(DOM::Element&);
+ static void record_element_inline_style_properties(DOM::Element&);
+@@ -442,6 +446,10 @@ static void record_subtree_arrivals(DOM::Document& document, ReadonlySpan<GC::Re
+     // answered. An element taken in with the slot names the slot in its own arrival instead, so only the elements
+     // that had an identity before this take-in are collected.
+     Vector<GC::Ref<DOM::Element>> slottables_identified_earlier;
++    // The user-agent rules an element of a name that has not arrived before, or an element with an attribute no element
++    // has had before, can match are published as it arrives.
++    Vector<FlatPtr, 64> arrived_names;
++    Vector<Utf16FlyString, 64> arrived_attribute_names;
+     size_t element_count = 0;
+     auto collect = [&](DOM::Node& node, TreeScopeID tree_scope) {
+         node.set_style_arrival_pending(false);
+@@ -449,6 +457,10 @@ static void record_subtree_arrivals(DOM::Document& document, ReadonlySpan<GC::Re
+         if (auto* element = as_if<DOM::Element>(node); element && element->style_node_id() == no_style_node) {
+             arrivals.append({ *element, tree_scope });
+             dom_order_arrivals.append(*element);
++            arrived_names.append(element->lowercased_local_name().raw_identity());
++            element->for_each_attribute([&](DOM::QualifiedName const& name, Utf16String const&) {
++                arrived_attribute_names.append(name.local_name().to_ascii_lowercase());
++            });
+             ++element_count;
+             if (auto* slot = as_if<HTML::HTMLSlotElement>(*element)) {
+                 for (auto const& slottable : slot->assigned_nodes_internal()) {
+@@ -518,6 +530,9 @@ static void record_subtree_arrivals(DOM::Document& document, ReadonlySpan<GC::Re
+             record_element_assigned_slot_changed(slottable, nullptr);
+     }
+ 
++    if (!arrived_names.is_empty())
++        publish_user_agent_rules_for_arrivals(document, arrived_names, arrived_attribute_names);
++
+     if (dom_order_arrivals.is_empty())
+         return;
+     Vector<u32, 192> links;
+@@ -1933,6 +1948,48 @@ static void compile_rules_into(RuleCompilationContext const& context, StyleSheet
+         publish_layer_order_for_sheet(sheet, *context.document);
+ }
+ 
++// A whole user-agent sheet's compilation keeps back each style rule that can match only elements of names that have
++// not arrived in the document, or only elements with an attribute none has had, and the first element of one of its
++// names to arrive, or the first such attribute to arrive or appear, is what publishes it, into the place it holds in its
++// sheet, as an inserted rule is. Every element arrives here before it is styled, and every attribute that appears later
++// is published from record_element_attribute_changed() before the change is, so no element is styled without the
++// rules that can match it.
++static void publish_user_agent_rules_for_arrivals(DOM::Document& document, ReadonlySpan<FlatPtr> names, ReadonlySpan<Utf16FlyString> attribute_names)
++{
++    auto& style_computer = document.style_computer();
++    auto& style_engine = style_computer.style_engine();
++    struct KeptBackRule {
++        u32 sheet_number;
++        u64 identity;
++    };
++    Vector<FlatPtr, 64> attribute_identities;
++    attribute_identities.ensure_capacity(attribute_names.size());
++    for (auto const& name : attribute_names)
++        attribute_identities.unchecked_append(name.raw_identity());
++    Vector<KeptBackRule> rules;
++    karouka_style_engine_take_user_agent_rules_for_arrivals(style_engine.host(), names.data(), names.size(), attribute_identities.data(), attribute_identities.size(), &rules, [](void* context, u32 sheet, u64 identity) {
++        static_cast<Vector<KeptBackRule>*>(context)->append({ sheet, identity });
++    });
++    for (auto const& [sheet_number, identity] : rules) {
++        // A rule kept back for a sheet the document no longer holds is dropped with it.
++        StyleComputer::NonAuthorStyleSheet const* entry = nullptr;
++        for (auto const& candidate : style_computer.non_author_style_sheets()) {
++            if (candidate.sheet_id.value() == sheet_number && candidate.sheet)
++                entry = &candidate;
++        }
++        if (!entry)
++            continue;
++        RuleCompilationContext context {
++            style_engine,
++            entry->sheet_id,
++            StyleEngineFFI::style_engine_native_rule_successor(style_engine.host(), sheet_number, entry->sheet->native_sheet().handle(), identity),
++            document,
++            style_computer
++        };
++        compile_rules_into(context, *entry->sheet, identity);
++    }
++}
++
+ // The sheet a rule's compiled rules belong to. An imported sheet's rules cascade in the importing
+ // sheet's program, so the handle to compile into is the outermost sheet's. A constructed sheet is
+ // always its own engine sheet: its ids are held per adopting document, so its raw id member being 0
+@@ -2600,6 +2657,12 @@ void record_element_attribute_changed(DOM::Element& element, Utf16FlyString cons
+     if (!old_value.has_value() && !new_value.has_value())
+         return;
+ 
++    // The user-agent rules only an element with this attribute can match are published before the attribute is.
++    if (!old_value.has_value()) {
++        Utf16FlyString lowercase_name = name.to_ascii_lowercase();
++        publish_user_agent_rules_for_arrivals(element.document(), {}, { &lowercase_name, 1 });
++    }
++
+     // These two are what a heading level counts, and they answer for every heading beneath them.
+     if (name == HTML::AttributeNames::headingoffset || name == HTML::AttributeNames::headingreset)
+         record_heading_levels_in_subtree(element);
+diff --git a/Libraries/LibWeb/Rust/src/css/rule/compilation.rs b/Libraries/LibWeb/Rust/src/css/rule/compilation.rs
+index 2a795ed01f..9b80bca953 100644
+--- a/Libraries/LibWeb/Rust/src/css/rule/compilation.rs
++++ b/Libraries/LibWeb/Rust/src/css/rule/compilation.rs
+@@ -170,9 +170,14 @@ unsafe fn visit_rule(
+     publication: Option<&Publisher<'_>>,
+ ) {
+     let selectors = publication.and_then(|_| unsafe { context.selectors.matching_selectors(rule) });
+-    let result = publication.map_or_else(NativeCompilationResult::default, |publication| {
+-        publication.compile(rule, sheet, context, selectors.as_ref())
+-    });
++    let result = match publication {
++        None => NativeCompilationResult::default(),
++        Some(publication) => match publication.compile(rule, sheet, context, selectors.as_ref()) {
++            Some(result) => result,
++            // Kept back with its subtree, which is compiled with it once it is published.
++            None => return,
++        },
++    };
+     if !unsafe {
+         (callbacks.visit_rule)(
+             callbacks.context,
+@@ -315,7 +320,10 @@ pub unsafe extern "C" fn rust_style_sheet_compile(
+     publication: &NativeStylePublication,
+ ) {
+     // SAFETY: Guaranteed by the caller.
+-    let publisher = unsafe { Publisher::new(publication) };
++    let mut publisher = unsafe { Publisher::new(publication) };
++    if rule_identity == 0 {
++        publisher.defer_user_agent_rules();
++    }
+     unsafe {
+         visit_compilation(
+             sheet,
+diff --git a/Libraries/LibWeb/Rust/src/css/rule/compilation/publication.rs b/Libraries/LibWeb/Rust/src/css/rule/compilation/publication.rs
+index 810a1caab7..80930be7fd 100644
+--- a/Libraries/LibWeb/Rust/src/css/rule/compilation/publication.rs
++++ b/Libraries/LibWeb/Rust/src/css/rule/compilation/publication.rs
+@@ -144,6 +144,9 @@ pub(super) struct Publisher<'a> {
+     rules: RefCell<Vec<CompiledRule>>,
+     /// The native sheet the last rule came from, by identity, and the namespaces it declares.
+     namespaces: RefCell<Option<(u64, Option<Arc<NamespaceTexts>>)>>,
++    /// Whether a style rule that can match only elements of names that have not arrived is kept
++    /// back (see [`crate::css::style::lazy_user_agent_rules`]): a whole user-agent sheet's rules.
++    defers_user_agent_rules: bool,
+ }
+ 
+ impl<'a> Publisher<'a> {
+@@ -158,9 +161,20 @@ impl<'a> Publisher<'a> {
+             before: publication.before,
+             rules: RefCell::default(),
+             namespaces: RefCell::default(),
++            defers_user_agent_rules: false,
+         }
+     }
+ 
++    /// Keeps back the style rules of a user-agent sheet that can match only elements of names that
++    /// have not arrived, where this publisher's sheet is one.
++    pub(super) fn defer_user_agent_rules(&mut self) {
++        self.defers_user_agent_rules = self
++            .host
++            .published_rules()
++            .lazy_user_agent_rules()
++            .defers_rules_of(self.sheet);
++    }
++
+     pub(super) fn host(&self) -> &'a DocumentHost {
+         self.host
+     }
+@@ -177,6 +191,7 @@ impl<'a> Publisher<'a> {
+             before,
+             rules: RefCell::default(),
+             namespaces: RefCell::default(),
++            defers_user_agent_rules: false,
+         }
+     }
+ 
+@@ -225,19 +240,31 @@ impl<'a> Publisher<'a> {
+     }
+ 
+     /// Compiles `rule`, of `source`, into the rules the compilation publishes, where it is a rule the engine has, and
+-    /// answers whether it is one and whether it declares transitions.
++    /// answers whether it is one and whether it declares transitions, or `None` where the rule and its subtree are kept
++    /// back until an element they can match arrives.
+     pub(super) fn compile(
+         &self,
+         rule: RuleRef<'_>,
+         source: &NativeStyleSheet,
+         context: &CompilationContext,
+         selectors: Option<&Arc<RustParsedSelectorList>>,
+-    ) -> NativeCompilationResult {
++    ) -> Option<NativeCompilationResult> {
+         let kind = match rule.rule_type() {
+             NativeRuleType::Style | NativeRuleType::NestedDeclarations => {
+                 let selectors = selectors.unwrap();
+                 if selectors.selectors.is_empty() {
+-                    return NativeCompilationResult::default();
++                    return Some(NativeCompilationResult::default());
++                }
++                if self.defers_user_agent_rules
++                    && rule.rule_type() == NativeRuleType::Style
++                    && context.scopes.is_empty()
++                    && self
++                        .host
++                        .published_rules()
++                        .lazy_user_agent_rules()
++                        .defer(self.sheet, rule.identity(), selectors)
++                {
++                    return None;
+                 }
+                 CompiledRuleKind::Style {
+                     selectors: BoundSelectors {
+@@ -259,7 +286,7 @@ impl<'a> Publisher<'a> {
+                 kind: RuleKind::Keyframes,
+                 name: rule.definition_name().unwrap().units().into(),
+             },
+-            _ => return NativeCompilationResult::default(),
++            _ => return Some(NativeCompilationResult::default()),
+         };
+         let declarations = rule.cascade_declarations();
+         let declares_transitions = matches!(kind, CompiledRuleKind::Style { .. })
+@@ -293,9 +320,9 @@ impl<'a> Publisher<'a> {
+                 })
+                 .collect(),
+         });
+-        NativeCompilationResult {
++        Some(NativeCompilationResult {
+             published: true,
+             declares_transitions,
+-        }
++        })
+     }
+ }
+diff --git a/Libraries/LibWeb/Rust/src/css/style/lazy_user_agent_rules.rs b/Libraries/LibWeb/Rust/src/css/style/lazy_user_agent_rules.rs
+new file mode 100644
+index 0000000000..7bcedf50c3
+--- /dev/null
++++ b/Libraries/LibWeb/Rust/src/css/style/lazy_user_agent_rules.rs
+@@ -0,0 +1,287 @@
++/*
++ * Copyright (c) 2026-present, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++//! A user-agent style rule whose every selector's subject compound requires something an element
++//! can only have once the document holds it matches nothing until that has happened. The
++//! requirements are triggers of two kinds:
++//!
++//! - an element type: a type selector, `:is()` or `:where()` of such selectors, `:heading` (h1-h6),
++//!   the link pseudo-classes (a and area), `:autofill` (input, select and textarea) or the
++//!   `::file-selector-button` of an input;
++//! - an attribute: an attribute selector, or `:popover-open`, which only an element with a
++//!   `popover` attribute matches.
++//!
++//! Most of them name elements or attributes a document never holds (an empty page has html, head
++//! and body and no attributes), so a document publishes such a rule only once one of its triggers
++//! has happened: before that, its selector program, dispatch entries and declarations cost the
++//! engine memory and every rebuild of the user-agent scope's dispatch time, and decide nothing.
++//!
++//! The host notes the ASCII-lowercase local name of every element that arrives in its style engine
++//! and of every attribute it arrives with (`record_subtree_arrivals`), and of every attribute that
++//! appears on an element that has arrived (`record_element_attribute_changed`). A whole-sheet
++//! compilation of a user-agent sheet publishes a rule none of whose triggers has happened yet as
++//! nothing, and keeps it under each of its triggers. When one of them happens, the host compiles
++//! the rule into its place in the sheet, the way an inserted CSSOM rule is compiled, and the engine
++//! invalidates for it as for one.
++
++use crate::css::retained_fly_string::RetainedUtf16FlyString;
++use crate::css::selector::{
++    Combinator, CompiledSelector, CompoundSelector, PseudoClassType, PseudoElementType, SimpleSelector,
++};
++use crate::css::selector_parser::RustParsedSelectorList;
++use crate::css::style::engine_calls::document_host;
++use crate::fast_hash::FastMap;
++use crate::render_state::DocumentHost;
++use std::cell::RefCell;
++use std::ffi::c_void;
++use std::sync::Arc;
++
++/// What has to happen in a document before a kept-back rule can match: an element of a lowercase
++/// local name arrives, or an attribute of a lowercase local name appears on an element, by raw
++/// fly-string identity.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++enum Trigger {
++    Element(usize),
++    Attribute(usize),
++}
++
++#[derive(Default)]
++struct State {
++    /// The host's numbers of the sheets that cascade in the user-agent origin.
++    user_agent_sheets: Vec<u32>,
++    /// The triggers that have happened. The names are retained, so no identity here is ever given
++    /// to another name.
++    happened: FastMap<Trigger, RetainedUtf16FlyString>,
++    /// The rules kept back, by each trigger of theirs: the sheet and native identity, and the name
++    /// that keeps the trigger's identity alive.
++    deferred: FastMap<Trigger, (RetainedUtf16FlyString, Vec<(u32, u64)>)>,
++}
++
++/// What a document host keeps of the user-agent rules it has not published yet.
++#[derive(Default)]
++pub(crate) struct LazyUserAgentRules {
++    state: RefCell<State>,
++}
++
++impl LazyUserAgentRules {
++    /// Notes that the host numbered a sheet of the user-agent origin `sheet`.
++    pub(crate) fn note_user_agent_sheet(&self, sheet: u32) {
++        self.state.borrow_mut().user_agent_sheets.push(sheet);
++    }
++
++    /// Whether a whole-sheet compilation of `sheet` may keep rules back.
++    pub(crate) fn defers_rules_of(&self, sheet: u32) -> bool {
++        self.state.borrow().user_agent_sheets.contains(&sheet)
++    }
++
++    /// Keeps the rule `identity` of `sheet`, whose selectors are `selectors`, back until one of its
++    /// triggers happens, and answers whether it did. A rule some selector of which has no trigger
++    /// in its subject compound, or one of whose triggers has happened, is published.
++    pub(crate) fn defer(&self, sheet: u32, identity: u64, selectors: &RustParsedSelectorList) -> bool {
++        let Some(triggers) = subject_triggers(selectors) else {
++            return false;
++        };
++        let mut state = self.state.borrow_mut();
++        if triggers
++            .iter()
++            .any(|(trigger, _)| state.happened.contains_key(trigger))
++        {
++            return false;
++        }
++        for (trigger, name) in triggers {
++            let (_, rules) = state
++                .deferred
++                .entry(trigger)
++                .or_insert_with(|| (name, Vec::new()));
++            if !rules.contains(&(sheet, identity)) {
++                rules.push((sheet, identity));
++            }
++        }
++        true
++    }
++
++    /// Notes that the triggers `triggers` happened, and answers the rules kept back for the ones
++    /// that had not happened before, in no particular order and each once, leaving out the rules
++    /// the host has published since.
++    ///
++    /// # Safety
++    /// The raw identity in each trigger must be a live fly string.
++    unsafe fn take_for(&self, host: &DocumentHost, triggers: impl Iterator<Item = Trigger>) -> Vec<(u32, u64)> {
++        let mut state = self.state.borrow_mut();
++        let mut taken = Vec::new();
++        for trigger in triggers {
++            let (Trigger::Element(raw) | Trigger::Attribute(raw)) = trigger;
++            if raw == 0 || state.happened.contains_key(&trigger) {
++                continue;
++            }
++            // SAFETY: Guaranteed by the caller; this retains the identity.
++            state
++                .happened
++                .insert(trigger, unsafe { RetainedUtf16FlyString::from_borrowed_raw(raw) });
++            if let Some((_, rules)) = state.deferred.remove(&trigger) {
++                taken.extend(rules);
++            }
++        }
++        if taken.is_empty() {
++            return taken;
++        }
++        taken.sort_unstable();
++        taken.dedup();
++        let published = host.published_rules();
++        taken.retain(|&(sheet, identity)| !published.contains(sheet, identity));
++        taken
++    }
++}
++
++fn retained_name(name: &str) -> RetainedUtf16FlyString {
++    RetainedUtf16FlyString::from_utf16(&name.encode_utf16().collect::<Vec<_>>())
++}
++
++fn add_element_names(names: &[&str], triggers: &mut Vec<(Trigger, RetainedUtf16FlyString)>) {
++    triggers.extend(names.iter().map(|name| {
++        let name = retained_name(name);
++        (Trigger::Element(name.raw()), name)
++    }));
++}
++
++/// The triggers of the subject compounds of `selectors`: an element any of them matches has one of
++/// these names or attributes. None where some selector's subject compound has none.
++fn subject_triggers(selectors: &RustParsedSelectorList) -> Option<Vec<(Trigger, RetainedUtf16FlyString)>> {
++    let mut triggers = Vec::new();
++    selector_list_triggers(&selectors.selectors, &mut triggers).then_some(triggers)
++}
++
++fn selector_list_triggers(
++    selectors: &[Arc<CompiledSelector>],
++    triggers: &mut Vec<(Trigger, RetainedUtf16FlyString)>,
++) -> bool {
++    !selectors.is_empty()
++        && selectors.iter().all(|selector| {
++            // A pseudo-element's compounds follow the compound of the element it belongs to.
++            let Some(subject) = selector
++                .compound_selectors
++                .iter()
++                .rev()
++                .find(|compound| compound.combinator != Combinator::PseudoElement)
++            else {
++                return false;
++            };
++            if compound_triggers(subject, triggers) {
++                return true;
++            }
++            // Only an input has a file selector button, in its shadow tree, which arrives with or after it.
++            if selector.target_pseudo_element == Some(PseudoElementType::FileSelectorButton) {
++                add_element_names(&["input"], triggers);
++                return true;
++            }
++            false
++        })
++}
++
++/// Adds the triggers of `compound`, answering whether it has any. One requirement of a compound is
++/// enough: an element that matches it meets them all. A type selector is preferred, then an
++/// attribute selector, then the pseudo-classes only some elements can match.
++fn compound_triggers(compound: &CompoundSelector, triggers: &mut Vec<(Trigger, RetainedUtf16FlyString)>) -> bool {
++    for simple in &compound.simple_selectors {
++        if let SimpleSelector::TagName(name) = simple
++            && let Some(raw) = name.lowercase_name.optional_raw()
++        {
++            triggers.push((Trigger::Element(raw), name.lowercase_name.clone()));
++            return true;
++        }
++    }
++    for simple in &compound.simple_selectors {
++        // Every attribute selector requires the attribute, whatever it asks of its value.
++        if let SimpleSelector::Attribute(attribute) = simple
++            && let Some(raw) = attribute.qualified_name.lowercase_name.optional_raw()
++        {
++            triggers.push((Trigger::Attribute(raw), attribute.qualified_name.lowercase_name.clone()));
++            return true;
++        }
++    }
++    compound.simple_selectors.iter().any(|simple| {
++        let SimpleSelector::PseudoClass(pseudo_class) = simple else {
++            return false;
++        };
++        match pseudo_class.pseudo_class {
++            PseudoClassType::Is | PseudoClassType::Where => {
++                let mut arguments = Vec::new();
++                let required = selector_list_triggers(&pseudo_class.argument_selector_list, &mut arguments);
++                if required {
++                    triggers.extend(arguments);
++                }
++                required
++            }
++            // Only the HTML heading elements, whose heading level is the fact it reads.
++            PseudoClassType::Heading => {
++                add_element_names(&["h1", "h2", "h3", "h4", "h5", "h6"], triggers);
++                true
++            }
++            // Only a, area and SVG a elements with an href are links (`Element::matches_link_pseudo_class`).
++            PseudoClassType::AnyLink
++            | PseudoClassType::Link
++            | PseudoClassType::LocalLink
++            | PseudoClassType::Visited => {
++                add_element_names(&["a", "area"], triggers);
++                true
++            }
++            // Only form controls autofill.
++            PseudoClassType::Autofill => {
++                add_element_names(&["input", "select", "textarea"], triggers);
++                true
++            }
++            // Only an element with a popover attribute is an open popover.
++            PseudoClassType::PopoverOpen => {
++                let name = retained_name("popover");
++                triggers.push((Trigger::Attribute(name.raw()), name));
++                true
++            }
++            _ => false,
++        }
++    })
++}
++
++/// Notes the arrival in the style engine of elements of the ASCII-lowercase local names `names`
++/// and the appearance on elements that have arrived of attributes of the ASCII-lowercase local
++/// names `attribute_names` (raw `Utf16FlyString` identities), and calls `publish` with the host's
++/// sheet number and the native identity of each user-agent rule kept back for one of them, which
++/// the host compiles.
++///
++/// # Safety
++/// `host` must be a live document host, on its document's thread. `names` and `attribute_names`
++/// must point at `count` and `attribute_count` live fly-string identities. `publish` must not reach
++/// this document's lazy rules.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn karouka_style_engine_take_user_agent_rules_for_arrivals(
++    host: *const DocumentHost,
++    names: *const usize,
++    count: usize,
++    attribute_names: *const usize,
++    attribute_count: usize,
++    context: *mut c_void,
++    publish: unsafe extern "C" fn(*mut c_void, u32, u64),
++) {
++    // SAFETY: Guaranteed by the caller.
++    let host = unsafe { document_host(host) };
++    let slice = |pointer: *const usize, count: usize| {
++        if count == 0 {
++            &[][..]
++        } else {
++            // SAFETY: Guaranteed by the caller.
++            unsafe { std::slice::from_raw_parts(pointer, count) }
++        }
++    };
++    let triggers = slice(names, count)
++        .iter()
++        .map(|&raw| Trigger::Element(raw))
++        .chain(slice(attribute_names, attribute_count).iter().map(|&raw| Trigger::Attribute(raw)));
++    // SAFETY: Guaranteed by the caller.
++    let taken = unsafe { host.published_rules().lazy_user_agent_rules().take_for(host, triggers) };
++    for (sheet, identity) in taken {
++        // SAFETY: Guaranteed by the caller.
++        unsafe { publish(context, sheet, identity) };
++    }
++}
+diff --git a/Libraries/LibWeb/Rust/src/css/style/mod.rs b/Libraries/LibWeb/Rust/src/css/style/mod.rs
+index 016539cc93..6070c7a6d3 100644
+--- a/Libraries/LibWeb/Rust/src/css/style/mod.rs
++++ b/Libraries/LibWeb/Rust/src/css/style/mod.rs
+@@ -104,6 +104,7 @@ pub(crate) use inputs::next_declaration_block_version;
+ pub mod instrumentation;
+ mod intern_table;
+ pub(crate) mod layout_style;
++pub(crate) mod lazy_user_agent_rules;
+ mod matching;
+ pub mod memory;
+ mod native_rules;
+diff --git a/Libraries/LibWeb/Rust/src/css/style/rule_writes.rs b/Libraries/LibWeb/Rust/src/css/style/rule_writes.rs
+index aa2c55e22f..84cd3843f6 100644
+--- a/Libraries/LibWeb/Rust/src/css/style/rule_writes.rs
++++ b/Libraries/LibWeb/Rust/src/css/style/rule_writes.rs
+@@ -16,6 +16,7 @@ use super::bridge::{
+     publish_style_rule_selectors, publish_user_agent_style_rule,
+ };
+ use super::compiler::NamespaceScope;
++use super::lazy_user_agent_rules::LazyUserAgentRules;
+ use super::program::{CascadeLayerID, RuleID, RuleKind, SheetID, StyleSheetObjectID};
+ use super::tree::TreeScopeID;
+ use crate::css::container_conditions::ContainerConditionsData;
+@@ -37,6 +38,8 @@ const IDENTITIES_PER_WORD: u64 = u128::BITS as u64;
+ pub(crate) struct PublishedRules {
+     /// The identities each sheet holds, by the sheet's number less one, as one bit per identity.
+     sheets: RefCell<Vec<FastMap<u64, u128>>>,
++    /// The user-agent rules the host has kept back until an element they can match arrives.
++    lazy_user_agent_rules: LazyUserAgentRules,
+ }
+ 
+ impl PublishedRules {
+@@ -47,6 +50,11 @@ impl PublishedRules {
+         u32::try_from(sheets.len()).expect("sheet identity space exhausted")
+     }
+ 
++    /// The user-agent rules the host has kept back until an element they can match arrives.
++    pub(crate) fn lazy_user_agent_rules(&self) -> &LazyUserAgentRules {
++        &self.lazy_user_agent_rules
++    }
++
+     /// Whether the host published the rule `identity` to the sheet `sheet`.
+     pub(crate) fn contains(&self, sheet: u32, identity: u64) -> bool {
+         let sheets = self.sheets.borrow();
+@@ -398,6 +406,9 @@ pub unsafe extern "C" fn style_engine_add_sheet(
+     origin: FfiCascadeOrigin,
+ ) -> u32 {
+     let sheet = host.published_rules().mint_sheet();
++    if origin == FfiCascadeOrigin::UserAgent {
++        host.published_rules().lazy_user_agent_rules().note_user_agent_sheet(sheet);
++    }
+     host.write_rules(RuleWrite::AddSheet { sheet, object, origin });
+     sheet
+ }

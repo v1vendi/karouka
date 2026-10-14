@@ -1,0 +1,93 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibThreading: collect idle pool threads on request
+
+A pool thread collects its kmalloc heaps only after it has waited
+THREAD_IDLE_MEMORY_COLLECTION_DELAY (1 s) for work. With a mimalloc
+purge delay, the spans a thread frees are purged only when that thread
+next allocates, frees or collects, so the pages a pool thread freed on
+its last job (a stylesheet parse, a script compile) stay committed and
+dirty for that second, or until the process ends.
+
+ThreadPool::collect_idle_threads() has every idle thread collect now
+and a busy one as soon as it runs out of work, once per call, for an
+embedder whose host has gone idle. It returns right away and does not
+start a pool that never started.
+---
+diff --git a/Libraries/LibThreading/ThreadPool.cpp b/Libraries/LibThreading/ThreadPool.cpp
+index b7144bae08..81cc746ac2 100644
+--- a/Libraries/LibThreading/ThreadPool.cpp
++++ b/Libraries/LibThreading/ThreadPool.cpp
+@@ -58,6 +58,12 @@ void ThreadPool::start_thread_if_needed()
+ intptr_t ThreadPool::worker_thread_func()
+ {
+     bool collected_since_last_work = false;
++    u64 collect_generation_seen = 0;
++    {
++        // A thread starts with nothing to collect.
++        MutexLocker locker(m_mutex);
++        collect_generation_seen = m_collect_generation;
++    }
+ 
+     while (true) {
+         Function<void()> work;
+@@ -66,7 +72,14 @@ intptr_t ThreadPool::worker_thread_func()
+             MutexLocker locker(m_mutex);
+ 
+             while (m_work_queue.is_empty() || m_halted) {
+-                if (m_halted) {
++                if (!m_halted && collect_generation_seen != m_collect_generation) {
++                    // collect_idle_threads(): once per request, and not again right after a collection.
++                    collect_generation_seen = m_collect_generation;
++                    if (!collected_since_last_work) {
++                        should_collect = true;
++                        break;
++                    }
++                } else if (m_halted) {
+                     // A halted pool keeps its threads: none exits while the embedder tears down.
+                     m_condition.wait();
+                 } else if (!collected_since_last_work) {
+@@ -145,6 +158,18 @@ void ThreadPool::halt_if_started()
+         pool->halt();
+ }
+ 
++void ThreadPool::collect_idle_threads()
++{
++    auto* pool = s_started_pool.load();
++    if (!pool)
++        return;
++    MutexLocker locker(pool->m_mutex);
++    if (pool->m_halted)
++        return;
++    ++pool->m_collect_generation;
++    pool->m_condition.broadcast();
++}
++
+ void ThreadPool::submit(Function<void()> work)
+ {
+     MutexLocker locker(m_mutex);
+diff --git a/Libraries/LibThreading/ThreadPool.h b/Libraries/LibThreading/ThreadPool.h
+index 155ac08ff5..28ed11bbe4 100644
+--- a/Libraries/LibThreading/ThreadPool.h
++++ b/Libraries/LibThreading/ThreadPool.h
+@@ -45,6 +45,12 @@ public:
+     // halt() would have left it.
+     static void halt_if_started();
+ 
++    // Has each idle pool thread collect its kmalloc heaps (ak_kmalloc_collect) now instead of after
++    // THREAD_IDLE_MEMORY_COLLECTION_DELAY, and a busy one as soon as it runs out of work. For an embedder whose host
++    // has gone idle: with a mimalloc purge delay, the pages a thread frees stay committed until that thread
++    // allocates, frees or collects again. Returns right away; a pool that never started is not started for it.
++    static void collect_idle_threads();
++
+ private:
+     ThreadPool();
+ 
+@@ -61,6 +67,8 @@ private:
+     size_t m_running { 0 };
+     size_t m_idle_threads { 0 };
+     bool m_halted { false };
++    // Bumped by collect_idle_threads(); each thread collects once when it sees a value it has not seen.
++    u64 m_collect_generation { 0 };
+     Queue<Function<void()>> m_work_queue;
+     // The threads that take work, and the ones that retired after idling but are not joined yet.
+     Vector<NonnullRefPtr<Thread>> m_threads;

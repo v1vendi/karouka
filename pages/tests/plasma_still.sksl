@@ -1,0 +1,25 @@
+// plasma.sksl (copied from css-shader-image's shaders/) with uTime taken out, so shader_plasma.html can
+// render it before uTime is supplied: t is speed * 0, a still frame. speed stays declared so the page passes
+// the same arguments as the original.
+uniform float2 uSize;
+
+uniform float  speed;   // --speed : animation rate multiplier (no time, so it changes nothing)
+uniform float  scale;   // --scale : number of wave periods across the tile
+uniform half4  tint;    // --tint  : unpremultiplied RGBA from a CSS <color>
+
+half4 main(float2 coord) {
+    float2 uv = coord / uSize;          // 0..1 across the tile
+    float  t  = 0.0 * speed;
+
+    float v = sin(uv.x * scale * 6.2831853 + t)
+            + sin(uv.y * scale * 6.2831853 - t * 1.3)
+            + sin((uv.x + uv.y) * scale * 4.4428829 + t * 0.7);
+
+    float n = v / 3.0 * 0.5 + 0.5;      // -> 0..1
+
+    half3 base = mix(half3(0.05, 0.05, 0.10), tint.rgb, half(n));
+    half  a    = tint.a;
+
+    // Runtime shaders return PREMULTIPLIED rgba.
+    return half4(base * a, a);
+}

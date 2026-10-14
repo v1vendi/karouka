@@ -1,0 +1,251 @@
+diff --git a/Libraries/LibMediaClient/CMakeLists.txt b/Libraries/LibMediaClient/CMakeLists.txt
+--- a/Libraries/LibMediaClient/CMakeLists.txt
++++ b/Libraries/LibMediaClient/CMakeLists.txt
+@@ -18,6 +18,8 @@
+ # fall back to "cannot play".
+ if (LADYBIRD_MEDIA_STUB)
+     ladybird_lib(LibMediaClient mediaclient TYPE STATIC)
++    # PUBLIC: it changes the layout of the remote media objects (ClientPtr.h) their users hold.
++    target_compile_definitions(LibMediaClient PUBLIC LIBMEDIACLIENT_NO_SERVER)
+ else()
+     ladybird_lib(LibMediaClient mediaclient)
+ endif()
+diff --git a/Libraries/LibMediaClient/Client.cpp b/Libraries/LibMediaClient/Client.cpp
+--- a/Libraries/LibMediaClient/Client.cpp
++++ b/Libraries/LibMediaClient/Client.cpp
+@@ -25,6 +25,7 @@
+     *s_transport_factory = move(factory);
+ }
+ 
++#ifndef LIBMEDIACLIENT_NO_SERVER
+ ErrorOr<NonnullRefPtr<Client>> Client::acquire()
+ {
+     if (*s_client)
+@@ -42,6 +43,7 @@
+     client->update_idle_timer();
+     return client;
+ }
++#endif
+ 
+ Client::Client(NonnullOwnPtr<IPC::Transport> transport)
+     : IPC::ConnectionToServer<MediaClientEndpoint, MediaServerEndpoint>(*this, move(transport))
+diff --git a/Libraries/LibMediaClient/Client.h b/Libraries/LibMediaClient/Client.h
+--- a/Libraries/LibMediaClient/Client.h
++++ b/Libraries/LibMediaClient/Client.h
+@@ -41,7 +41,13 @@
+     // The process's connection to its MediaServer, established on first use and dropped once it has had no
+     // sessions for a while. Each connection is a fresh server process, so a holder of state tied to one keeps
+     // its generation to notice a replacement.
++#ifdef LIBMEDIACLIENT_NO_SERVER
++    // karouka: built without a MediaServer (LADYBIRD_MEDIA_STUB), so there is never a connection. Failing here,
++    // where callers can see it, lets the compiler drop what they would do with one (see ClientPtr.h).
++    static ErrorOr<NonnullRefPtr<Client>> acquire() { return Error::from_string_literal("Media playback is not built in"); }
++#else
+     static ErrorOr<NonnullRefPtr<Client>> acquire();
++#endif
+ 
+     explicit Client(NonnullOwnPtr<IPC::Transport>);
+     virtual ~Client() override;
+diff --git a/Libraries/LibMediaClient/ClientPtr.h b/Libraries/LibMediaClient/ClientPtr.h
+new file mode 100644
+--- /dev/null
++++ b/Libraries/LibMediaClient/ClientPtr.h
+@@ -0,0 +1,38 @@
++/*
++ * karouka: how the remote media objects hold their connection to the MediaServer.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Assertions.h>
++#include <AK/RefPtr.h>
++#include <LibMediaClient/Forward.h>
++
++namespace MediaClient {
++
++#ifdef LIBMEDIACLIENT_NO_SERVER
++// Built without a MediaServer (LADYBIRD_MEDIA_STUB): Client::acquire() always fails, so no Client is ever created and
++// a remote object's client is always null. Saying so in the type lets the compiler drop every message send behind
++// it, and with them the MediaServer and MediaClient IPC endpoints.
++class ClientPtr {
++public:
++    ClientPtr() = default;
++    ClientPtr(nullptr_t) { }
++    ClientPtr(RefPtr<Client> const& client) { VERIFY(!client); }
++
++    ClientPtr& operator=(nullptr_t) { return *this; }
++
++    explicit operator bool() const { return false; }
++    bool operator!() const { return true; }
++    bool operator==(nullptr_t) const { return true; }
++
++    Client* ptr() const { return nullptr; }
++    [[noreturn]] Client* operator->() const { VERIFY_NOT_REACHED(); }
++};
++#else
++using ClientPtr = RefPtr<Client>;
++#endif
++
++}
+diff --git a/Libraries/LibMediaClient/RemoteMediaStream.h b/Libraries/LibMediaClient/RemoteMediaStream.h
+--- a/Libraries/LibMediaClient/RemoteMediaStream.h
++++ b/Libraries/LibMediaClient/RemoteMediaStream.h
+@@ -13,6 +13,7 @@
+ #include <AK/RefCounted.h>
+ #include <AK/RefPtr.h>
+ #include <AK/Span.h>
++#include <LibMediaClient/ClientPtr.h>
+ #include <LibMediaClient/Forward.h>
+ 
+ namespace MediaClient {
+@@ -40,7 +41,7 @@
+ private:
+     RemoteMediaStream(RefPtr<Client>, u64 id);
+ 
+-    RefPtr<Client> m_client;
++    ClientPtr m_client;
+     u64 m_id { 0 };
+     DataRequestCallback m_data_request_callback;
+ };
+diff --git a/Libraries/LibMediaClient/RemotePlaybackManager.h b/Libraries/LibMediaClient/RemotePlaybackManager.h
+--- a/Libraries/LibMediaClient/RemotePlaybackManager.h
++++ b/Libraries/LibMediaClient/RemotePlaybackManager.h
+@@ -31,6 +31,7 @@
+ #include <LibMedia/VideoFramePool.h>
+ #include <LibMedia/VideoPresentation/PresentedFramePage.h>
+ #include <LibMedia/VideoSinkHandle.h>
++#include <LibMediaClient/ClientPtr.h>
+ #include <LibMediaClient/Forward.h>
+ 
+ namespace MediaClient {
+@@ -128,7 +129,7 @@
+     RemoteSourceBuffer* find_source_buffer(u64 source_buffer_id);
+     void dispatch_state_change() const;
+ 
+-    RefPtr<Client> m_client;
++    ClientPtr m_client;
+     u64 m_session_id { 0 };
+ 
+     Optional<Media::MediaTimeReader> m_time_reader;
+diff --git a/Libraries/LibMediaClient/RemoteSourceBuffer.h b/Libraries/LibMediaClient/RemoteSourceBuffer.h
+--- a/Libraries/LibMediaClient/RemoteSourceBuffer.h
++++ b/Libraries/LibMediaClient/RemoteSourceBuffer.h
+@@ -17,6 +17,7 @@
+ #include <AK/Vector.h>
+ #include <LibMedia/MediaSourceExtensions/SourceBufferProcessor.h>
+ #include <LibMedia/Track.h>
++#include <LibMediaClient/ClientPtr.h>
+ #include <LibMediaClient/Forward.h>
+ 
+ namespace MediaClient {
+@@ -72,7 +73,7 @@
+     bool can_send() const;
+ 
+     RemotePlaybackManager* m_playback_manager { nullptr };
+-    RefPtr<Client> m_client;
++    ClientPtr m_client;
+     u64 m_session_id { 0 };
+     u64 m_id { 0 };
+ 
+diff --git a/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake b/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake
+--- a/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake
++++ b/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake
+@@ -2,3 +2,6 @@
+ # MediaSource. `MediaSource`, `ManagedMediaSource` and `SourceBuffer` are not exposed, `srcObject` takes only
+ # a Blob, `URL.createObjectURL` only a Blob, and MediaCapabilities answers "media-source" queries unsupported.
+ list(APPEND LIBWEB_PRUNED_FAMILIES MediaSourceExtensions)
++# The blob URL entry LibWebCommon shares with LibWeb loses its MediaSource alternative too, so the definition has to
++# reach LibWebCommon and everything that includes its headers.
++target_compile_definitions(LibWebCommon PUBLIC LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS)
+diff --git a/Libraries/LibWeb/FileAPI/BlobURLStore.cpp b/Libraries/LibWeb/FileAPI/BlobURLStore.cpp
+--- a/Libraries/LibWeb/FileAPI/BlobURLStore.cpp
++++ b/Libraries/LibWeb/FileAPI/BlobURLStore.cpp
+@@ -224,7 +224,12 @@
+                 return SerializedBlobURLEntry::Blob { .token = blob.token, .type = blob_object.type(), .data = blob_object.data() };
+             },
+             [](URL::BlobURLEntry::MediaSource const&) -> Optional<SerializedBlobURLEntry::Object> {
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+                 return SerializedBlobURLEntry::MediaSource {};
++#else
++                // karouka: without Media Source Extensions no blob URL entry holds a MediaSource.
++                return {};
++#endif
+             });
+         if (object.has_value())
+             return SerializedBlobURLEntry { .object = object.release_value(), .origin = entry->environment.origin };
+diff --git a/Libraries/LibWeb/WebAudio/Rendering/NodeMessage.h b/Libraries/LibWeb/WebAudio/Rendering/NodeMessage.h
+--- a/Libraries/LibWeb/WebAudio/Rendering/NodeMessage.h
++++ b/Libraries/LibWeb/WebAudio/Rendering/NodeMessage.h
+@@ -78,6 +78,8 @@
+     double cone_outer_gain { 0 };
+ };
+ 
++// karouka: only the MediaStreamAudioSourceNode that MediaCapture pruning leaves out sends this.
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+ // Attaches the ring buffer that carries a MediaStreamTrack's audio into a
+ // MediaStreamAudioSourceNode's render node. Shipped as a message rather than a constructor
+ // argument so the ring can be replaced without rebuilding the render node.
+@@ -86,13 +88,16 @@
+     RefPtr<Media::SpscAudioFrameRing> ring;
+     u32 channel_count { 0 };
+ };
++#endif
+ 
+ // A control message that updates the state of a single render node.
+ using NodeMessage = Variant<
+     SetBiquadFilterType,
+     SetBufferSourceParameters,
+     SetConvolverKernel,
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+     SetMediaStreamSourceRing,
++#endif
+     SetOscillatorWaveform,
+     SetPannerParameters,
+     StartBufferSource,
+diff --git a/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.cpp b/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.cpp
+--- a/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.cpp
++++ b/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.cpp
+@@ -27,6 +27,7 @@
+ template<>
+ ErrorOr<Web::FileAPI::SerializedBlobURLEntry> decode(Decoder& decoder)
+ {
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     Web::FileAPI::SerializedBlobURLEntry::Object object = Web::FileAPI::SerializedBlobURLEntry::MediaSource {};
+     if (TRY(decoder.decode<bool>())) {
+         auto token = TRY(decoder.decode<URL::BlobURLEntry::Token>());
+@@ -34,6 +35,15 @@
+         auto data = TRY(decoder.decode<Core::AnonymousBuffer>());
+         object = Web::FileAPI::SerializedBlobURLEntry::Blob { .token = token, .type = move(type), .data = move(data) };
+     }
++#else
++    // karouka: without Media Source Extensions an entry that holds no Blob cannot be represented.
++    if (!TRY(decoder.decode<bool>()))
++        return Error::from_string_literal("Blob URL entry does not hold a Blob");
++    auto token = TRY(decoder.decode<URL::BlobURLEntry::Token>());
++    auto type = TRY(decoder.decode<String>());
++    auto data = TRY(decoder.decode<Core::AnonymousBuffer>());
++    Web::FileAPI::SerializedBlobURLEntry::Object object = Web::FileAPI::SerializedBlobURLEntry::Blob { .token = token, .type = move(type), .data = move(data) };
++#endif
+     auto origin = TRY(decoder.decode<URL::Origin>());
+     return Web::FileAPI::SerializedBlobURLEntry { .object = move(object), .origin = move(origin) };
+ }
+diff --git a/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.h b/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.h
+--- a/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.h
++++ b/Libraries/LibWebCommon/FileAPI/SerializedBlobURLEntry.h
+@@ -24,9 +24,14 @@
+         Core::AnonymousBuffer data;
+     };
+ 
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     struct MediaSource { };
+ 
+     using Object = Variant<Blob, MediaSource>;
++#else
++    // karouka: without Media Source Extensions every blob URL entry holds a Blob.
++    using Object = Variant<Blob>;
++#endif
+ 
+     Object object;
+     URL::Origin origin;

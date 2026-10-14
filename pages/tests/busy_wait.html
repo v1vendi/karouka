@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^busy ok ">
+<style>
+  /* Scripts that busy-wait on the clock. On the host clock (the default)
+     LibWeb's time stands still inside a task, so each read a page's script
+     makes of performance.now() or Date.now() takes a fixed 1 us step
+     (Embedder/HostClock.h), and a wait of 100 ms ends after about 100 000
+     reads on every run. Without the step, this page would never finish
+     loading. It waits 100 ms on performance.now(), then 50 ms
+     on Date.now(), and requires each wait to take its reads count within a
+     coarsening bucket of the step's (performance.now() coarsens to 0.1 ms,
+     Date.now() floors to 1 ms), the two clocks to move together, and
+     performance.now() never to go back, here or in the next rAF. The title
+     carries the verdict and the counts; the box turns green on a pass, red
+     on a failure. With the real-time clock (karouka_viewer --real-time) the
+     waits take real time and the read counts are the machine's, so the
+     title check fails there. Text-free. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #box { width: 200px; height: 200px; background: rgb(128, 128, 128); }
+</style>
+</head>
+<body>
+<div id="box"></div>
+<script>
+  const box = document.getElementById("box");
+  const failures = [];
+
+  const perf0 = performance.now();
+  const date0 = Date.now();
+  let perfReads = 0;
+  while (performance.now() - perf0 < 100)
+    perfReads++;
+  if (!(perfReads >= 99800 && perfReads <= 100100))
+    failures.push(`perf reads=${perfReads}`);
+
+  const date1 = Date.now();
+  let dateReads = 0;
+  while (Date.now() - date1 < 50)
+    dateReads++;
+  if (!(dateReads >= 49000 && dateReads <= 51000))
+    failures.push(`date reads=${dateReads}`);
+
+  const perf1 = performance.now();
+  const date2 = Date.now();
+  const dPerf = perf1 - perf0;
+  const dDate = date2 - date0;
+  if (!(dPerf >= 149))
+    failures.push(`dperf=${dPerf.toFixed(2)} too small`);
+  if (!(Math.abs(dDate - dPerf) < 1.5))
+    failures.push(`ddate=${dDate} vs dperf=${dPerf.toFixed(2)}`);
+
+  requestAnimationFrame(() => {
+    const perf2 = performance.now();
+    if (!(perf2 >= perf1))
+      failures.push(`performance.now() went back ${(perf1 - perf2).toFixed(2)} ms`);
+    const detail = `perf_reads=${perfReads} date_reads=${dateReads} dperf=${dPerf.toFixed(1)} ddate=${dDate}`;
+    if (failures.length === 0) {
+      box.style.background = "rgb(0, 160, 0)";
+      document.title = `busy ok ${detail}`;
+    } else {
+      box.style.background = "rgb(208, 0, 0)";
+      document.title = `busy FAILED ${failures.join("; ")}`;
+    }
+    console.log(`busy_wait: ${document.title}`);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+diff --git a/Libraries/LibWeb/DOM/Document.h b/Libraries/LibWeb/DOM/Document.h
+--- a/Libraries/LibWeb/DOM/Document.h
++++ b/Libraries/LibWeb/DOM/Document.h
+@@ -566,6 +566,9 @@
+     void update_layout(UpdateLayoutReason, ThrottledAnimationSamplingScope);
+     void update_style_and_layout_once(Layout::BegunRead const&, UpdateLayoutReason, ThrottledAnimationSamplingScope);
+     void update_layout_if_needed_for_node(Node const&, UpdateLayoutReason);
++    // Runs update_layout() unless nothing it would do is pending: the document is as clean as a layout geometry read
++    // needs. Returns whether it ran update_layout().
++    bool update_layout_if_needed(UpdateLayoutReason);
+     [[nodiscard]] u64 partial_layout_count() const;
+     [[nodiscard]] u64 full_layout_count() const;
+     [[nodiscard]] bool layout_is_up_to_date() const;
+diff --git a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+--- a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
++++ b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+@@ -942,7 +942,8 @@
+ 
+         // NB: Layout may have been invalidated by previous steps (e.g. view transitions at step 18).
+         //     Re-run layout here since intersection observations need up-to-date geometry.
+-        document->update_layout(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
++        // AD-HOC: Only when something invalidated it: step 16 laid every document out, so this is usually clean.
++        document->update_layout_if_needed(DOM::UpdateLayoutReason::HTMLEventLoopRenderingUpdate);
+ 
+         auto now = relative_frame_timestamp_for(*document);
+         document->run_the_update_intersection_observations_steps(now);
+diff --git a/Libraries/LibWeb/Layout/UpdateLayout.cpp b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+--- a/Libraries/LibWeb/Layout/UpdateLayout.cpp
++++ b/Libraries/LibWeb/Layout/UpdateLayout.cpp
+@@ -130,6 +130,34 @@
+         update_style_and_layout();
+ }
+ 
++// An update_layout() that would find nothing to do is skipped. What it finds to do is what makes a layout geometry read
++// unclean, plus what it does after its pass: a scroll container resnap that a commit scheduled, and the first snapshot of
++// a scroll-state() query container. Throttled animations are sampled first, as update_layout() would for the reason.
++bool Document::update_layout_if_needed(UpdateLayoutReason reason)
++{
++    auto navigable = this->navigable();
++    if (!navigable || navigable->active_document().ptr() != this)
++        return false;
++
++    {
++        // NB: Whether the update finds style or layout pending is asked behind the style transaction that flew, which
++        //     lands for the read.
++        Layout::ForcedReadScope read { style_computer().style_engine().render_document() };
++        drain_flown_style_transaction(read);
++
++        if (reason != UpdateLayoutReason::HTMLEventLoopRenderingUpdate && reason != UpdateLayoutReason::ChildDocumentStyleUpdate)
++            flush_throttled_animation_style_update();
++
++        if (is_clean_for_layout_geometry_read(read)
++            && !m_needs_scroll_container_resnap
++            && !m_scroll_state_query_containers.has_containers())
++            return false;
++    }
++
++    update_layout(reason);
++    return true;
++}
++
+ // The first round of the rendering update's layout reads the document's facts as they are before its style flies, and
+ // runs after the style in the frame. List items that wait to be renumbered and top layer work are the layout update's
+ // to do first, so nothing is sealed while either waits.

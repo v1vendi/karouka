@@ -1,0 +1,1175 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* Points at the real pinned test font by relative path
+     (tests/data/fonts/NotoSans-Regular.ttf), the way
+     tests/data/viewer/text.html does, instead of a "font.ttf" name that
+     existed only in showcase_main.cpp's in-memory IO map -- that name
+     resolved to nothing when this page was opened directly in a viewer,
+     which has no such entry and reads relative to the page's real
+     directory on disk. See docs/21-css-subset.md §
+     "A quoted url() is the same <url> as an unquoted one": the quoted
+     form below issues an IO request exactly like the unquoted form would,
+     so quoting buys no protection from this class of typo. */
+  @font-face { font-family: "Demo"; src: url("../fonts/NotoSans-Regular.ttf"); }
+  /* Two more pinned test faces for the Text tab's RTL and
+     complex-shaping cards (tests/data/fonts/ATTRIBUTION.md).
+
+     **Known issue, not fixed here:**
+     `font-family: "Demo", "DemoArabic"` -- Latin face first, script-specific
+     face second, the order a real browser's font-fallback list uses -- does
+     NOT fall through to "DemoArabic" for a codepoint "Demo" doesn't cover;
+     it renders .notdef tofu instead, even though "DemoArabic" is registered
+     and renders correctly when it is the *first* family in the list. Traced
+     as far as `FontLibrary::resolve()` (src/core/text/font.cpp) and
+     `resolve_family()` (src/core/layout/inline/inline_layout.cpp), both of
+     which read correctly on inspection (`resolve()` loops every `preferred`
+     entry per codepoint; `resolve_family()` pushes every matched family,
+     not just the first) -- the defect is real (confirmed by swapping the
+     order below and by testing pure-Arabic text with no Latin at all,
+     ruling out a bidi/mixed-script interaction) but its exact site wasn't
+     isolated. Per-codepoint `font-family` list fallback needs a fix once
+     a face later in the list is needed.
+
+     Both cards below route around it by listing the *script-specific* face
+     first ("DemoArabic, Demo" / "DemoDevanagari, Demo") -- Noto Sans Arabic
+     and Noto Sans Devanagari both also cover basic Latin (confirmed by the
+     English half of the RTL card rendering correctly under this order), so
+     this order needs no fallthrough at all: every codepoint in both cards
+     resolves against the *first* entry. This is a real, working
+     demonstration of `font-family` fallback picking a script-specific face
+     (per docs/13-text-stack-spec.md § Font matching and fallback) -- it just doesn't exercise the direction real browser stylesheets
+     usually author it in, which is the gap named above. */
+  @font-face { font-family: "DemoArabic"; src: url("../fonts/NotoSansArabic-Regular.ttf"); }
+  @font-face { font-family: "DemoDevanagari"; src: url("../fonts/NotoSansDevanagari-Regular.ttf"); }
+  * { margin: 0; box-sizing: border-box; }
+  /* One set of theme tokens (custom properties, with
+     var() fallback -- docs/21-css-subset.md § Custom properties) for every
+     surface below, so the palette is stated once. showcase_main.cpp reads
+     three of these back as pixels (the active/idle tab colours and the
+     panel markers), so those stay literal colours, never gradients. */
+  :root {
+    --bg: rgb(11, 13, 19);
+    --surface-top: rgb(29, 33, 47);
+    --surface-bottom: rgb(22, 25, 36);
+    --surface-edge: rgb(44, 50, 68);
+    --text: rgb(222, 226, 238);
+    --text-muted: rgb(142, 150, 172);
+    --accent: rgb(110, 160, 255);
+    --accent-2: rgb(170, 120, 255);
+  }
+  body {
+    background: var(--bg);
+    font-family: "Demo";
+    color: var(--text);
+    position: relative;
+  }
+  /* A soft accent glow behind the header; decorative, never hit by a
+     scripted click (it is below every panel in tree order). */
+  .page-glow {
+    display: block; position: absolute; left: 0px; top: 0px;
+    width: 960px; height: 260px;
+    background-image: radial-gradient(ellipse at 20% 0%, rgba(110, 160, 255, 0.22), rgba(110, 160, 255, 0) 70%);
+  }
+  .header-title {
+    display: block; position: absolute; left: 24px; top: 12px;
+    font-size: 24px; color: var(--text);
+  }
+  .header-sub {
+    display: block; position: absolute; left: 24px; top: 44px;
+    font-size: 13px; color: var(--text-muted);
+  }
+  .header-badge {
+    display: block; position: absolute; left: 790px; top: 20px;
+    width: 128px; height: 26px; padding-top: 4px;
+    font-size: 12px; text-align: center;
+    color: rgb(170, 235, 200);
+    background: rgba(80, 200, 120, 0.12);
+    border: 1px solid rgba(80, 200, 120, 0.45);
+    border-radius: 13px;
+  }
+  /* A tab bar plus one panel per tab, so this page keeps
+     growing by *adding a tab or a card* rather than being rewritten --
+     see README.md's "Adding a tab or a card" convention.
+
+     Styled as a pill/segmented control. Geometry is fixed
+     and mirrored in showcase_main.cpp: the track sits at (16, 72), 928x40;
+     button i sits at track-relative left 4 + 132*i, so page x 20 + 132*i,
+     124x32, page y 76..108. The track's edge is a spread box-shadow rather
+     than a border so a child's `left` is page-relative to the track's own
+     left edge with no border offset. */
+  .tab-bar {
+    display: block;
+    position: absolute;
+    left: 16px;
+    top: 72px;
+    width: 928px;
+    height: 40px;
+    background: rgb(20, 23, 33);
+    border-radius: 12px;
+    box-shadow: 0px 0px 0px 1px rgb(40, 45, 62), 0px 8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .tab-btn {
+    display: block;
+    position: absolute;
+    top: 4px;
+    width: 124px;
+    height: 32px;
+    padding-top: 6px;
+    line-height: 20px;
+    font-size: 14px;
+    text-align: center;
+    border-radius: 8px;
+    color: var(--text-muted);
+  }
+  /* No transition on the button's own background: showcase_main.cpp's
+     panel-identity probe reads it one frame after a click. The motion is
+     the indicator's (below). */
+  .tab-btn:hover { background: rgb(33, 38, 54); color: var(--text); }
+  /* Selected-tab state signalled purely through classList, the same rule
+     the interactive cards below already follow (see the classList note
+     further down) -- a script-driven click never writes textContent.
+     Listed after :hover so an active tab under the pointer stays active
+     (equal specificity, later rule wins). */
+  .tab-btn.active {
+    background: rgb(46, 52, 76);
+    color: rgb(240, 243, 250);
+    box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.45);
+  }
+  /* The animated active indicator. The tab script moves its
+     `left` under the chosen button; `left` animates by computed value
+     (docs/22-css-support-matrix.md), so this is a real CSS transition. */
+  .tab-indicator {
+    display: block;
+    position: absolute;
+    top: 33px;
+    left: 46px;
+    width: 40px;
+    height: 3px;
+    border-radius: 2px;
+    background-image: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: left 300ms ease;
+  }
+  /* Exactly one tab-panel is display:block at a time; every other one is
+     display:none, so a hidden panel's descendants generate no boxes at all
+     (docs/21-css-subset.md's "display: none generates no box" rule).
+
+     The panel must never overlap the tab bar. A panel's own
+     box is transparent but is still a hit-test target: its in-flow content
+     (Layout's #posParent is `position: relative; top: 180px`, and a
+     relative offset does not move the layout box, CSS 2.1 § 9.4.3) sizes
+     it, and wherever it lies over the tab bar it takes the clicks meant for
+     the buttons. That is correct hit testing, not an engine defect. It is
+     what once looked like "toggling display breaks hit-testing", a
+     "freeze" on the Layout tab. So the panel starts at page
+     y 120, below the tab bar's bottom edge (72 + 40 = 112), rather than at
+     0 with its content pushed down.
+
+     Every panel child keeps its old coordinates (content began at 48
+     under the old 40px bar) and so lands 120px lower on the page;
+     showcase_main.cpp's in-panel click and probe coordinates carry the same
+     +120 (kPanelDy). */
+  .tab-panel { display: none; position: absolute; left: 0px; top: 120px; }
+  .tab-panel.active { display: block; }
+  /* One marker per panel, in a colour unique to that panel,
+     at the page's otherwise-empty top-right corner. Only the visible
+     panel's marker generates a box, so showcase_main.cpp reads which panel
+     is showing from one pixel (check_panel_identity) -- the colours and
+     position here are mirrored in its kPanels table. It is drawn as a
+     status dot in the header; `top: -116px` undoes the panel's own 120px
+     offset so it stays at page (940, 4). It is absolutely positioned, so
+     it does not extend the panel's box up over the tab bar. */
+  .panel-marker {
+    display: block; position: absolute; left: 940px; top: -116px;
+    width: 12px; height: 12px; border-radius: 6px;
+  }
+  /* A panel's column surfaces. Decorative, first in each
+     panel so every demo paints above them; left column 8..472, right
+     column 488..952, heights set per panel to fit its content. */
+  .surface {
+    display: block; position: absolute; top: 36px; width: 464px;
+    background-image: linear-gradient(180deg, var(--surface-top), var(--surface-bottom));
+    border: 1px solid var(--surface-edge);
+    border-radius: 16px;
+    box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.40), 0px 2px 6px rgba(0, 0, 0, 0.30);
+  }
+  .surface.left { left: 8px; }
+  .surface.right { left: 488px; }
+  .card {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 448px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgb(52, 58, 80);
+    border-radius: 10px;
+    color: var(--text);
+  }
+  /* Label cards (inline `border: none; background: none;`) keep zero
+     padding: README.md "Sizing a label" pins their wrap width at 448px. */
+  #syncCard { padding: 8px 12px; }
+  .status {
+    display: block;
+    color: rgb(180, 188, 208);
+  }
+  .box {
+    display: block;
+    position: absolute;
+    background: rgb(40, 46, 66);
+    border: 2px solid rgb(72, 80, 108);
+    border-radius: 8px;
+  }
+  .swatch {
+    display: block;
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    background: rgb(52, 58, 80);
+    border: 2px solid rgb(80, 88, 116);
+    border-radius: 6px;
+  }
+  /* Every interactive card below signals a fired event purely through a
+     classList change, never through textContent, so every status indicator
+     here is a color swatch instead of a label that rewrites itself. The tab
+     bar above follows the same rule. */
+  .box.over-hot { border-color: rgb(255, 200, 0); }
+  .box.enter-hot { background: rgb(90, 70, 20); }
+  .swatch.fired-blue { background: rgb(70, 130, 220); border-color: rgb(120, 170, 240); }
+  .swatch.fired-green { background: rgb(80, 200, 120); border-color: rgb(140, 240, 180); }
+  .swatch.fired-red { background: rgb(230, 70, 70); border-color: rgb(255, 130, 130); }
+  .swatch.fired-purple { background: rgb(160, 90, 220); border-color: rgb(200, 150, 240); }
+  #scroller {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 200px;
+    height: 44px;
+    overflow: auto;
+    border: 2px solid rgb(90, 96, 116);
+  }
+  #scrollContent {
+    display: block;
+    width: 20px;
+    height: 400px;
+    background: rgb(40, 120, 200);
+  }
+
+
+  /* React and Svelte tabs. Both apps are mounted by unmodified
+     framework code (React 18.3.1 UMD, Svelte 4.2.20 compiled output -- see
+     README.md "React and Svelte tabs") into #reactRoot / #svelteRoot, and
+     style themselves only through these page-level classes, so the Svelte
+     bundle needs no separate CSS file and neither app needs an
+     engine-specific API. Every fw-* element is absolutely positioned by the app itself:
+     showcase_main.cpp reads the scripted clicks' effects back from pixels. */
+  .fw-label { border: none; background: none; }
+  .fw-btn, .fw-input, .fw-select, .fw-row, .fw-swatch, .fw-note, .fw-row-text,
+  .fw-stage, .fw-track, .fw-fill, .fw-check {
+    display: block; position: absolute;
+  }
+  .fw-btn {
+    background: rgb(40, 46, 66);
+    border: 1px solid rgb(66, 74, 100);
+    border-radius: 6px;
+    color: var(--text);
+    text-align: center;
+  }
+  .fw-btn:hover { background: rgb(52, 60, 86); border-color: var(--accent); }
+  .fw-btn.pressed { background: rgb(52, 76, 130); border-color: var(--accent); color: rgb(240, 243, 250); }
+  .fw-btn:disabled { color: rgb(100, 106, 124); border-color: rgb(52, 58, 80); background: rgb(30, 34, 48); }
+  .fw-input, .fw-select {
+    background: rgb(14, 16, 24);
+    border: 1px solid rgb(66, 74, 100);
+    border-radius: 6px;
+    color: var(--text);
+    padding-left: 8px;
+  }
+  .fw-input:focus { border-color: var(--accent); }
+  .fw-row { background: rgba(255, 255, 255, 0.035); border: 1px solid rgb(48, 54, 74); border-radius: 8px; }
+  .fw-row:hover { border-color: rgb(72, 82, 112); }
+  .fw-row.done { background: rgba(80, 200, 120, 0.07); }
+  .fw-row-text, .fw-note { color: var(--text); }
+  .fw-note { color: rgb(190, 196, 214); }
+  .fw-row.done .fw-row-text { color: rgb(120, 150, 132); text-decoration: line-through; }
+  .fw-note.bad { color: rgb(255, 130, 130); }
+  .fw-note.ok { color: rgb(140, 240, 180); }
+  .fw-swatch { background: rgb(60, 66, 90); border-radius: 4px; }
+  .fw-swatch.ok { background: rgb(80, 200, 120); }
+  .fw-swatch.bad { background: rgb(230, 70, 70); }
+  .fw-stage {
+    background: rgb(40, 46, 66);
+    color: rgb(170, 178, 200);
+    text-align: center;
+    border-radius: 12px;
+    transition: background-color 250ms;
+  }
+  .fw-stage.active { background: rgb(240, 160, 40); color: rgb(20, 22, 30); }
+  .fw-stage.passed { background: rgb(80, 200, 120); color: rgb(20, 22, 30); }
+  /* Track and fill colours are read back by showcase_main.cpp's Svelte
+     probes (kSvelteTrack / kSvelteFill); keep them solid. */
+  .fw-track { background: rgb(40, 45, 62); border-radius: 5px; overflow: hidden; }
+  .fw-fill { background: rgb(70, 190, 230); transition: width 250ms; }
+
+  /* Layout tab. Every card here is a rendering feature confirmed against
+     docs/22-css-support-matrix.md/docs/23-layout-spec.md and the tree, not
+     merely a parsed-but-unrendered property. */
+  .layout-label { border: none; background: none; }
+  .flow-box {
+    display: block;
+    position: static;
+    width: 300px;
+    height: 24px;
+    background: rgb(60, 90, 150);
+    border: 2px solid rgb(90, 130, 200);
+    color: rgb(230, 230, 236);
+  }
+  .flow-box + .flow-box { margin-top: 12px; }
+  #posParent {
+    display: block;
+    position: relative;
+    left: 16px;
+    width: 300px;
+    height: 70px;
+    background: rgb(28, 30, 40);
+    border: 2px solid rgb(60, 64, 82);
+  }
+  #posRelative {
+    display: block;
+    position: relative;
+    left: 8px;
+    top: 8px;
+    width: 120px;
+    height: 24px;
+    background: rgb(60, 90, 150);
+    border: 2px solid rgb(90, 130, 200);
+  }
+  #posAbsolute {
+    display: block;
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    width: 120px;
+    height: 24px;
+    background: rgb(160, 90, 220);
+    border: 2px solid rgb(200, 150, 240);
+  }
+  #posFixed {
+    display: block;
+    position: fixed;
+    right: 8px;
+    bottom: 8px;
+    width: 80px;
+    height: 20px;
+    background: rgb(230, 70, 70);
+    border: 2px solid rgb(255, 130, 130);
+    color: rgb(20, 20, 24);
+  }
+  #flexRow {
+    display: flex;
+    position: absolute;
+    left: 16px;
+    width: 220px;
+    height: 76px;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    background: rgb(28, 30, 40);
+    border: 2px solid rgb(60, 64, 82);
+  }
+  .flex-item {
+    display: block;
+    width: 80px;
+    height: 30px;
+    background: rgb(60, 90, 150);
+    border: 2px solid rgb(90, 130, 200);
+  }
+  #flexGrowItem { flex-grow: 1; background: rgb(80, 200, 120); border-color: rgb(140, 240, 180); }
+  #gridBox {
+    display: grid;
+    position: absolute;
+    left: 16px;
+    width: 300px;
+    height: 90px;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 10px;
+    background: rgb(28, 30, 40);
+    border: 2px solid rgb(60, 64, 82);
+  }
+  .grid-cell { display: block; background: rgb(60, 90, 150); border: 2px solid rgb(90, 130, 200); }
+  #gridSpan { grid-column: span 2; background: rgb(160, 90, 220); border-color: rgb(200, 150, 240); }
+  #layoutScroller {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 200px;
+    height: 44px;
+    overflow: auto;
+    border: 2px solid rgb(90, 96, 116);
+  }
+  #layoutScrollContent {
+    display: block;
+    width: 20px;
+    height: 300px;
+    background: rgb(40, 120, 200);
+  }
+
+  /* CSS tab. */
+  .css-label { border: none; background: none; }
+  .cascade-box {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 300px;
+    height: 30px;
+    background: rgb(230, 70, 70);
+    border: 2px solid rgb(90, 96, 116);
+    color: rgb(20, 20, 24);
+  }
+  /* Class selector sets red; a later, more specific id selector below wins
+     the cascade and repaints it green -- docs/21-css-subset.md's cascade
+     (origin/specificity/source-order) applies to any renderable property,
+     confirmed against the tree via the property table's `background-color`
+     row (PAINT_ONLY invalidation, by computed value). */
+  #cascadeBox { background: rgb(80, 200, 120); }
+  .box-model-box {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 200px;
+    height: 40px;
+    padding: 8px;
+    border: 6px solid rgb(120, 170, 240);
+    border-radius: 10px;
+    background: rgb(60, 64, 82);
+    color: rgb(230, 230, 236);
+  }
+  .gradient-box {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 300px;
+    height: 36px;
+    background-image: linear-gradient(90deg, rgb(60, 90, 150), rgb(160, 90, 220));
+    border: 2px solid rgb(90, 96, 116);
+  }
+  .opacity-back {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 100px;
+    height: 36px;
+    background: rgb(230, 70, 70);
+  }
+  .opacity-front {
+    display: block;
+    position: absolute;
+    left: 56px;
+    width: 100px;
+    height: 36px;
+    background: rgb(60, 90, 150);
+    opacity: 0.5;
+  }
+  .transform-box {
+    display: block;
+    position: absolute;
+    left: 100px;
+    width: 120px;
+    height: 36px;
+    background: rgb(160, 90, 220);
+    border: 2px solid rgb(200, 150, 240);
+    transform: rotate(-8deg) scale(1.15);
+  }
+  .shadow-box {
+    display: block;
+    position: absolute;
+    left: 40px;
+    width: 200px;
+    height: 36px;
+    background: rgb(60, 64, 82);
+    box-shadow: 6px 6px 0px rgb(120, 170, 240);
+  }
+  /* Semi-transparent box-shadow gallery: alpha shadows composited over the
+     gradient surface (and over each other where layered) -- box-shadow is
+     PAINT_ONLY in docs/22-css-support-matrix.md; blur, spread, inset and
+     comma-separated layers are all painted by
+     src/core/paint/box_decoration_shadow.cpp. */
+  .shadow-tile {
+    display: block;
+    position: absolute;
+    top: 492px;
+    width: 120px;
+    height: 60px;
+    border-radius: 10px;
+    background: rgb(70, 76, 98);
+  }
+  .shadow-caption {
+    display: block;
+    position: absolute;
+    top: 572px;
+    width: 136px;
+    font-size: 11px;
+    color: var(--text);
+  }
+  /* Custom properties: declared on the element itself and consumed via
+     var() with a fallback -- docs/21-css-subset.md § Custom properties and
+     var(): "Supported: custom properties and var() with full inheritance
+     and fallback". */
+  .var-box {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 200px;
+    height: 36px;
+    --demo-color: rgb(80, 200, 120);
+    background: var(--demo-color, rgb(230, 70, 70));
+    border: 2px solid rgb(140, 240, 180);
+  }
+  .transition-box {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 200px;
+    height: 36px;
+    background: rgb(230, 70, 70);
+    transition: background-color 1s linear;
+  }
+  .transition-box.on { background: rgb(80, 200, 120); }
+
+  /* Text tab. Every card below is checked against
+     docs/13-text-stack-spec.md and docs/22-css-support-matrix.md before
+     being kept. */
+  .text-label { border: none; background: none; }
+  .text-sample {
+    display: block;
+    position: absolute;
+    left: 16px;
+    width: 300px;
+    color: rgb(210, 212, 220);
+  }
+  .text-sample.big { font-size: 22px; }
+  .text-sample.bold-synth { font-weight: 700; }
+  .text-sample.wrap-box {
+    width: 260px;
+    height: 74px;
+    text-align: justify;
+    padding: 6px;
+    border: 2px solid rgb(60, 64, 82);
+  }
+  .text-sample.ws-pre { white-space: pre; }
+  .text-sample.ws-nowrap {
+    white-space: nowrap;
+    width: 180px;
+    overflow: hidden;
+    border: 2px solid rgb(60, 64, 82);
+  }
+  .text-sample.ws-prewrap { white-space: pre-wrap; width: 180px; }
+  .text-sample.spaced-letters { letter-spacing: 6px; }
+  .text-sample.spaced-words { word-spacing: 18px; }
+  .text-sample.deco-underline { text-decoration: underline; }
+  .text-sample.deco-strike { text-decoration: line-through rgb(230, 70, 70); }
+  .text-sample.deco-wavy { text-decoration: underline wavy rgb(160, 90, 220); }
+  .text-sample.rtl-run { font-family: "DemoArabic", "Demo"; }
+  /* Recently landed features. */
+  #newCard { padding: 8px 12px; left: 496px; }
+  .text-sample.faux-italic { font-style: italic; }
+  .text-sample.faux-bold-italic { font-style: italic; font-weight: 700; }
+  .border-tile {
+    display: block; position: absolute; width: 88px; height: 16px;
+    border-width: 5px; border-color: rgb(120, 150, 220);
+    background: rgb(28, 30, 40);
+  }
+  #pctFlex {
+    display: flex; position: absolute; width: 300px; height: 70px;
+    border: 2px solid rgb(60, 64, 82); background: rgb(28, 30, 40);
+  }
+  .pct-item { display: block; width: 90px; margin-right: 10px; background: rgb(40, 46, 66); }
+  .pct-fill { display: block; height: 50%; background: rgb(80, 200, 120); }
+  .pct-item.full .pct-fill { height: 100%; background: rgb(70, 130, 220); }
+  #formText { left: 496px; width: 200px; height: 26px; }
+  .form-check-label { display: block; position: absolute; left: 496px; width: 300px; height: 24px; color: var(--text); }
+  .text-sample.shaping-run { font-family: "DemoDevanagari", "Demo"; font-size: 26px; }
+</style>
+</head>
+<body>
+  <!-- Two tabs, not three ("DOM"/"Events"/"Script"). The content does
+       not split three ways: syncCard's six lines are already one mixed
+       DOM+Script API-surface card (instanceof/createElement are DOM API,
+       the CustomEvent static/handleEvent/null-listener/unhandledrejection
+       checks are Script/event-loop surface), authored and tested as one
+       unit, and splitting its six status lines across two tabs would
+       break a single card in half for no reason a reader could see. Every other card is a *live, input-dispatched* event demo
+       (hover, dblclick, contextmenu/auxclick, wheel, composedPath). That
+       is the real seam in the content: static API checks vs. dispatched
+       event behaviour -- so "API checks" and "Events" it is. See
+       README.md for the convention a future card/tab follows. -->
+  <!-- Header. Decorative; no listener anywhere in it. -->
+  <div class="page-glow"></div>
+  <!-- The title is deliberately one run, with no coloured <span> inside it. -->
+  <div class="header-title">karouka engine showcase</div>
+  <div class="header-sub">Scripting, input events, layout, CSS, text shaping and two unmodified frameworks, driven through the public C ABI</div>
+  <div class="header-badge">live, 60 fps budget</div>
+  <div class="tab-bar">
+    <div id="tabBtnApi" class="tab-btn active" style="left: 4px;">API checks</div>
+    <div id="tabBtnEvents" class="tab-btn" style="left: 136px;">Events</div>
+    <div id="tabBtnLayout" class="tab-btn" style="left: 268px;">Layout</div>
+    <div id="tabBtnCss" class="tab-btn" style="left: 400px;">CSS</div>
+    <div id="tabBtnText" class="tab-btn" style="left: 532px;">Text</div>
+    <div id="tabBtnReact" class="tab-btn" style="left: 664px;">React</div>
+    <div id="tabBtnSvelte" class="tab-btn" style="left: 796px;">Svelte</div>
+    <div id="tabIndicator" class="tab-indicator"></div>
+  </div>
+
+  <div id="panelApi" class="tab-panel active">
+    <div class="panel-marker" style="background: rgb(255, 0, 0);"></div>
+    <div class="surface left" style="height: 200px;"></div>
+    <!-- Synchronous and near-synchronous checks that need no input, listed as
+         one card so a reader can see all six pass/fail lines at a glance.
+         Every line here is written exactly once (five at parse time, the
+         sixth from a microtask callback -- see the classList note above for
+         why that distinction matters), so textContent is safe to use. -->
+    <div id="syncCard" class="card" style="top: 48px; height: 176px;">
+      <div id="syncLine1" class="status">iframe instanceof: pending</div>
+      <div id="syncLine2" class="status">createElement lowercase: pending</div>
+      <div id="syncLine3" class="status">CustomEvent.BUBBLING_PHASE: pending</div>
+      <div id="syncLine4" class="status">handleEvent listener: pending</div>
+      <div id="syncLine5" class="status">null listener: pending</div>
+      <div id="syncLine6" class="status">unhandledrejection: pending</div>
+    </div>
+    <!-- API surface landed in the two weeks before 2026-09-23, one
+         parse-time line per feature. -->
+    <div class="surface right" style="height: 206px;"></div>
+    <div id="newCard" class="card" style="top: 48px; height: 182px;">
+      <div id="newLine1" class="status">new Event(): pending</div>
+      <div id="newLine2" class="status">MouseEvent/KeyboardEvent ctors: pending</div>
+      <div id="newLine3" class="status">on* handler attributes: pending</div>
+      <div id="newLine4" class="status">input.value / defaultValue: pending</div>
+      <div id="newLine5" class="status">input.checked: pending</div>
+      <div id="newLine6" class="status">select.value / option.selected: pending</div>
+      <div id="newLine7" class="status">checkbox.click() activation: pending</div>
+    </div>
+  </div>
+
+  <div id="panelEvents" class="tab-panel">
+    <div class="panel-marker" style="background: rgb(0, 255, 0);"></div>
+    <div class="surface left" style="height: 538px;"></div>
+    <!-- mouseover/mouseout + mouseenter/mouseleave: a
+         single box carries both listener pairs -- mouseover/mouseout toggle
+         border color, mouseenter/mouseleave toggle background tint -- two
+         independent, simultaneously-visible signals from one pointer path.
+         mouseenter/mouseleave's real difference is the non-bubbling,
+         multi-target ancestor walk that only shows up with a *nested*
+         target; that half is covered by tests/unit/test_document_loader.cpp
+         (native listeners, not script) and is not re-proven pixel-by-pixel
+         here: a nested-target version of this card was dropped rather than
+         shipped half-working. -->
+    <div id="hoverLabel" class="card" style="top: 48px; height: 40px; border: none; background: none;">Hover: mouseover/mouseout (border) + mouseenter/mouseleave (fill)</div>
+    <div id="hoverOuter" class="box" style="left: 16px; top: 90px; width: 300px; height: 90px;"></div>
+
+    <!-- dblclick, distinguished from two separate clicks by timing.
+         The first click's swatch turns blue; the paired second click's
+         dblclick handler turns the second swatch green (dblclick fires in
+         addition to click, so both effects are visible). -->
+    <div id="dblclickLabel" class="card" style="top: 190px; height: 20px; border: none; background: none;">dblclick: click swatch (blue) then dblclick swatch (green)</div>
+    <div id="dblclickTarget" class="box" style="left: 16px; top: 212px; width: 300px; height: 40px;"></div>
+    <div id="dblclickSwatch1" class="swatch" style="left: 328px; top: 212px;"></div>
+    <div id="dblclickSwatch2" class="swatch" style="left: 356px; top: 212px;"></div>
+
+    <!-- contextmenu + auxclick (click narrowed to primary): one
+         secondary-button press/release demonstrates both at once, since the spec's own dispatch order is mouseup, contextmenu,
+         auxclick with no "click" at all for a non-primary button. Three
+         swatches: mouseup (blue), contextmenu (purple), auxclick (green); a
+         fourth would turn red if "click" ever fired here, which it must not. -->
+    <div id="cmLabel" class="card" style="top: 262px; height: 40px; border: none; background: none;">contextmenu + auxclick (secondary button; click must NOT fire)</div>
+    <div id="cmTarget" class="box" style="left: 16px; top: 304px; width: 300px; height: 40px;"></div>
+    <div id="cmSwatchUp" class="swatch" style="left: 328px; top: 304px;"></div>
+    <div id="cmSwatchMenu" class="swatch" style="left: 356px; top: 304px;"></div>
+    <div id="cmSwatchAux" class="swatch" style="left: 384px; top: 304px;"></div>
+    <div id="cmSwatchClick" class="swatch" style="left: 412px; top: 304px;"></div>
+
+    <!-- WheelEvent, dispatched over a real scroll container so both
+         the JS listener firing (swatch) and the container's own scroll
+         position (the colored band's visible offset) demonstrate the
+         feature landed. -->
+    <div id="wheelLabel" class="card" style="top: 354px; height: 20px; border: none; background: none;">WheelEvent over a scroll container</div>
+    <div id="scroller" style="top: 376px;"><div id="scrollContent"></div></div>
+    <div id="wheelSwatch" class="swatch" style="left: 328px; top: 376px;"></div>
+
+    <!-- composedPath(), and the path cleared after dispatch:
+         clicking the box gives its own listener a real dispatch to compute
+         composedPath() over (pathSwatchDuring turns green iff path.length>=1
+         && path[0]===the box itself. This card does not click a *nested*
+         descendant to exercise delegated dispatch: it does not reliably
+         receive the click at all in this engine, a separate issue from
+         what this card covers). A deferred check (via setTimeout, which -- unlike the click
+         handler itself -- runs outside input dispatch and is safe to use for
+         a second mutation) confirms composedPath() reports empty again once
+         dispatch has ended (pathSwatchAfter turns green iff that length is 0). -->
+    <div id="pathLabel" class="card" style="top: 430px; height: 40px; border: none; background: none;">Event.composedPath(): during dispatch (left) + cleared after (right)</div>
+    <div id="pathTarget" class="box" style="left: 16px; top: 472px; width: 300px; height: 90px;"></div>
+    <div id="pathSwatchDuring" class="swatch" style="left: 328px; top: 472px;"></div>
+    <div id="pathSwatchAfter" class="swatch" style="left: 356px; top: 472px;"></div>
+
+    <!-- Forms: a click focuses a text field, then typing lands in it;
+         clicking a <label> toggles its checkbox (so does Space); the change
+         event and .checked; an onclick IDL handler property. -->
+    <div class="surface right" style="height: 236px;"></div>
+    <div class="card" style="top: 48px; left: 496px; height: 40px; border: none; background: none;">Forms: click the field and type; click the label text to toggle</div>
+    <input id="formText" class="fw-input" type="text" placeholder="click, then type" style="top: 92px;">
+    <label id="formCheckLabel" class="form-check-label" style="top: 136px;"><input id="formCheck" type="checkbox"> label click toggles the box</label>
+    <div id="formCheckSwatch" class="swatch" style="left: 820px; top: 136px;"></div>
+    <div class="card" style="top: 180px; left: 496px; height: 20px; border: none; background: none;">element.onclick = fn (IDL handler property)</div>
+    <div id="onclickTarget" class="box" style="left: 496px; top: 204px; width: 300px; height: 40px;"></div>
+    <div id="onclickSwatch" class="swatch" style="left: 808px; top: 214px;"></div>
+  </div>
+
+  <!-- Layout tab. All static -- no listeners required to demonstrate any
+       of these, per docs/23-layout-spec.md and the CSS support matrix. -->
+  <!-- Laid out in two 448px columns (left column at 16px,
+       right column at 496px -- the same 448px card width as before,
+       just duplicated with a 32px gutter between) now that the page
+       is 960px wide, rather than stacking all five cards in one column
+       with a wide dead strip beside them. -->
+  <div id="panelLayout" class="tab-panel">
+    <div class="panel-marker" style="background: rgb(0, 0, 255);"></div>
+    <div class="surface left" style="height: 328px;"></div>
+    <div class="surface right" style="height: 384px;"></div>
+    <div class="card layout-label" style="top: 48px; height: 20px;">Block flow: stacked blocks with margin between them</div>
+    <!-- The two boxes below are genuinely position: static -- only their
+         shared container (this wrapper) is positioned, so the vertical gap
+         between them is produced by normal block flow plus
+         `.flow-box + .flow-box { margin-top: 12px; }`, not by two
+         independently-placed absolute boxes with hand-picked `top` values
+         faking the same gap. -->
+    <div style="position: absolute; left: 16px; top: 70px; width: 300px;">
+      <div class="flow-box">block 1</div>
+      <div class="flow-box">block 2 (12px margin)</div>
+    </div>
+
+    <div class="card layout-label" style="top: 158px; height: 20px;">position: relative, absolute, fixed</div>
+    <div id="posParent" style="top: 180px;">
+      <div id="posRelative">relative</div>
+      <div id="posAbsolute">absolute</div>
+    </div>
+    <div id="posFixed">fixed</div>
+
+    <div class="card layout-label" style="top: 278px; height: 20px;">flexbox: direction, wrap, justify/align, grow</div>
+    <div id="flexRow" style="top: 300px;">
+      <div class="flex-item" id="flexGrowItem">grow</div>
+      <div class="flex-item">b</div>
+      <div class="flex-item">c</div>
+      <div class="flex-item">d</div>
+    </div>
+
+    <div class="card layout-label" style="top: 48px; left: 496px; height: 20px;">grid: explicit tracks, placement, gap</div>
+    <div id="gridBox" style="top: 70px; left: 496px;">
+      <div id="gridSpan" class="grid-cell"></div>
+      <div class="grid-cell"></div>
+      <div class="grid-cell"></div>
+    </div>
+
+    <div class="card layout-label" style="top: 188px; left: 496px; height: 20px;">overflow: auto -- clipped, scrolled content</div>
+    <div id="layoutScroller" style="top: 210px; left: 496px;"><div id="layoutScrollContent"></div></div>
+
+    <!-- Flex items stretch to the row's 70px, and a
+         height:50% / 100% child resolves against that stretched height
+         (it used to resolve against auto and collapse to nothing). -->
+    <div class="card layout-label" style="top: 296px; left: 496px; height: 20px;">flex stretch: height 50% / 100% of a stretched item</div>
+    <div id="pctFlex" style="top: 318px; left: 496px;">
+      <div class="pct-item"><div class="pct-fill"></div></div>
+      <div class="pct-item full"><div class="pct-fill"></div></div>
+      <div class="pct-item"><div class="pct-fill"></div></div>
+    </div>
+  </div>
+
+  <!-- Two 448px columns, the same convention as the Layout
+       panel just above. The transform card moved to the top of the right
+       column and got extra label-to-box clearance (32px instead of the
+       22px every other card here uses) -- `transform: rotate(-8deg)
+       scale(1.15)` on a 120x36 box grows its painted bounding box to
+       roughly 142x60 (rotation adds `w*sin(8deg) + h*cos(8deg)` etc. to
+       each axis), so the un-rotated 36px box's nominal top sits about 12px
+       *below* where the rotated box actually starts painting. At the old
+       22px gap that overlapped this card's own label; every other card's
+       box has no such rotation and doesn't need the extra room. -->
+  <div id="panelCss" class="tab-panel">
+    <div class="panel-marker" style="background: rgb(255, 255, 0);"></div>
+    <div class="surface left" style="height: 394px;"></div>
+    <div class="surface right" style="height: 376px;"></div>
+    <div class="card css-label" style="top: 48px; height: 20px;">Selectors & the cascade: id beats class</div>
+    <div id="cascadeBox" class="cascade-box" style="top: 70px;"></div>
+
+    <div class="card css-label" style="top: 128px; height: 20px;">Box model: padding, border, border-radius</div>
+    <div class="box-model-box" style="top: 150px;">padded</div>
+
+    <div class="card css-label" style="top: 218px; height: 20px;">background-image: linear-gradient()</div>
+    <div class="gradient-box" style="top: 240px;"></div>
+
+    <div class="card css-label" style="top: 304px; height: 20px;">opacity: 0.5 on the overlapping (blue) box</div>
+    <div class="opacity-back" style="top: 326px;"></div>
+    <div class="opacity-front" style="top: 326px;"></div>
+
+    <!-- The four 3D border styles, which used to
+         paint as solid. -->
+    <div class="card css-label" style="top: 378px; height: 20px;">border-style: groove / ridge / inset / outset</div>
+    <div class="border-tile" style="top: 400px; left: 16px; border-style: groove;"></div>
+    <div class="border-tile" style="top: 400px; left: 128px; border-style: ridge;"></div>
+    <div class="border-tile" style="top: 400px; left: 240px; border-style: inset;"></div>
+    <div class="border-tile" style="top: 400px; left: 352px; border-style: outset;"></div>
+
+    <div class="card css-label" style="top: 48px; left: 496px; height: 20px;">transform: rotate() + scale()</div>
+    <div class="transform-box" style="top: 80px; left: 596px;"></div>
+
+    <div class="card css-label" style="top: 162px; left: 496px; height: 20px;">box-shadow</div>
+    <div class="shadow-box" style="top: 184px; left: 536px;"></div>
+
+    <div class="card css-label" style="top: 254px; left: 496px; height: 20px;">Custom properties: var() with fallback</div>
+    <div class="var-box" style="top: 276px; left: 496px;"></div>
+
+    <div class="card css-label" style="top: 340px; left: 496px; height: 20px;">transition: background-color (2 captured frames)</div>
+    <div id="transitionBox" class="transition-box" style="top: 362px; left: 496px;"></div>
+
+    <!-- Semi-transparent box-shadow gallery, full width beneath both columns. -->
+    <div class="surface" style="top: 440px; left: 8px; width: 944px; height: 168px;"></div>
+    <div class="card css-label" style="top: 452px; height: 20px; width: 912px;">box-shadow with alpha: blur, spread, inset, layered</div>
+    <div class="shadow-tile" style="left: 48px; box-shadow: 0px 8px 20px rgba(0, 0, 0, 0.5);"></div>
+    <div class="shadow-caption" style="left: 40px;">soft drop, 50% black</div>
+    <div class="shadow-tile" style="left: 200px; box-shadow: 0px 0px 24px 6px rgba(90, 160, 255, 0.55);"></div>
+    <div class="shadow-caption" style="left: 192px;">blue glow + spread</div>
+    <div class="shadow-tile" style="left: 352px; box-shadow: 12px 12px 0px rgba(240, 90, 120, 0.45);"></div>
+    <div class="shadow-caption" style="left: 344px;">hard offset, 45% pink</div>
+    <div class="shadow-tile" style="left: 504px; box-shadow: inset 0px 6px 14px rgba(0, 0, 0, 0.6);"></div>
+    <div class="shadow-caption" style="left: 496px;">inset, 60% black</div>
+    <div class="shadow-tile" style="left: 656px; box-shadow: -10px -10px 0px rgba(80, 220, 140, 0.5), 10px 10px 0px rgba(250, 200, 60, 0.5);"></div>
+    <div class="shadow-caption" style="left: 648px;">two layers, 50% each</div>
+    <div class="shadow-tile" style="left: 808px; box-shadow: 0px 0px 0px 10px rgba(255, 255, 255, 0.18), 0px 0px 0px 20px rgba(255, 255, 255, 0.08);"></div>
+    <div class="shadow-caption" style="left: 800px;">spread rings, 18% / 8%</div>
+  </div>
+
+  <!-- Text tab. Two 448px columns, the same convention as Layout/CSS
+       above. Every card checked against docs/13-text-stack-spec.md and
+       docs/22-css-support-matrix.md. -->
+  <div id="panelText" class="tab-panel">
+    <div class="panel-marker" style="background: rgb(255, 0, 255);"></div>
+    <div class="surface left" style="height: 440px;"></div>
+    <div class="surface right" style="height: 434px;"></div>
+    <div class="card text-label" style="top: 48px; height: 20px;">@font-face: a loaded face ("Demo", Noto Sans)</div>
+    <div class="text-sample big" style="top: 70px;">Loaded via @font-face</div>
+
+    <div class="card text-label" style="top: 126px; height: 20px;">font-weight: normal vs. synthesized bold (same face)</div>
+    <div class="text-sample" style="top: 148px;">normal (400)</div>
+    <div class="text-sample bold-synth" style="top: 170px;">bold (700, synthesized)</div>
+
+    <div class="card text-label" style="top: 216px; height: 20px;">Line wrapping + text-align: justify</div>
+    <div class="text-sample wrap-box" style="top: 238px;">karouka lays this paragraph out across several lines and justifies each one but the last.</div>
+
+    <div class="card text-label" style="top: 330px; height: 20px;">white-space: pre / nowrap / pre-wrap</div>
+    <div class="text-sample ws-pre" style="top: 352px;">pre:  two   spaces
+kept, and this newline too</div>
+    <div class="text-sample ws-nowrap" style="top: 396px;">nowrap: one long unbroken line that overflows its box</div>
+    <div class="text-sample ws-prewrap" style="top: 420px;">pre-wrap:  spacing kept,
+but long lines still wrap</div>
+
+    <div class="card text-label" style="top: 48px; left: 496px; height: 20px;">letter-spacing / word-spacing</div>
+    <div class="text-sample spaced-letters" style="top: 70px; left: 496px;">spaced out</div>
+    <div class="text-sample spaced-words" style="top: 96px; left: 496px;">spaced word gaps here</div>
+
+    <div class="card text-label" style="top: 142px; left: 496px; height: 20px;">text-decoration: underline / line-through / wavy</div>
+    <div class="text-sample deco-underline" style="top: 164px; left: 496px;">underline</div>
+    <div class="text-sample deco-strike" style="top: 186px; left: 496px;">line-through</div>
+    <div class="text-sample deco-wavy" style="top: 208px; left: 496px;">wavy underline</div>
+
+    <div class="card text-label" style="top: 254px; left: 496px; height: 20px;">An RTL run (Arabic) inside LTR text</div>
+    <div class="text-sample rtl-run" style="top: 276px; left: 496px;">Hello, &#1605;&#1585;&#1581;&#1576;&#1575; World</div>
+
+    <div class="card text-label" style="top: 322px; left: 496px; height: 20px;">Complex shaping: Devanagari conjuncts/reordering</div>
+    <div class="text-sample shaping-run" style="top: 344px; left: 496px;">&#2361;&#2367;&#2344;&#2381;&#2342;&#2368; &#2325;&#2381;&#2359;&#2340;&#2381;&#2352;&#2367;&#2351;</div>
+
+    <!-- font-synthesis style. The "Demo" face has no
+         italic, so the engine slants the upright glyphs. -->
+    <div class="card text-label" style="top: 392px; left: 496px; height: 20px;">font-style: italic, synthesized (faux-oblique)</div>
+    <div class="text-sample faux-italic" style="top: 414px; left: 496px;">italic, slanted from upright</div>
+    <div class="text-sample faux-bold-italic" style="top: 436px; left: 496px;">bold italic, both synthesized</div>
+  </div>
+
+  <!-- Framework tabs. The panels only hold a marker and a
+       mount point; the apps below build everything else. -->
+  <div id="panelReact" class="tab-panel">
+    <div class="panel-marker" style="background: rgb(0, 255, 255);"></div>
+    <div class="surface left" style="height: 356px;"></div>
+    <div class="surface right" style="height: 316px;"></div>
+    <div id="reactRoot"></div>
+  </div>
+
+  <div id="panelSvelte" class="tab-panel">
+    <div class="panel-marker" style="background: rgb(255, 128, 0);"></div>
+    <div class="surface left" style="height: 236px;"></div>
+    <div class="surface right" style="height: 280px;"></div>
+    <div id="svelteRoot"></div>
+  </div>
+
+  <script>
+    // ---- Tab bar. Exactly one panel visible at a time, the
+    //      first tab selected on load (static "active" classes above,
+    //      already correct before this script even runs). Switching is a
+    //      classList change on script-driven click, the same mechanism
+    //      every interactive card below already proves works -- see the
+    //      classList note in <style> for why textContent is never used for
+    //      state like this.
+    (function () {
+      const tabs = [
+        { btn: document.getElementById("tabBtnApi"), panel: document.getElementById("panelApi") },
+        { btn: document.getElementById("tabBtnEvents"), panel: document.getElementById("panelEvents") },
+        { btn: document.getElementById("tabBtnLayout"), panel: document.getElementById("panelLayout") },
+        { btn: document.getElementById("tabBtnCss"), panel: document.getElementById("panelCss") },
+        { btn: document.getElementById("tabBtnText"), panel: document.getElementById("panelText") },
+        { btn: document.getElementById("tabBtnReact"), panel: document.getElementById("panelReact") },
+        { btn: document.getElementById("tabBtnSvelte"), panel: document.getElementById("panelSvelte") },
+      ];
+      // The indicator slides (CSS transition on `left`) to
+      // sit centred under the chosen button: button left + (124 - 40) / 2.
+      const indicator = document.getElementById("tabIndicator");
+      function selectTab(chosen) {
+        for (let i = 0; i < tabs.length; i++) {
+          const isChosen = tabs[i] === chosen;
+          tabs[i].btn.classList.toggle("active", isChosen);
+          tabs[i].panel.classList.toggle("active", isChosen);
+          if (isChosen) indicator.style.left = (4 + 132 * i + 42) + "px";
+        }
+      }
+      for (let i = 0; i < tabs.length; i++) {
+        const entry = tabs[i];
+        entry.btn.addEventListener("click", function () { selectTab(entry); });
+      }
+    })();
+
+    // ---- instanceof HTMLIFrameElement via per-tag class dispatch
+    (function () {
+      const frame = document.createElement("iframe");
+      const ok = frame instanceof HTMLIFrameElement;
+      document.getElementById("syncLine1").textContent =
+        "iframe instanceof HTMLIFrameElement: " + (ok ? "PASS" : "FAIL");
+    })();
+
+    // ---- createElement always ASCII-lowercases
+    (function () {
+      const el = document.createElement("DIV");
+      const ok = el.tagName === "DIV" && el.localName === "div";
+      document.getElementById("syncLine2").textContent =
+        "createElement('DIV').localName === 'div': " + (ok ? "PASS" : "FAIL");
+    })();
+
+    // ---- A subclass constructor inherits a parent static constant
+    //      (CustomEvent chains onto Event at the constructor level, not only
+    //      the instance-prototype level).
+    (function () {
+      const ok = CustomEvent.BUBBLING_PHASE === 3;
+      document.getElementById("syncLine3").textContent =
+        "CustomEvent.BUBBLING_PHASE === 3: " + (ok ? "PASS" : "FAIL");
+    })();
+
+    // ---- addEventListener accepts the handleEvent object form
+    (function () {
+      let calls = 0;
+      const target = document.getElementById("syncCard");
+      const listener = { handleEvent: function (e) { calls += 1; } };
+      target.addEventListener("ping", listener);
+      const evt = new CustomEvent("ping", { detail: null });
+      target.dispatchEvent(evt);
+      const ok = calls === 1;
+      document.getElementById("syncLine4").textContent =
+        "handleEvent object listener fired: " + (ok ? "PASS" : "FAIL");
+    })();
+
+    // ---- A null listener is accepted and ignored, not a TypeError
+    (function () {
+      let ok = false;
+      try {
+        document.getElementById("syncCard").addEventListener("ping", null);
+        ok = true;
+      } catch (e) {
+        ok = false;
+      }
+      document.getElementById("syncLine5").textContent =
+        "addEventListener(type, null) does not throw: " + (ok ? "PASS" : "FAIL");
+    })();
+
+    // ---- addEventListener('unhandledrejection', ...) -- the
+    //      rejection is not caught anywhere, so it surfaces once the engine's
+    //      per-frame microtask checkpoint runs (checkpoint_microtasks(),
+    //      docs/30-script-spec.md § Event loop). This listener is not
+    //      driven by pointer input, so writing textContent here once is
+    //      safe (see the classList note at the top of <style>).
+    addEventListener("unhandledrejection", function (e) {
+      const reason = e.reason ? e.reason.message : "";
+      document.getElementById("syncLine6").textContent =
+        "unhandledrejection fired, reason='" + reason + "': PASS";
+    });
+    Promise.reject(new Error("showcase boom"));
+
+    // ---- Recently landed API surface, one line per feature.
+    (function () {
+      function line(n, label, fn) {
+        let ok = false;
+        try { ok = fn(); } catch (e) { ok = false; }
+        document.getElementById("newLine" + n).textContent = label + ": " + (ok ? "PASS" : "FAIL");
+      }
+      line(1, "new Event('x', {bubbles})", function () {
+        const e = new Event("x", { bubbles: true, cancelable: true });
+        return e.type === "x" && e.bubbles === true && e.cancelable === true;
+      });
+      line(2, "new MouseEvent / KeyboardEvent", function () {
+        const m = new MouseEvent("click", { clientX: 5, button: 0 });
+        const k = new KeyboardEvent("keydown", { key: "a" });
+        return m.clientX === 5 && m instanceof Event && k.key === "a";
+      });
+      line(3, "'oninput' in document, el.onclick", function () {
+        const d = document.createElement("div");
+        return ("oninput" in document) && d.onclick === null;
+      });
+      line(4, "input.value / defaultValue", function () {
+        const i = document.createElement("input");
+        i.defaultValue = "a";
+        i.value = "b";
+        return i.value === "b" && i.defaultValue === "a";
+      });
+      line(5, "input.checked", function () {
+        const i = document.createElement("input");
+        i.type = "checkbox";
+        i.checked = true;
+        return i.checked === true;
+      });
+      line(6, "select.value / option.selected", function () {
+        const s = document.createElement("select");
+        for (const v of ["a", "b", "c"]) {
+          const o = document.createElement("option");
+          o.value = v;
+          o.textContent = v;
+          s.appendChild(o);
+        }
+        s.options[2].selected = true;
+        const viaOption = s.value === "c" && s.selectedIndex === 2;
+        s.value = "b";
+        return viaOption && s.selectedIndex === 1;
+      });
+      line(7, "checkbox.click() toggles + change", function () {
+        const i = document.createElement("input");
+        i.type = "checkbox";
+        let changes = 0;
+        i.addEventListener("change", function () { changes += 1; });
+        document.body.appendChild(i);
+        i.click();
+        const ok = i.checked === true && changes === 1;
+        i.remove();
+        return ok;
+      });
+    })();
+
+    // ---- Forms card
+    (function () {
+      const check = document.getElementById("formCheck");
+      const swatch = document.getElementById("formCheckSwatch");
+      check.addEventListener("change", function () {
+        swatch.classList.toggle("fired-green", check.checked);
+      });
+      const target = document.getElementById("onclickTarget");
+      const onSwatch = document.getElementById("onclickSwatch");
+      target.onclick = function () { onSwatch.classList.add("fired-blue"); };
+    })();
+
+    // ---- Overflow/scrolling card. Set once at parse time (no
+    //      listener involved -- textContent-avoidance convention doesn't
+    //      apply here, this mutates scrollTop, not textContent), so the
+    //      clipped content shows a real scrolled offset from the very first
+    //      captured frame instead of needing a live wheel gesture to prove
+    //      overflow: auto clips and scrolls.
+    (function () {
+      document.getElementById("layoutScroller").scrollTop = 80;
+    })();
+
+    // ---- mouseover/mouseout and mouseenter/mouseleave.
+    (function () {
+      const outer = document.getElementById("hoverOuter");
+      outer.addEventListener("mouseover", function () { outer.classList.add("over-hot"); });
+      outer.addEventListener("mouseout", function () { outer.classList.remove("over-hot"); });
+      outer.addEventListener("mouseenter", function () { outer.classList.add("enter-hot"); });
+      outer.addEventListener("mouseleave", function () { outer.classList.remove("enter-hot"); });
+    })();
+
+    // ---- dblclick
+    (function () {
+      const target = document.getElementById("dblclickTarget");
+      const swatch1 = document.getElementById("dblclickSwatch1");
+      const swatch2 = document.getElementById("dblclickSwatch2");
+      target.addEventListener("click", function () { swatch1.classList.add("fired-blue"); });
+      target.addEventListener("dblclick", function () { swatch2.classList.add("fired-green"); });
+    })();
+
+    // ---- contextmenu + auxclick (click narrowed)
+    (function () {
+      const target = document.getElementById("cmTarget");
+      const up = document.getElementById("cmSwatchUp");
+      const menu = document.getElementById("cmSwatchMenu");
+      const aux = document.getElementById("cmSwatchAux");
+      const click = document.getElementById("cmSwatchClick");
+      target.addEventListener("mouseup", function () { up.classList.add("fired-blue"); });
+      target.addEventListener("contextmenu", function () { menu.classList.add("fired-purple"); });
+      target.addEventListener("auxclick", function () { aux.classList.add("fired-green"); });
+      target.addEventListener("click", function () { click.classList.add("fired-red"); });
+    })();
+
+    // ---- WheelEvent
+    (function () {
+      const scroller = document.getElementById("scroller");
+      const swatch = document.getElementById("wheelSwatch");
+      scroller.addEventListener("wheel", function (e) {
+        if (e.deltaY > 0) swatch.classList.add("fired-purple");
+      });
+    })();
+
+    // ---- composedPath(), and empty again after dispatch
+    (function () {
+      const target = document.getElementById("pathTarget");
+      const during = document.getElementById("pathSwatchDuring");
+      const after = document.getElementById("pathSwatchAfter");
+      target.addEventListener("click", function (e) {
+        const path = e.composedPath();
+        if (path.length >= 1 && path[0] === target) during.classList.add("fired-green");
+        else during.classList.add("fired-red");
+        // composedPath() must report empty again once dispatch has
+        // ended. setTimeout runs on a later per-frame timer pass, outside
+        // input dispatch, so mutating a second element here (not `during`,
+        // which was already safely mutated above) stays in the
+        // proven-safe "timer-driven mutation" category.
+        setTimeout(function () {
+          const cleared = e.composedPath();
+          if (cleared.length === 0) after.classList.add("fired-green");
+          else after.classList.add("fired-red");
+        }, 0);
+      });
+    })();
+
+    // ---- Transition demo. Started by clicking the CSS tab
+    //      button rather than on page load, so the driver controls exactly
+    //      when the transition begins and can capture one frame at (or near)
+    //      its start and a second frame after advancing simulated time,
+    //      showing the mid-transition color -- the same click-driven,
+    //      classList-only convention every other card on this page uses.
+    (function () {
+      const box = document.getElementById("transitionBox");
+      document.getElementById("tabBtnCss").addEventListener("click", function () {
+        box.classList.add("on");
+      });
+    })();
+  </script>
+  <!-- Unmodified framework bundles, copied into frameworks/
+       (licenses in frameworks/licenses/). They live beside the page so
+       every <script src> stays inside this directory. -->
+  <script src="frameworks/react.development.js"></script>
+  <script src="frameworks/react-dom.development.js"></script>
+  <script src="showcase_react.js"></script>
+  <script src="frameworks/svelte-showcase.js"></script>
+</body>
+</html>

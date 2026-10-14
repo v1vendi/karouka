@@ -1,0 +1,367 @@
+diff --git a/Libraries/LibWeb/Embedder/Prune/MediaCapture.cmake b/Libraries/LibWeb/Embedder/Prune/MediaCapture.cmake
+new file mode 100644
+index 0000000000..07de204ceb
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/MediaCapture.cmake
+@@ -0,0 +1,6 @@
++# karouka: Media Capture and Streams. There are no cameras or microphones to capture from.
++# `navigator.mediaDevices` and `MediaStream` are not exposed, `srcObject` takes no MediaStream, and the
++# Web Audio nodes that read or write a MediaStream (createMediaStreamSource/Destination) go with it.
++list(APPEND LIBWEB_PRUNED_FAMILIES MediaCapture)
++list(FILTER SOURCES EXCLUDE REGEX "^WebAudio/(MediaStreamAudio(Source|Destination)Node|Rendering/MediaStream(Source|Destination)RenderNode)\\.cpp$")
++list(APPEND LIBWEB_PRUNED_IDL WebAudio/MediaStreamAudioDestinationNode WebAudio/MediaStreamAudioSourceNode)
+diff --git a/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake b/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake
+new file mode 100644
+index 0000000000..eab78ca92a
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/MediaSourceExtensions.cmake
+@@ -0,0 +1,4 @@
++# karouka: Media Source Extensions. Pages render without a media server, so no media element can play a
++# MediaSource. `MediaSource`, `ManagedMediaSource` and `SourceBuffer` are not exposed, `srcObject` takes only
++# a Blob, `URL.createObjectURL` only a Blob, and MediaCapabilities answers "media-source" queries unsupported.
++list(APPEND LIBWEB_PRUNED_FAMILIES MediaSourceExtensions)
+diff --git a/Libraries/LibWeb/FileAPI/BlobURLStore.cpp b/Libraries/LibWeb/FileAPI/BlobURLStore.cpp
+index c012107386..856f0feecb 100644
+--- a/Libraries/LibWeb/FileAPI/BlobURLStore.cpp
++++ b/Libraries/LibWeb/FileAPI/BlobURLStore.cpp
+@@ -35,13 +35,19 @@ static GC::ConservativeHashMap<Utf16String, BlobURLEntry>& blob_url_store()
+ // The entry as the user agent's blob URL store has it: a Blob's bytes in shared memory, and the environment's origin.
+ static ErrorOr<SerializedBlobURLEntry> serialize_blob_url_entry(BlobURLEntry const& entry)
+ {
+-    auto object = TRY(entry.object.visit(
++    // karouka: visited outside TRY(), so the pruned alternative's lambda can sit under its guard.
++    auto object_or_error = entry.object.visit(
+         [](GC::Ref<Blob> const& blob) -> ErrorOr<SerializedBlobURLEntry::Object> {
+             return SerializedBlobURLEntry::Blob { .type = blob->type().to_utf8(), .data = TRY(blob->shared_bytes()) };
+-        },
++        }
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
++        ,
+         [](GC::Ref<MediaSourceExtensions::MediaSource> const&) -> ErrorOr<SerializedBlobURLEntry::Object> {
+             return SerializedBlobURLEntry::MediaSource {};
+-        }));
++        }
++#endif
++    );
++    auto object = TRY(move(object_or_error));
+ 
+     return SerializedBlobURLEntry { .object = move(object), .origin = entry.environment->origin() };
+ }
+@@ -185,10 +191,14 @@ Optional<URL::BlobURLEntry> resolve_a_blob_url(URL::URL const& url)
+     auto object = entry->object.visit(
+         [&](GC::Ref<Blob> const& blob) -> ErrorOr<URL::BlobURLEntry::Object> {
+             return URL::BlobURLEntry::Blob { entry->token, BlobURLObject::create(blob->type().to_utf8(), TRY(blob->shared_bytes())) };
+-        },
++        }
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
++        ,
+         [](GC::Ref<MediaSourceExtensions::MediaSource> const&) -> ErrorOr<URL::BlobURLEntry::Object> {
+             return URL::BlobURLEntry::MediaSource {};
+-        });
++        }
++#endif
++    );
+     if (object.is_error())
+         return {};
+     return URL::BlobURLEntry { .object = object.release_value(), .environment { .origin = entry->environment->origin() } };
+diff --git a/Libraries/LibWeb/FileAPI/BlobURLStore.h b/Libraries/LibWeb/FileAPI/BlobURLStore.h
+index beb4bcd390..e2321d7e58 100644
+--- a/Libraries/LibWeb/FileAPI/BlobURLStore.h
++++ b/Libraries/LibWeb/FileAPI/BlobURLStore.h
+@@ -17,7 +17,11 @@ namespace Web::FileAPI {
+ 
+ // https://w3c.github.io/FileAPI/#blob-url-entry
+ struct BlobURLEntry {
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     using Object = Variant<GC::Ref<Blob>, GC::Ref<MediaSourceExtensions::MediaSource>>;
++#else
++    using Object = Variant<GC::Ref<Blob>>;
++#endif
+ 
+     Object object;
+     GC::Ref<HTML::EnvironmentSettingsObject> environment;
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+index d39d673494..2b3fb77e81 100644
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+@@ -54,8 +54,12 @@
+ #include <LibWeb/Infra/SerializedURL.h>
+ #include <LibWeb/InvalidateDisplayList.h>
+ #include <LibWeb/Layout/Node.h>
+-#include <LibWeb/MediaCapture/MediaStream.h>
+-#include <LibWeb/MediaSourceExtensions/MediaSource.h>
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
++#    include <LibWeb/MediaCapture/MediaStream.h>
++#endif
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
++#    include <LibWeb/MediaSourceExtensions/MediaSource.h>
++#endif
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/Page/ScreenWakeLockHandle.h>
+ #include <LibWeb/Painting/BoxViews.h>
+@@ -252,7 +256,9 @@ void HTMLMediaElement::visit_edges(Cell::Visitor& visitor)
+     visitor.visit(m_source_element_selector);
+     visitor.visit(m_pending_play_promises);
+     visitor.visit(m_selected_video_track);
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     visitor.visit(m_attached_media_source);
++#endif
+     visitor.visit(m_assigned_media_provider_object);
+     if (m_controls.has_value())
+         m_controls->visit_edges(visitor);
+@@ -1292,6 +1298,8 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
+         // 6. Let object be the result of obtaining a blob object using the URL record's blob URL entry and stringOrEnvironment.
+         auto object = FileAPI::obtain_a_blob_object(*blob_url_entry, string_or_environment);
+         // 7. If object is a media provider object,
++        // karouka: without Media Source Extensions no blob URL entry holds a MediaSource.
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+         if (object.has_value() && object->has<FileAPI::SerializedBlobURLEntry::MediaSource>()) {
+             // then set mode to local.
+ 
+@@ -1305,6 +1313,9 @@ void HTMLMediaElement::load_url_resource(URL::URL const& url_record, Function<vo
+             load_local_resource(blob_entry->object.get<GC::Ref<MediaSourceExtensions::MediaSource>>(), move(failure_callback));
+             return;
+         }
++#else
++        (void)object;
++#endif
+     }
+ 
+     // This is only reached via a media element task which is only processed once the document is fully active.
+@@ -1599,6 +1610,7 @@ void HTMLMediaElement::load_local_resource(MediaProvider const& media_provider,
+     // execute the additional steps, below.
+ 
+     media_provider.visit(
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+         // 1. If the resource fetch algorithm was invoked with a media provider object that is a MediaSource object, a
+         //    MediaSourceHandle object or a URL record whose object is a MediaSource object, then:
+         [&](GC::Ref<MediaSourceExtensions::MediaSource> media_source) {
+@@ -1675,10 +1687,13 @@ void HTMLMediaElement::load_local_resource(MediaProvider const& media_provider,
+                 //     the demuxers that our PlaybackManager is given.
+             }
+         },
++#endif
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+         [&](GC::Ref<MediaCapture::MediaStream>) {
+             // FIXME: Support MediaStream objects.
+             failure_callback("MediaStream objects are not supported"_utf16);
+         },
++#endif
+         [&](GC::Ref<FileAPI::Blob>) {
+             // FIXME: Support File objects.
+             failure_callback("File objects are not supported"_utf16);
+@@ -2441,10 +2456,12 @@ void HTMLMediaElement::handle_media_source_failure(Span<GC::Ref<WebIDL::Promise>
+ // https://w3c.github.io/media-source/#mediasource-detach
+ void HTMLMediaElement::detach_attached_media_source()
+ {
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     if (!m_attached_media_source)
+         return;
+     m_attached_media_source->detach_from_media_element({});
+     m_attached_media_source = nullptr;
++#endif
+ }
+ 
+ // https://html.spec.whatwg.org/multipage/media.html#forget-the-media-element's-media-resource-specific-tracks
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.h b/Libraries/LibWeb/HTML/HTMLMediaElement.h
+index 465e7bc6e2..3afc48a996 100644
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.h
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.h
+@@ -55,7 +55,15 @@ enum class MediaSeekMode : u8 {
+ 
+ class SourceElementSelector;
+ 
+-using MediaProvider = Variant<Empty, GC::Ref<MediaCapture::MediaStream>, GC::Ref<MediaSourceExtensions::MediaSource>, GC::Ref<FileAPI::Blob>>;
++// karouka: the pruned families' alternatives go, as the bindings generator drops them from the IDL union.
++using MediaProvider = Variant<Empty,
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
++    GC::Ref<MediaCapture::MediaStream>,
++#endif
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
++    GC::Ref<MediaSourceExtensions::MediaSource>,
++#endif
++    GC::Ref<FileAPI::Blob>>;
+ 
+ class HTMLMediaElement : public HTMLElement {
+     WEB_WRAPPABLE(HTMLMediaElement, HTMLElement);
+@@ -170,7 +178,9 @@ public:
+ 
+     void update_ready_state();
+ 
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     void set_duration(Badge<MediaSourceExtensions::MediaSource>, double duration) { set_duration(duration); }
++#endif
+ 
+     MediaClient::RemotePlaybackManager& playback_manager()
+     {
+@@ -335,10 +345,12 @@ private:
+     // https://html.spec.whatwg.org/multipage/media.html#assigned-media-provider-object
+     MediaProvider m_assigned_media_provider_object;
+ 
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
+     // https://w3c.github.io/media-source/#mediasource-attach
+     // NB: Unlike the assigned media provider object, this is also set when a MediaSource is attached through a blob
+     //     URL — so that the media element load algorithm can detach it.
+     GC::Ptr<MediaSourceExtensions::MediaSource> m_attached_media_source;
++#endif
+ 
+     // https://html.spec.whatwg.org/multipage/media.html#dom-media-currentsrc
+     Utf16String m_current_src;
+diff --git a/Libraries/LibWeb/HTML/Navigator.cpp b/Libraries/LibWeb/HTML/Navigator.cpp
+index a38ad4160f..0acfcee754 100644
+--- a/Libraries/LibWeb/HTML/Navigator.cpp
++++ b/Libraries/LibWeb/HTML/Navigator.cpp
+@@ -31,7 +31,9 @@
+ #    include <LibWeb/Internals/XRTest.h>
+ #endif
+ #include <LibWeb/Loader/ResourceLoader.h>
+-#include <LibWeb/MediaCapture/MediaDevices.h>
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
++#    include <LibWeb/MediaCapture/MediaDevices.h>
++#endif
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/PermissionsAPI/Permissions.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+@@ -108,7 +110,9 @@ void Navigator::visit_edges(GC::Cell::Visitor& visitor)
+     visitor.visit(m_service_worker_container);
+ #endif
+     visitor.visit(m_media_capabilities);
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+     visitor.visit(m_media_devices);
++#endif
+ #ifndef LIBWEB_PRUNE_CREDENTIALMANAGEMENT
+     visitor.visit(m_credentials);
+ #endif
+@@ -211,12 +215,14 @@ GC::Ref<MediaCapabilitiesAPI::MediaCapabilities> Navigator::media_capabilities()
+     return *m_media_capabilities;
+ }
+ 
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+ GC::Ref<MediaCapture::MediaDevices> Navigator::media_devices()
+ {
+     if (!m_media_devices)
+         m_media_devices = MediaCapture::MediaDevices::create(*m_window);
+     return *m_media_devices;
+ }
++#endif
+ 
+ // https://w3c.github.io/battery/#the-getbattery-method
+ GC::Ref<WebIDL::Promise> Navigator::get_battery()
+diff --git a/Libraries/LibWeb/HTML/Navigator.h b/Libraries/LibWeb/HTML/Navigator.h
+index 9bc2cc66e3..fce3fe2b77 100644
+--- a/Libraries/LibWeb/HTML/Navigator.h
++++ b/Libraries/LibWeb/HTML/Navigator.h
+@@ -23,7 +23,9 @@
+ #include <LibWeb/HTML/PluginArray.h>
+ #include <LibWeb/HTML/UserActivation.h>
+ #include <LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h>
+-#include <LibWeb/MediaCapture/MediaDevices.h>
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
++#    include <LibWeb/MediaCapture/MediaDevices.h>
++#endif
+ #ifndef LIBWEB_PRUNE_SERIAL
+ #    include <LibWeb/Serial/Serial.h>
+ #endif
+@@ -107,7 +109,9 @@ public:
+ #endif
+ 
+     GC::Ref<MediaCapabilitiesAPI::MediaCapabilities> media_capabilities();
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+     GC::Ref<MediaCapture::MediaDevices> media_devices();
++#endif
+ 
+     static WebIDL::Long max_touch_points();
+ 
+@@ -161,8 +165,10 @@ private:
+     // https://w3c.github.io/media-capabilities/#dom-navigator-mediacapabilities
+     GC::Ptr<MediaCapabilitiesAPI::MediaCapabilities> m_media_capabilities;
+ 
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+     // https://w3c.github.io/mediacapture-main/#dom-navigator-mediadevices
+     GC::Ptr<MediaCapture::MediaDevices> m_media_devices;
++#endif
+ 
+ #ifndef LIBWEB_PRUNE_CREDENTIALMANAGEMENT
+     // https://w3c.github.io/webappsec-credential-management/#framework-credential-management
+diff --git a/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.cpp b/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.cpp
+index d9f01abcd5..67bcee47c6 100644
+--- a/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.cpp
++++ b/Libraries/LibWeb/MediaCapabilitiesAPI/MediaCapabilities.cpp
+@@ -14,7 +14,9 @@
+ #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+ #include <LibWeb/HTML/Window.h>
+ #include <LibWeb/MediaCapabilitiesAPI/MediaCapabilities.h>
+-#include <LibWeb/MediaSourceExtensions/MediaSource.h>
++#ifndef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
++#    include <LibWeb/MediaSourceExtensions/MediaSource.h>
++#endif
+ #include <LibWeb/Platform/EventLoopPlugin.h>
+ #include <LibWeb/WebIDL/Promise.h>
+ #include <LibWebCommon/MimeSniff/MimeType.h>
+@@ -278,6 +280,11 @@ static NonnullRefPtr<DecoderCapabilitiesPromise> request_file_decoding_capabilit
+ 
+ static NonnullRefPtr<DecoderCapabilitiesPromise> request_media_source_decoding_capabilities(MimeSniff::MimeType const& mime_type)
+ {
++#ifdef LIBWEB_PRUNE_MEDIASOURCEEXTENSIONS
++    // karouka: without Media Source Extensions no MediaSource byte stream is supported.
++    (void)mime_type;
++    return unsupported();
++#else
+     if (!MediaSourceExtensions::MediaSource::mime_type_is_supported_in_a_byte_stream(mime_type))
+         return unsupported();
+ 
+@@ -285,6 +292,7 @@ static NonnullRefPtr<DecoderCapabilitiesPromise> request_media_source_decoding_c
+     if (media_client.is_error())
+         return unsupported();
+     return media_client.value()->request_decoder_capabilities(mime_type.parameters().get("codecs"sv)->bytes_as_string_view());
++#endif
+ }
+ 
+ // https://w3c.github.io/media-capabilities/#check-mime-type-support
+diff --git a/Libraries/LibWeb/WebAudio/AudioContext.cpp b/Libraries/LibWeb/WebAudio/AudioContext.cpp
+index 00c67b6856..cda698c519 100644
+--- a/Libraries/LibWeb/WebAudio/AudioContext.cpp
++++ b/Libraries/LibWeb/WebAudio/AudioContext.cpp
+@@ -398,6 +398,7 @@ WebIDL::ExceptionOr<GC::Ref<MediaElementAudioSourceNode>> AudioContext::create_m
+     return MediaElementAudioSourceNode::create(*this, *media_element);
+ }
+ 
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+ // https://webaudio.github.io/web-audio-api/#dom-audiocontext-createmediastreamsource
+ WebIDL::ExceptionOr<GC::Ref<MediaStreamAudioSourceNode>> AudioContext::create_media_stream_source(GC::Ptr<MediaCapture::MediaStream> media_stream)
+ {
+@@ -410,5 +411,6 @@ WebIDL::ExceptionOr<GC::Ref<MediaStreamAudioDestinationNode>> AudioContext::crea
+ {
+     return MediaStreamAudioDestinationNode::create(*this);
+ }
++#endif
+ 
+ }
+diff --git a/Libraries/LibWeb/WebAudio/AudioContext.h b/Libraries/LibWeb/WebAudio/AudioContext.h
+index 4eabc20172..23811b1d51 100644
+--- a/Libraries/LibWeb/WebAudio/AudioContext.h
++++ b/Libraries/LibWeb/WebAudio/AudioContext.h
+@@ -9,8 +9,10 @@
+ #include <LibWeb/Bindings/AudioContext.h>
+ #include <LibWeb/WebAudio/BaseAudioContext.h>
+ #include <LibWeb/WebAudio/MediaElementAudioSourceNode.h>
+-#include <LibWeb/WebAudio/MediaStreamAudioDestinationNode.h>
+-#include <LibWeb/WebAudio/MediaStreamAudioSourceNode.h>
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
++#    include <LibWeb/WebAudio/MediaStreamAudioDestinationNode.h>
++#    include <LibWeb/WebAudio/MediaStreamAudioSourceNode.h>
++#endif
+ #include <LibWeb/WebAudio/Rendering/RealtimeAudioRenderer.h>
+ 
+ namespace Web::WebAudio {
+@@ -39,8 +41,10 @@ public:
+     WebIDL::ExceptionOr<void> close(GC::Ref<WebIDL::Promise>);
+ 
+     WebIDL::ExceptionOr<GC::Ref<MediaElementAudioSourceNode>> create_media_element_source(GC::Ptr<HTML::HTMLMediaElement>);
++#ifndef LIBWEB_PRUNE_MEDIACAPTURE
+     WebIDL::ExceptionOr<GC::Ref<MediaStreamAudioSourceNode>> create_media_stream_source(GC::Ptr<MediaCapture::MediaStream>);
+     WebIDL::ExceptionOr<GC::Ref<MediaStreamAudioDestinationNode>> create_media_stream_destination();
++#endif
+ 
+ private:
+     explicit AudioContext(GC::Ref<DOM::EventTarget> relevant_global_object)

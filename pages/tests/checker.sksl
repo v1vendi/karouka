@@ -1,0 +1,22 @@
+// checker.sksl — M1. No author uniforms, no time. The simplest thing that
+// proves the pipeline: parse -> style -> paint -> Skia.
+//
+// Also the tiling canary: at background-repeat: repeat the squares must stay
+// square and the seams must be invisible. If the tile origin is wrong, this
+// shader shows it immediately.
+
+uniform float2 uSize;
+
+const float kCell = 16.0;
+
+half4 main(float2 coord) {
+    float2 cell = floor(coord / kCell);
+    float  odd  = mod(cell.x + cell.y, 2.0);
+
+    half3 dark  = half3(0.10, 0.11, 0.13);
+    half3 light = half3(0.20, 0.62, 1.00);
+    half3 rgb   = mix(dark, light, half(odd));
+
+    // Opaque, so premultiplied and straight alpha coincide here.
+    return half4(rgb, 1.0);
+}

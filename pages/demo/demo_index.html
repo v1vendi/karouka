@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* A start page for a viewer without <a href> navigation: such a viewer maps
+     a click to an entry host-side from this fixed geometry: row i spans
+     top = 96 + 64*i .. +52, left 40 .. 640 (logical px). Its rows are not
+     links; pages/index.html is the linked start page karouka_viewer opens. */
+  @font-face { font-family: "Demo"; src: url("../fonts/NotoSans-Regular.ttf"); }
+  * { margin: 0; box-sizing: border-box; }
+  body { background: rgb(20, 24, 32); font-family: "Demo"; color: rgb(230, 234, 242); }
+  h1 { position: absolute; left: 40px; top: 28px; font-size: 30px; }
+  .row {
+    position: absolute; left: 40px; width: 600px; height: 52px;
+    background: rgb(36, 44, 60); border: 1px solid rgb(70, 84, 112); border-radius: 8px;
+  }
+  .row:hover { background: rgb(52, 64, 90); }
+  .name { position: absolute; left: 16px; top: 6px; font-size: 18px; }
+  .desc { position: absolute; left: 16px; top: 30px; font-size: 12px; color: rgb(150, 162, 186); }
+  .key { position: absolute; right: 16px; top: 14px; font-size: 16px; color: rgb(120, 180, 255); }
+  #help { position: absolute; left: 40px; top: 494px; font-size: 13px; color: rgb(150, 162, 186); }
+</style>
+</head>
+<body>
+  <h1>Demo pages</h1>
+  <div class="row" style="top: 96px"><div class="name">sashimi_page.html</div><div class="desc">Restaurant menu with Inter @font-face faces</div><div class="key">1</div></div>
+  <div class="row" style="top: 160px"><div class="name">showcase_page.html</div><div class="desc">Feature showcase: layout, text, scripts, bidi</div><div class="key">2</div></div>
+  <div class="row" style="top: 224px"><div class="name">animations_page.html</div><div class="desc">CSS animation gallery (120 fps target)</div><div class="key">3</div></div>
+  <div class="row" style="top: 288px"><div class="name">demo_page.html</div><div class="desc">Interactive demo page</div><div class="key">4</div></div>
+  <div class="row" style="top: 352px"><div class="name">hud_page.html</div><div class="desc">Typical game HUD, rAF-driven bindings</div><div class="key">5</div></div>
+  <div class="row" style="top: 416px"><div class="name">trellis_page.html</div><div class="desc">Dockable workspace: drag tabs to dock, resize, fractal zoom</div><div class="key">6</div></div>
+  <div id="help">Click an entry or press 1-6. Esc / Cmd+[ returns here. Cmd+Right / Cmd+Left: next / previous page.</div>
+</body>
+</html>

@@ -1,0 +1,86 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: align grid abspos children in the grid content box
+
+An absolutely positioned child of a grid container that isn't its
+containing block got an empty static-position rectangle at the content
+box's origin with start alignment, so align-self/align-items (and
+justify-self/justify-items) had no effect on its static position.
+
+css-grid-2 § 9.4: the static position is that of the sole grid item in a
+grid area whose edges are the grid container's content edges, aligned by
+the child's self-alignment properties. Give the child that rectangle and
+the alignment item_alignment_for_node() resolves for it.
+
+Fixes WPT css/css-grid/abspos/grid-abspos-staticpos-align-*.
+---
+diff --git a/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs b/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
+index bafd7cd1d2..2f518c3781 100644
+--- a/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
++++ b/Libraries/LibWeb/Rust/src/layout/grid_formatting_context.rs
+@@ -3494,15 +3494,10 @@ impl<'pass> GridFormattingContext<'pass> {
+         }
+         for child in self.run.callbacks.children(self.run.box_) {
+             if self.facts(child).is_absolutely_positioned() {
+-                let rect = abspos_inputs::StaticPositionRect {
+-                    rect: geometry::LogicalRect::default(),
+-                    inline_alignment: StaticPositionAlignment::Start,
+-                    block_alignment: StaticPositionAlignment::Start,
+-                    alignment_derives_from_own_computed_values: false,
+-                    is_known: true,
+-                };
+-                // The grid area supplies both the containing block and the
+-                // static position for the grid's own abspos children.
++                let rect = self.static_position_rect(child);
++                // When the grid is the containing block, the grid area supplies both the containing
++                // block and the position for the grid's own abspos children (the rect above is
++                // unused, the axis modes are InsetFromRect).
+                 let containing_block_info = node_facts::has_flag(
+                     self.run.callbacks.node_data(self.run.box_),
+                     node_facts::containing_block_establishment_flag(self.facts(child).is_fixed_position()),
+@@ -3536,6 +3531,29 @@ impl<'pass> GridFormattingContext<'pass> {
+         }
+     }
+ 
++    // https://drafts.csswg.org/css-grid-2/#static-position
++    // The static position of an absolutely-positioned child of a grid container is determined as if it were the sole
++    // grid item in a grid area whose edges coincide with the content edges of the grid container.
++    // https://drafts.csswg.org/css-align-3/#align-abspos-static
++    // Its self-alignment properties (justify-self, align-self) align it within that static-position rectangle.
++    fn static_position_rect(&self, node: Node) -> abspos_inputs::StaticPositionRect {
++        let container = self.container_used();
++        abspos_inputs::StaticPositionRect {
++            rect: geometry::LogicalRect {
++                offset: Default::default(),
++                size: geometry::LogicalSize {
++                    inline_size: container.content_inline_size.get(),
++                    block_size: container.content_block_size.get(),
++                },
++            },
++            inline_alignment: static_position_alignment(self.item_alignment_for_node(node, Axis::Column)),
++            block_alignment: static_position_alignment(self.item_alignment_for_node(node, Axis::Row)),
++            // item_alignment_for_node() consulted the box's own justify-self and align-self.
++            alignment_derives_from_own_computed_values: true,
++            is_known: true,
++        }
++    }
++
+     // https://www.w3.org/TR/css-grid-2/#abspos-items
+     pub(crate) fn abspos_containing_block_info(&self, node: Node) -> abspos_inputs::AbsposContainingBlockInfo {
+         let grid_style = self.grid_style(node);
+@@ -3564,6 +3582,16 @@ impl<'pass> GridFormattingContext<'pass> {
+     }
+ }
+ 
++// FIXME: Safe/unsafe overflow alignment and baseline alignment fall back to start; self-start/self-end are
++// read as start/end, which holds while the abspos child's writing mode matches the grid's.
++fn static_position_alignment(alignment: Alignment) -> StaticPositionAlignment {
++    match alignment {
++        Alignment::Center => StaticPositionAlignment::Center,
++        Alignment::End | Alignment::SelfEnd => StaticPositionAlignment::End,
++        _ => StaticPositionAlignment::Start,
++    }
++}
++
+ fn abspos_alignment(alignment: Alignment) -> AbsposAlignment {
+     match alignment {
+         Alignment::Baseline => AbsposAlignment::Baseline,

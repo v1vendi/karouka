@@ -1,0 +1,52 @@
+diff --git a/Libraries/LibHTTP/CMakeLists.txt b/Libraries/LibHTTP/CMakeLists.txt
+index bb1ccd8..304c874 100644
+--- a/Libraries/LibHTTP/CMakeLists.txt
++++ b/Libraries/LibHTTP/CMakeLists.txt
+@@ -1,7 +1,13 @@
++# karouka: embedders that never run RequestServer can leave out the SQLite-backed disk cache, which
++# is what pulls LibDatabase (and sqlite) into every LibHTTP user.
++if (KAROUKA_SOURCE_DIR)
++    set(LIBHTTP_DISK_CACHE_DEFAULT OFF)
++else()
++    set(LIBHTTP_DISK_CACHE_DEFAULT ON)
++endif()
++option(LIBHTTP_DISK_CACHE "Build LibHTTP's SQLite-backed disk cache" ${LIBHTTP_DISK_CACHE_DEFAULT})
++
+ set(SOURCES
+-    Cache/CacheEntry.cpp
+-    Cache/CacheIndex.cpp
+-    Cache/DiskCache.cpp
+     Cache/DiskCacheSettings.cpp
+     Cache/MemoryCache.cpp
+     Cache/Utilities.cpp
+@@ -19,5 +25,16 @@ set(SOURCES
+ include(hsts_preload)
+ list(APPEND SOURCES ${HSTS_PRELOAD_SOURCES})
+ 
++if (LIBHTTP_DISK_CACHE)
++    list(APPEND SOURCES
++        Cache/CacheEntry.cpp
++        Cache/CacheIndex.cpp
++        Cache/DiskCache.cpp
++    )
++endif()
++
+ ladybird_lib(LibHTTP http)
+-target_link_libraries(LibHTTP PRIVATE LibCompress LibCore LibCrypto LibDatabase LibFileSystem LibIPC LibRegex LibTextCodec LibTLS LibUnicode LibURL)
++target_link_libraries(LibHTTP PRIVATE LibCompress LibCore LibCrypto LibFileSystem LibIPC LibRegex LibTextCodec LibUnicode LibURL)
++if (LIBHTTP_DISK_CACHE)
++    target_link_libraries(LibHTTP PRIVATE LibDatabase)
++endif()
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index 433965a..2d50a07 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -1172,7 +1172,7 @@ set(GENERATED_SOURCES
+ ladybird_lib(LibWeb web EXPLICIT_SYMBOL_EXPORT)
+ target_link_libraries(LibWeb PUBLIC LibCompositing LibWebCommon)
+ 
+-target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibMediaClient LibWasm LibXML LibURL LibTLS LibRequests LibGC LibImageDecoderClient LibThreading skia LibXml2::LibXml2)
++target_link_libraries(LibWeb PRIVATE LibCore LibCompress LibCrypto LibJS LibHTTP LibGfx LibIPC LibRegex LibSyntax LibTextCodec LibUnicode LibMedia LibMediaClient LibWasm LibXML LibURL LibRequests LibGC LibImageDecoderClient LibThreading skia LibXml2::LibXml2)
+ 
+ # LibWeb still includes ANGLE's GLES headers for WebGL constants and types, but
+ # the actual GL entry points live in the Compositor. Copy only ANGLE's compile

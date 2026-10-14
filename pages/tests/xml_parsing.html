@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="^xml ok$">
+<title>xml pending</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  img { display: block; width: 100px; height: 100px; }
+</style>
+<!-- Every libxml2 path karouka uses (LibXML's push parser, entities, LibWeb's XPath, SVG as an
+     image): the title is "xml ok" only when all of them give the expected results. -->
+<p id="para">para one</p>
+<p>para two</p>
+<img id="svg" alt="">
+<pre id="out"></pre>
+<script>
+const failures = [];
+function expect(name, actual, wanted) {
+    if (actual !== wanted)
+        failures.push(`${name}: ${JSON.stringify(actual)} != ${JSON.stringify(wanted)}`);
+}
+
+const parser = new DOMParser();
+
+// XHTML: predefined and numeric entities, CDATA and a processing instruction. (Comments are left
+// out: LibXML keeps them only with preserve_comments, which DOMParser doesn't set.)
+const xhtml = parser.parseFromString(
+    `<html xmlns="http://www.w3.org/1999/xhtml"><body><p id="a">x &amp; &lt;y&gt; &#x41;&#66;</p>` +
+    `<![CDATA[<raw>]]><?karouka pi?></body></html>`,
+    "application/xhtml+xml");
+const a = xhtml.getElementById("a");
+expect("xhtml text", a && a.textContent, "x & <y> AB");
+expect("xhtml namespace", a && a.namespaceURI, "http://www.w3.org/1999/xhtml");
+const body = xhtml.querySelector("body");
+const kinds = body ? Array.from(body.childNodes, n => n.nodeType).join(",") : "";
+expect("xhtml node kinds", kinds, "1,4,7");
+
+// An entity declared in the internal subset, and namespaced attributes.
+const xml = parser.parseFromString(
+    `<!DOCTYPE r [<!ENTITY e "entity text">]><r xmlns:k="urn:k"><i k:v="1">&e;</i><i k:v="2">two</i></r>`,
+    "application/xml");
+const items = xml.getElementsByTagName("i");
+expect("dtd entity", items[0] && items[0].textContent, "entity text");
+expect("namespaced attribute", items[1] && items[1].getAttributeNS("urn:k", "v"), "2");
+
+// A well-formedness error gives a parsererror document.
+const bad = parser.parseFromString("<r><unclosed></r>", "application/xml");
+expect("parse error", bad.getElementsByTagName("parsererror").length > 0, true);
+
+// XPath over the XML document and over this HTML document.
+expect("xpath count", xml.evaluate("count(//i)", xml, null, XPathResult.NUMBER_TYPE, null).numberValue, 2);
+expect("xpath string", xml.evaluate("string(/r/i[2])", xml, null, XPathResult.STRING_TYPE, null).stringValue, "two");
+const snapshot = document.evaluate("//p", document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+expect("xpath html nodes", snapshot.snapshotLength, 2);
+expect("xpath html first", snapshot.snapshotItem(0) && snapshot.snapshotItem(0).id, "para");
+
+// SVG decoded as an image goes through LibXML too.
+const img = document.getElementById("svg");
+img.onload = () => {
+    expect("svg size", `${img.naturalWidth}x${img.naturalHeight}`, "40x20");
+    finish();
+};
+img.onerror = () => { failures.push("svg image failed to load"); finish(); };
+img.src = "data:image/svg+xml," + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#00ff00"/></svg>`);
+
+function finish() {
+    document.getElementById("out").textContent = failures.join("\n");
+    document.title = failures.length ? `xml failed: ${failures.join("; ")}` : "xml ok";
+}
+</script>

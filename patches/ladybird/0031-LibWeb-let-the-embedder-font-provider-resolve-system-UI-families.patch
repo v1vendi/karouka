@@ -1,0 +1,107 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: let the embedder's font provider resolve system UI families
+
+On macOS, FontResolution sends system-ui, ui-sans-serif, ui-serif,
+ui-monospace, ui-rounded and -apple-system straight to CoreText's system UI
+fonts (TypefaceSkia::match_system_ui), past the installed SystemFontProvider
+and FontPlugin's generic family names. An embedder whose provider decides every
+family (one system font, or a host default font in its place) gets SF Mono,
+New York and SF Rounded loaded anyway, and system-ui ignores its default font.
+Add Web::Embedder::set_system_ui_families_from_font_provider(): when set, those
+names skip the CoreText shortcut and resolve like the other generic families,
+through FontPlugin::generic_font_name and the provider. Off by default.
+---
+diff --git a/Libraries/LibWeb/CSS/FontResolution.cpp b/Libraries/LibWeb/CSS/FontResolution.cpp
+index d17717442f..92f547764e 100644
+--- a/Libraries/LibWeb/CSS/FontResolution.cpp
++++ b/Libraries/LibWeb/CSS/FontResolution.cpp
+@@ -18,6 +18,7 @@
+ #include <LibWeb/CSS/StyleValues/KeywordStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/StringStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/StyleValueList.h>
++#include <LibWeb/Embedder/SystemFonts.h>
+ #include <LibWeb/Platform/FontPlugin.h>
+ #include <LibWeb/StyleEngineRustFFI.h>
+ #include <LibWeb/StyleValueRustFFI.h>
+@@ -65,6 +66,9 @@ static FlyString font_family_name_for_platform(Utf16FlyString const& family_name
+ #ifdef AK_OS_MACOS
+ static Optional<Gfx::SystemUIFontKind> macos_system_ui_font_kind_from_family_name(StringView family)
+ {
++    // NB: An embedder's font provider may decide these families itself (Web::Embedder::set_system_ui_families_from_font_provider).
++    if (Embedder::system_ui_families_from_font_provider())
++        return {};
+     if (family.is_one_of("-apple-system"sv, "-apple-system-font"sv, "-webkit-system-font"sv, "system-ui"sv, "ui-sans-serif"sv))
+         return Gfx::SystemUIFontKind::System;
+     if (family == "ui-serif"sv)
+diff --git a/Libraries/LibWeb/Embedder/SystemFonts.cpp b/Libraries/LibWeb/Embedder/SystemFonts.cpp
+new file mode 100644
+index 0000000000..56823fe014
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/SystemFonts.cpp
+@@ -0,0 +1,25 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/Atomic.h>
++#include <LibWeb/Embedder/SystemFonts.h>
++
++namespace Web::Embedder {
++
++// Read on every thread that resolves fonts (the StyleLayout thread as well as the main thread).
++static Atomic<bool, AK::MemoryOrder::memory_order_relaxed> s_system_ui_families_from_font_provider { false };
++
++void set_system_ui_families_from_font_provider(bool enabled)
++{
++    s_system_ui_families_from_font_provider = enabled;
++}
++
++bool system_ui_families_from_font_provider()
++{
++    return s_system_ui_families_from_font_provider;
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/SystemFonts.h b/Libraries/LibWeb/Embedder/SystemFonts.h
+new file mode 100644
+index 0000000000..c79b1df5db
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/SystemFonts.h
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Export.h>
++
++namespace Web::Embedder {
++
++// On macOS, font resolution sends the system UI family names (system-ui, ui-sans-serif, ui-serif,
++// ui-monospace, ui-rounded, -apple-system and its aliases) straight to CoreText's system UI fonts
++// (SF, New York, SF Mono, SF Rounded), past the installed Gfx::SystemFontProvider and
++// FontPlugin's generic family names. An embedder whose provider decides every family the page
++// does not define itself (one system font, or a host's default font in its place) turns that off:
++// the generic ui-* families and system-ui then resolve like the other generic families, through
++// FontPlugin::generic_font_name, and those names given as a family name resolve through the
++// provider. Set it before the first document resolves a font; documents memoize their cascades.
++WEB_API void set_system_ui_families_from_font_provider(bool);
++bool system_ui_families_from_font_provider();
++
++}
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -284,6 +284,7 @@
+     Embedder/HostClock.cpp
+     Embedder/InPlaceLoad.cpp
+     Embedder/StageThreads.cpp
++    Embedder/SystemFonts.cpp
+     DOM/DocumentObserver.cpp
+     DOM/DocumentType.cpp
+     DOM/DOMEventListener.cpp

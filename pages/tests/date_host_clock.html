@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^date ok ">
+<style>
+  /* Date.now() and new Date() follow the host clock. On the host
+     clock (Engine.cpp steps it 16.67 ms a frame, however long a frame takes)
+     performance.now() moves by the host's time; were Date.now() to read the
+     wall clock, headless frames that take ~25 us each would move it by a
+     millisecond or two while performance.now() moved by hundreds.
+     The page samples both as it parses and again in the rAF of frame 20,
+     and requires their deltas to agree within 1.5 ms (Date.now() floors to
+     a whole millisecond, performance.now() coarsens to 0.1 ms), new Date()
+     to agree with Date.now(), a 100 ms setTimeout to see Date.now() move
+     by at least 100 ms, and performance.timeOrigin + performance.now() to
+     be Date.now() within 1.5 ms (the wall clock is the host clock too, so
+     timeOrigin holds still), and a new File's lastModified to be Date.now()
+     within 1 ms. The title carries the verdict and the deltas; the box
+     turns green on a pass, red on a failure, and nothing changes after
+     frame 20. Text-free. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  #box {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 120px;
+    height: 40px;
+    background: rgb(128, 128, 128);
+  }
+</style>
+</head>
+<body>
+<div id="box"></div>
+<script>
+  const box = document.getElementById("box");
+  const perf0 = performance.now();
+  const date0 = Date.now();
+  const origin0 = performance.timeOrigin;
+  const failures = [];
+  let timeoutDelta = null;
+  setTimeout(() => { timeoutDelta = Date.now() - date0; }, 100);
+  let frames = 0;
+  function onFrame() {
+    if (++frames < 20) {
+      requestAnimationFrame(onFrame);
+      return;
+    }
+    const perf = performance.now();
+    const date = Date.now();
+    const constructed = new Date().getTime();
+    const dPerf = perf - perf0;
+    const dDate = date - date0;
+    if (!(dPerf >= 200))
+      failures.push(`dperf=${dPerf.toFixed(2)} too small`);
+    if (!(Math.abs(dDate - dPerf) < 1.5))
+      failures.push(`ddate=${dDate} vs dperf=${dPerf.toFixed(2)}`);
+    if (!(Math.abs(constructed - date) <= 1))
+      failures.push(`new Date()=${constructed} vs Date.now()=${date}`);
+    if (timeoutDelta === null || !(timeoutDelta >= 100))
+      failures.push(`timeout ddate=${timeoutDelta}`);
+    if (performance.timeOrigin !== origin0)
+      failures.push(`timeOrigin moved ${performance.timeOrigin - origin0}`);
+    // File's default lastModified is the wall clock's time, the host's.
+    const fileSkew = new File([], "f").lastModified - date;
+    if (!(Math.abs(fileSkew) <= 1))
+      failures.push(`File.lastModified-Date.now=${fileSkew}`);
+    const skew = performance.timeOrigin + perf - date;
+    if (!(Math.abs(skew) < 1.5))
+      failures.push(`timeOrigin+now-Date.now=${skew.toFixed(2)}`);
+    const detail = `dperf=${dPerf.toFixed(2)} ddate=${dDate} timeout=${timeoutDelta}`;
+    if (failures.length === 0) {
+      box.style.background = "rgb(0, 160, 64)";
+      document.title = `date ok ${detail}`;
+    } else {
+      box.style.background = "rgb(208, 0, 0)";
+      document.title = `date FAILED ${failures.join("; ")}`;
+    }
+  }
+  requestAnimationFrame(onFrame);
+</script>
+</body>
+</html>

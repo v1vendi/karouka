@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  /* No @font-face here on purpose, and no text that reaches paint, so this
+     page's happy path is independent of whether a font was supplied. See
+     text.html for the text case.
+
+     What this page does exercise end to end: an image loaded off disk by
+     relative URL, the cascade, borders and radii, :hover with a CSS
+     transition, focus on a form control, and a script that mutates style. */
+  * { margin: 0; box-sizing: border-box; }
+  /* color: inherited by every descendant -- tools/devtools_smoke.py checks
+     it comes back as #panel's "Inherited from body" rule. */
+  body { background: rgb(30, 30, 30); color: rgb(220, 220, 220); }
+
+  .bar {
+    display: block;
+    width: 920px;
+    height: 56px;
+    margin: 20px;
+    background: rgb(44, 48, 62);
+    border-bottom: 2px solid rgb(92, 130, 200);
+  }
+  /* A ::before rule for the smoke check's pseudoElements.
+     content: none generates no box, so no text reaches paint (see above). */
+  .bar::before { content: none; color: rgb(92, 130, 200); }
+  .panel {
+    display: block;
+    width: 440px;
+    height: 200px;
+    margin: 20px;
+    padding: 16px;
+    background: rgb(40, 44, 58);
+    border: 2px solid rgb(70, 76, 96);
+    border-radius: 10px;
+    transition: background 0.25s, border-color 0.25s;
+  }
+  .panel:hover {
+    background: rgb(58, 90, 140);
+    border-color: rgb(140, 185, 250);
+  }
+  .field {
+    display: block;
+    width: 380px;
+    height: 34px;
+    margin: 14px 0;
+    background: rgb(20, 22, 30);
+    border: 2px solid rgb(80, 86, 106);
+  }
+  .field:focus { border-color: rgb(140, 185, 250); }
+  .art {
+    display: block;
+    width: 128px;
+    height: 128px;
+    margin: 20px;
+    border: 2px solid rgb(70, 76, 96);
+  }
+</style>
+</head>
+<body>
+  <div class="bar"></div>
+  <div id="panel" class="panel">
+    <input id="name" type="text" class="field" tabindex="0">
+  </div>
+  <!-- Decoded from disk by image::ImageCache through the same host IO the
+       document itself came through. -->
+  <img class="art" src="swatch.png">
+  <script>
+    // Proves script ran and reached the live document: the panel's border
+    // goes magenta if it did.
+    document.querySelector("#panel").style.borderColor = "rgb(255, 0, 255)";
+  </script>
+</body>
+</html>

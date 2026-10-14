@@ -1,0 +1,63 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibGfx: apply the hinting override to every platform's Skia fonts
+
+force_hinting_for_testing() only took effect with fontconfig, so on
+macOS every SkFont kept Skia's default kNormal hinting. Skia's CoreText
+scaler reads any hinting but kNone as permission for CoreGraphics' font
+smoothing, which dilates glyphs past their outlines: an Ahem glyph
+leaks partial coverage a pixel outside its em box, and a reftest that
+covers one glyph with another shows the edges.
+
+Keep the override and to_skia_hinting() out of the USE_FONTCONFIG
+guard and apply the override in skia_font() on every platform. Without
+an override nothing changes: fontconfig builds still ask fontconfig,
+others keep Skia's default.
+
+diff --git a/Libraries/LibGfx/Font/Font.cpp b/Libraries/LibGfx/Font/Font.cpp
+index 0d84fbfa75..0a2e6285d2 100644
+--- a/Libraries/LibGfx/Font/Font.cpp
++++ b/Libraries/LibGfx/Font/Font.cpp
+@@ -135,7 +135,9 @@ hb_font_t* Font::harfbuzz_font() const
+     return m_harfbuzz_font;
+ }
+ 
+-#if defined(USE_FONTCONFIG)
++// Applies on every platform: on macOS, Skia's CoreText scaler takes any hinting but kNone as a
++// request for CoreGraphics' font smoothing, which dilates glyphs past their outlines (an embedder
++// that compares glyph edges, such as a reftest run, asks for None here).
+ static Optional<FontHintingStyle> s_hinting_override_for_testing;
+ 
+ static SkFontHinting to_skia_hinting(FontHintingStyle style)
+@@ -152,13 +154,10 @@ static SkFontHinting to_skia_hinting(FontHintingStyle style)
+     }
+     VERIFY_NOT_REACHED();
+ }
+-#endif
+ 
+-void force_hinting_for_testing([[maybe_unused]] Optional<FontHintingStyle> style)
++void force_hinting_for_testing(Optional<FontHintingStyle> style)
+ {
+-#if defined(USE_FONTCONFIG)
+     s_hinting_override_for_testing = style;
+-#endif
+ }
+ 
+ #if defined(USE_FONTCONFIG)
+@@ -196,15 +195,15 @@ SkFont Font::skia_font(float scale) const
+     auto sk_font = SkFont { sk_ref_sp(sk_typeface), pixel_size() * scale };
+     sk_font.setSubpixel(true);
+ 
+-#if defined(USE_FONTCONFIG)
+     if (s_hinting_override_for_testing.has_value()) {
+         sk_font.setHinting(to_skia_hinting(*s_hinting_override_for_testing));
+     } else {
++#if defined(USE_FONTCONFIG)
+         auto options = hinting_options(scale);
+         sk_font.setHinting(to_skia_hinting(options.style));
+         sk_font.setForceAutoHinting(options.force_autohinting);
+-    }
+ #endif
++    }
+ 
+     return sk_font;
+ }

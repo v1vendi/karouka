@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-input" content="--poke 60,40@10 --poke 260,40@16">
+<meta name="karouka-check-title" content="^(press d40 u30 c40 sel; tint d40 u40 c40 sel|none)$">
+<style>
+  /* An event handler's entry point that finds only style pending updates the style first
+     and lays out only when the style moved something. #press moves 10px right while :active, so
+     its mousedown at x 60 is 40px into it, the mouseup 30px (laid out at :active), and the click
+     40px again (laid out once :active is gone, before the click's offsets). #tint only recolors
+     while :active, so its offsets stay 40px; neither click lays out a static page that :active
+     leaves where it was. A click also collapses the selection: selectionchange still fires ("sel"),
+     but no longer lays the document out to read the selected text for a primary clipboard karouka
+     doesn't have. The title reads "none" until an event arrives, as in dev.sh check's run without
+     the input. Text-free. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); height: 600px; }
+  #press, #tint { position: absolute; top: 20px; width: 100px; height: 40px; background: rgb(60, 70, 140); }
+  #press { left: 20px; }
+  #press:active { left: 30px; }
+  #tint { left: 220px; }
+  #tint:active { background: rgb(210, 70, 60); }
+  .done { outline: 4px solid rgb(40, 160, 80); }
+</style>
+</head>
+<body>
+<div id="press"></div>
+<div id="tint"></div>
+<script>
+  const log = { press: "", tint: "" };
+  let selections = 0;
+  for (const id of ["press", "tint"]) {
+    const box = document.getElementById(id);
+    box.addEventListener("mousedown", (e) => { log[id] = `d${e.offsetX}`; update(); });
+    box.addEventListener("mouseup", (e) => { log[id] += ` u${e.offsetX}`; update(); });
+    box.addEventListener("click", (e) => {
+      log[id] += ` c${e.offsetX}`;
+      box.className = "done";
+      // The selectionchange the press queued fires before the click's task ends.
+      queueMicrotask(update);
+    });
+  }
+  document.addEventListener("selectionchange", () => { selections++; update(); });
+  function update() {
+    if (!log.press && !log.tint) {
+      document.title = "none";
+      return;
+    }
+    const part = (id) => `${id} ${log[id]}${selections ? " sel" : ""}`;
+    document.title = `${part("press")}; ${part("tint")}`;
+  }
+  update();
+</script>
+</body>
+</html>

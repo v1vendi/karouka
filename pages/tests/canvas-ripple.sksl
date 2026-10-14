@@ -1,0 +1,30 @@
+// canvas-ripple.sksl — M4. Samples a <canvas> as a child shader and distorts it.
+//
+// The child shader arrives via `--tex element(#some-canvas)` and is bound only
+// if the canvas is origin-clean. If it is tainted, the sampler is dropped, a
+// console warning is emitted, and nothing paints. See docs/03-security.md.
+//
+// CSS:
+//   background-image: shader(url(shaders/canvas-ripple.sksl),
+//                            --tex element(#source-canvas),
+//                            --amp 12.0);
+
+uniform float2 uSize;
+uniform float  uTime;
+
+uniform shader tex;   // --tex : the canvas
+uniform float  amp;   // --amp : displacement in CSS px
+
+half4 main(float2 coord) {
+    float2 uv = coord / uSize;
+
+    float2 offset = float2(
+        sin(uv.y * 18.0 + uTime * 2.0),
+        cos(uv.x * 14.0 - uTime * 1.6)
+    ) * amp;
+
+    // eval() takes coordinates in the child shader's own space. For a canvas
+    // bound at the tile's size these line up; if the canvas has a different
+    // intrinsic size than the destination, scale here.
+    return tex.eval(coord + offset);
+}

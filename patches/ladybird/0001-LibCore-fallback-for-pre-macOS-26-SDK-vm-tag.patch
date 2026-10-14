@@ -1,0 +1,16 @@
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index a84c597b07..f2478e8cff 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -145,6 +145,11 @@ ErrorOr<void> munmap(void* address, size_t size)
+     return {};
+ }
+ 
++#if defined(AK_OS_MACOS) && !defined(VM_MEMORY_APPLICATION_SPECIFIC_2)
++// Older SDKs (before macOS 26) only define _1 (240) and _16 (255).
++#    define VM_MEMORY_APPLICATION_SPECIFIC_2 241
++#endif
++
+ static int mmap_anonymous_fd([[maybe_unused]] MemoryTag tag)
+ {
+ #ifdef AK_OS_MACOS

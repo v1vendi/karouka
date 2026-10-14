@@ -1,0 +1,216 @@
+diff --git a/Libraries/LibWeb/CSS/FontFace.cpp b/Libraries/LibWeb/CSS/FontFace.cpp
+index b7b41b3bf0..65b5d6214e 100644
+--- a/Libraries/LibWeb/CSS/FontFace.cpp
++++ b/Libraries/LibWeb/CSS/FontFace.cpp
+@@ -43,6 +43,7 @@
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
+ #include <LibWeb/HTML/Window.h>
++#include <LibWeb/HighResolutionTime/TimeOrigin.h>
+ #include <LibWeb/Platform/Timer.h>
+ #include <LibWeb/WebIDL/AbstractOperations.h>
+ #include <LibWeb/WebIDL/Buffers.h>
+@@ -632,7 +633,7 @@ Gfx::PendingFontState FontFaceState::resolve_for_rendering()
+     // the font face's font download timer is started.
+     // NB: A local face that loading resolved synchronously has nothing to download, so no timer runs for it.
+     if (!m_font_download_timer_start.has_value() && !m_font_download_completed) {
+-        m_font_download_timer_start = MonotonicTime::now();
++        m_font_download_timer_start = HighResolutionTime::unsafe_shared_current_time();
+         if (m_font_display == FontDisplay::Swap)
+             m_font_display_period = FontDisplayPeriod::Swap;
+         update_font_display_period();
+@@ -767,7 +768,7 @@ i64 FontFaceState::font_download_elapsed_time() const
+     VERIFY(m_font_download_timer_start.has_value());
+     return m_font_display_time_for_testing.has_value()
+         ? static_cast<i64>(*m_font_display_time_for_testing)
+-        : (MonotonicTime::now() - *m_font_download_timer_start).to_milliseconds();
++        : static_cast<i64>(HighResolutionTime::unsafe_shared_current_time() - *m_font_download_timer_start);
+ }
+ 
+ bool FontFaceState::has_pending_rendering() const
+diff --git a/Libraries/LibWeb/CSS/FontFaceState.h b/Libraries/LibWeb/CSS/FontFaceState.h
+index 82f1b797f5..aa6269183d 100644
+--- a/Libraries/LibWeb/CSS/FontFaceState.h
++++ b/Libraries/LibWeb/CSS/FontFaceState.h
+@@ -151,7 +151,9 @@ private:
+     };
+     FontDisplay m_font_display { FontDisplay::Auto };
+     FontDisplayPeriod m_font_display_period { FontDisplayPeriod::Block };
+-    Optional<MonotonicTime> m_font_download_timer_start;
++    // NB: On the clock HighResolutionTime::unsafe_shared_current_time() reads, in milliseconds, so that the font
++    //     download timer runs on an embedder's host clock, as m_font_download_timer does.
++    Optional<double> m_font_download_timer_start;
+     GC::Ptr<Platform::Timer> m_font_download_timer;
+     Optional<u32> m_font_display_time_for_testing;
+     bool m_font_display_failed { false };
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index 34c3ca6ee9..2460fbc28f 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -228,6 +228,7 @@
+ #include <LibWeb/Painting/PaintableTypes.h>
+ #include <LibWeb/Painting/PaintingRustBridge.h>
+ #include <LibWeb/Platform/EventLoopPlugin.h>
++#include <LibWeb/Platform/Timer.h>
+ #include <LibWeb/ResizeObserver/ResizeObserver.h>
+ #include <LibWeb/ResizeObserver/ResizeObserverEntry.h>
+ #include <LibWeb/SVG/SVGDecodedImageData.h>
+@@ -835,6 +836,9 @@ void Document::visit_edges(Cell::Visitor& visitor)
+         import->visit_edges(visitor);
+     visitor.visit(m_page);
+     visitor.visit(m_window);
++    visitor.visit(m_active_refresh_timer);
++    visitor.visit(m_compositor_animation_wakeup_timer);
++    visitor.visit(m_compositor_animation_observation_timer);
+     visitor.visit(m_relevant_global_event_target);
+     visitor.visit(m_style_sheets);
+     visitor.visit(m_hovered_node);
+@@ -2617,7 +2621,7 @@ void Document::arm_compositor_animation_timers_for_testing(Badge<Internals::Inte
+ {
+     stop_compositor_animation_timers();
+     schedule_compositor_animation_wakeup(NumericLimits<int>::max());
+-    m_compositor_animation_observation_timer = Core::Timer::create_single_shot(NumericLimits<int>::max(), GC::weak_callback(*this, [](auto&) { }));
++    m_compositor_animation_observation_timer = Platform::Timer::create_single_shot(heap(), NumericLimits<int>::max(), GC::create_function(heap(), [] { }));
+     m_compositor_animation_observation_timer->start();
+ }
+ 
+@@ -6950,16 +6954,18 @@ void Document::shared_declarative_refresh_steps(Utf16View input, GC::Ptr<HTML::H
+     //   given, document's active sandboxing flag set does not have the sandboxed automatic features browsing context
+     //   flag set, then navigate document's node navigable to urlRecord using document, with historyHandling set to
+     //   "replace".
+-    m_active_refresh_timer = Core::Timer::create_single_shot(time * 1000, [this, has_meta_element = !!meta_element, url_record = move(url_record)]() {
+-        if (has_meta_element && has_flag(active_sandboxing_flag_set(), HTML::SandboxingFlagSet::SandboxedAutomaticFeatures))
++    if (m_active_refresh_timer)
++        m_active_refresh_timer->stop();
++    m_active_refresh_timer = Platform::Timer::create_single_shot(heap(), time * 1000, GC::create_function(heap(), [callback = GC::weak_callback(*this, [has_meta_element = !!meta_element, url_record = move(url_record)](Document& document) {
++        if (has_meta_element && has_flag(document.active_sandboxing_flag_set(), HTML::SandboxingFlagSet::SandboxedAutomaticFeatures))
+             return;
+ 
+-        auto navigable = this->navigable();
++        auto navigable = document.navigable();
+         if (!navigable || navigable->has_been_destroyed())
+             return;
+ 
+-        MUST(navigable->navigate({ .url = url_record, .source_document = *this, .history_handling = HTML::NavigationHistoryBehavior::Replace }));
+-    });
++        MUST(navigable->navigate({ .url = url_record, .source_document = document, .history_handling = HTML::NavigationHistoryBehavior::Replace }));
++    })]() mutable { callback(); }));
+ 
+     // For the purposes of the previous paragraph, a refresh is said to have come due as soon as the later of the
+     // following two conditions occurs:
+@@ -7494,21 +7500,21 @@ static Optional<double> next_throttled_animation_iteration_event_time(Animations
+ void Document::schedule_compositor_animation_wakeup(double delay_ms)
+ {
+     auto timer_delay_ms = static_cast<int>(ceil(clamp(delay_ms, 1.0, static_cast<double>(NumericLimits<int>::max()))));
+-    auto deadline = MonotonicTime::now() + AK::Duration::from_milliseconds(timer_delay_ms);
++    auto deadline = HighResolutionTime::unsafe_shared_current_time() + timer_delay_ms;
+     if (m_compositor_animation_wakeup_timer && m_compositor_animation_wakeup_timer->is_active()
+         && m_compositor_animation_wakeup_deadline.has_value() && *m_compositor_animation_wakeup_deadline <= deadline)
+         return;
+ 
+     m_compositor_animation_wakeup_deadline = deadline;
+     if (!m_compositor_animation_wakeup_timer) {
+-        m_compositor_animation_wakeup_timer = Core::Timer::create_single_shot(static_cast<int>(timer_delay_ms), GC::weak_callback(*this, [](auto& document) {
++        m_compositor_animation_wakeup_timer = Platform::Timer::create_single_shot(heap(), static_cast<int>(timer_delay_ms), GC::create_function(heap(), [callback = GC::weak_callback(*this, [](auto& document) {
+             // Cancelling a finite effect can leave this deadline armed. The single wake-up is harmless: it finds
+             // nothing due and leaves the timer idle unless another effect supplies a deadline.
+             document.m_compositor_animation_wakeup_deadline.clear();
+             auto timestamp = HighResolutionTime::relative_high_resolution_time(
+                 HighResolutionTime::unsafe_shared_current_time(), document.relevant_settings_object().global_object());
+             document.service_compositor_animation_wakeup(timestamp);
+-        }));
++        })]() mutable { callback(); }));
+     }
+     m_compositor_animation_wakeup_timer->restart(static_cast<int>(timer_delay_ms));
+ }
+@@ -8304,11 +8310,11 @@ void Document::update_compositor_animations(Layout::BegunRead const& read)
+             m_compositor_animation_observation_timer->stop();
+     } else {
+         if (!m_compositor_animation_observation_timer) {
+-            m_compositor_animation_observation_timer = Core::Timer::create_single_shot(100, GC::weak_callback(*this, [](auto& document) {
++            m_compositor_animation_observation_timer = Platform::Timer::create_single_shot(heap(), 100, GC::create_function(heap(), [callback = GC::weak_callback(*this, [](auto& document) {
+                 ++document.m_style_invalidation_counters.animation_frame_pump_requests;
+                 document.page().client().request_frame();
+                 document.m_compositor_animation_observation_timer->start();
+-            }));
++            })]() mutable { callback(); }));
+         }
+         if (!m_compositor_animation_observation_timer->is_active()) {
+             m_compositor_animation_observation_timer->start();
+diff --git a/Libraries/LibWeb/DOM/Document.h b/Libraries/LibWeb/DOM/Document.h
+index e4c7ff87fd..273e526892 100644
+--- a/Libraries/LibWeb/DOM/Document.h
++++ b/Libraries/LibWeb/DOM/Document.h
+@@ -2018,10 +2018,12 @@ private:
+     // A Document object has an associated will declaratively refresh (a boolean). It is initially false.
+     bool m_will_declaratively_refresh { false };
+ 
+-    RefPtr<Core::Timer> m_active_refresh_timer;
+-    RefPtr<Core::Timer> m_compositor_animation_wakeup_timer;
+-    Optional<MonotonicTime> m_compositor_animation_wakeup_deadline;
+-    RefPtr<Core::Timer> m_compositor_animation_observation_timer;
++    // NB: Platform::Timers, not Core::Timers, so that they run on an embedder's host clock. The wake-up
++    //     deadline is on the same clock: HighResolutionTime::unsafe_shared_current_time(), in milliseconds.
++    GC::Ptr<Platform::Timer> m_active_refresh_timer;
++    GC::Ptr<Platform::Timer> m_compositor_animation_wakeup_timer;
++    Optional<double> m_compositor_animation_wakeup_deadline;
++    GC::Ptr<Platform::Timer> m_compositor_animation_observation_timer;
+     bool m_force_visual_context_tree_rebuild_on_next_compositor_animation_update_for_testing { false };
+     Vector<Compositing::RustFFI::NodeSlotId> m_layout_nodes_with_forced_compositor_effects_layer;
+     Vector<Compositing::RustFFI::NodeSlotId> m_layout_nodes_with_forced_compositor_background_color_frame;
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+index f47a967b13..325caebd58 100644
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -780,6 +780,8 @@ void LocalNavigable::visit_edges(Cell::Visitor& visitor)
+     Base::visit_edges(visitor);
+     visitor.visit(m_active_document);
+     visitor.visit(m_window_proxy_after_unload);
++    visitor.visit(m_async_scroll_hover_update_timer);
++    visitor.visit(m_user_scroll_settle_timer);
+     visitor.visit(m_provisional_for);
+     visitor.visit(m_input_method_composition_node);
+     m_event_handler.visit_edges(visitor);
+@@ -5444,9 +5446,10 @@ void LocalNavigable::queue_scrollend_event_after_user_scroll(GC::Ref<DOM::EventT
+     }
+ 
+     if (!m_user_scroll_settle_timer) {
+-        m_user_scroll_settle_timer = Core::Timer::create_single_shot(static_cast<int>(Compositing::user_scroll_settle_delay.to_milliseconds()), [this] {
+-            user_scroll_did_settle();
+-        });
++        // NB: A Platform::Timer, so that it runs on an embedder's host clock.
++        m_user_scroll_settle_timer = Platform::Timer::create_single_shot(heap(), static_cast<int>(Compositing::user_scroll_settle_delay.to_milliseconds()), GC::create_function(heap(), [callback = GC::weak_callback(*this, [](auto& navigable) {
++            navigable.user_scroll_did_settle();
++        })]() mutable { callback(); }));
+     }
+     m_user_scroll_settle_timer->restart();
+ }
+@@ -6066,9 +6069,9 @@ void LocalNavigable::schedule_hover_update_after_async_scroll()
+     static constexpr int hover_update_after_async_scroll_delay_ms = 100;
+ 
+     if (!m_async_scroll_hover_update_timer) {
+-        m_async_scroll_hover_update_timer = Core::Timer::create_single_shot(hover_update_after_async_scroll_delay_ms, [this] {
+-            update_hover_after_async_scroll_stops();
+-        });
++        m_async_scroll_hover_update_timer = Platform::Timer::create_single_shot(heap(), hover_update_after_async_scroll_delay_ms, GC::create_function(heap(), [callback = GC::weak_callback(*this, [](auto& navigable) {
++            navigable.update_hover_after_async_scroll_stops();
++        })]() mutable { callback(); }));
+         m_async_scroll_hover_update_timer->start();
+         return;
+     }
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.h b/Libraries/LibWeb/HTML/LocalNavigable.h
+index e81787336d..4ecc4fed65 100644
+--- a/Libraries/LibWeb/HTML/LocalNavigable.h
++++ b/Libraries/LibWeb/HTML/LocalNavigable.h
+@@ -621,9 +621,9 @@ private:
+     using PresenterSlot = Variant<NonnullOwnPtr<Compositor::NavigablePresenter>, GC::Ref<DOM::Document>>;
+     PresenterSlot m_presenter_slot { make<Compositor::NavigablePresenter>() };
+     OwnPtr<Compositor::CompositorContextHandle> m_compositor_context;
+-    RefPtr<Core::Timer> m_async_scroll_hover_update_timer;
++    GC::Ptr<Platform::Timer> m_async_scroll_hover_update_timer;
+     Vector<PendingUserScrollendTarget> m_pending_user_scrollend_targets;
+-    RefPtr<Core::Timer> m_user_scroll_settle_timer;
++    GC::Ptr<Platform::Timer> m_user_scroll_settle_timer;
+     OwnPtr<UserScrollGestureHold> m_compositor_user_scroll_gesture_hold;
+     OwnPtr<UserScrollGestureHold> m_wheel_user_scroll_gesture_hold;
+     size_t m_user_scroll_gesture_hold_count { 0 };

@@ -1,0 +1,327 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+@@ -272,7 +272,7 @@
+ 
+ void DisplayListPlayerSkia::play_command(PaintCaret const& command)
+ {
+-    if (!caret_is_visible_at_time(command, MonotonicTime::now().nanoseconds()))
++    if (!caret_is_visible_at_time(command, m_caret_time_ns.has_value() ? *m_caret_time_ns : MonotonicTime::now().nanoseconds()))
+         return;
+ 
+     auto& canvas = surface().canvas();
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
+@@ -47,6 +47,12 @@
+         CanvasSurfaceRegistry const*,
+         CompositedContextResolver const*);
+ 
++    // The time a blinking caret's visibility is taken at, in nanoseconds on the clock its blink cycle started on
++    // (PaintCaret::blink_cycle_start_time_ns). Unset, it is MonotonicTime::now(); an embedder that drives LibWeb's
++    // clock itself passes that clock's time for the frame, so the caret shows or hides at the frame's time, not at
++    // whenever the frame happened to be played.
++    void set_caret_time_ns(Optional<i64> time_ns) { m_caret_time_ns = time_ns; }
++
+     void flush(Gfx::PaintingSurface&) override;
+     void flush_async(Gfx::PaintingSurface&, Function<void()>&&);
+     void paint_scrollbar(Gfx::PaintingSurface&, PaintScrollBar const&);
+@@ -84,6 +90,7 @@
+ 
+     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
+     CompositedContextResolver const* m_composited_context_resolver { nullptr };
++    Optional<i64> m_caret_time_ns;
+ 
+     // Layer filters are built from their bytes once per frame node and kept until the visual
+     // context tree's structure changes, so a replayed frame does not rebuild them.
+diff --git a/Libraries/LibWeb/CookieStore/CookieStore.cpp b/Libraries/LibWeb/CookieStore/CookieStore.cpp
+--- a/Libraries/LibWeb/CookieStore/CookieStore.cpp
++++ b/Libraries/LibWeb/CookieStore/CookieStore.cpp
+@@ -14,6 +14,7 @@
+ #include <LibWeb/CookieStore/CookieChangeEvent.h>
+ #include <LibWeb/CookieStore/CookieStore.h>
+ #include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/HTML/EventLoop/EventLoop.h>
+ #include <LibWeb/HTML/EventLoop/Task.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+@@ -469,7 +470,7 @@
+         // https://www.ietf.org/archive/id/draft-ietf-httpbis-rfc6265bis-15.html#section-5.6.1
+         // 3. Let cookie-age-limit be the maximum age of the cookie (which SHOULD be 400 days in the future or sooner, see
+         //    Section 5.5).
+-        auto cookie_age_limit = UnixDateTime::now() + HTTP::Cookie::MAXIMUM_COOKIE_AGE;
++        auto cookie_age_limit = Embedder::unix_now() + HTTP::Cookie::MAXIMUM_COOKIE_AGE;
+ 
+         // 4. If the expiry-time is more than cookie-age-limit, the user agent MUST set the expiry time to cookie-age-limit
+         //    in seconds.
+@@ -671,7 +672,7 @@
+     Vector<CookieChange> observable_changes;
+     observable_changes.ensure_capacity(changes.size());
+ 
+-    auto now = UnixDateTime::now();
++    auto now = Embedder::unix_now();
+ 
+     for (auto& cookie : changes) {
+         // A cookie change is a cookie and a type (either changed or deleted):
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -4554,7 +4554,7 @@
+         return Utf16String::from_ascii_without_validation(last_modified.bytes());
+     }
+ 
+-    auto now = MUST(AK::UnixDateTime::now().to_string(format_string));
++    auto now = MUST(Embedder::unix_now().to_string(format_string));
+     return Utf16String::from_ascii_without_validation(now.bytes());
+ }
+ 
+@@ -4608,7 +4608,7 @@
+     //         that activate_history_entry can detect this and re-trigger the container
+     //         notification steps.
+     if (!m_completely_loaded_time.has_value())
+-        m_completely_loaded_time = AK::UnixDateTime::now();
++        m_completely_loaded_time = Embedder::unix_now();
+ 
+     auto navigable = this->navigable();
+     if (!navigable) {
+@@ -10019,7 +10019,10 @@
+ 
+ void Document::reset_cursor_blink_cycle()
+ {
+-    m_cursor_blink_cycle_start_time_ns = MonotonicTime::now().nanoseconds();
++    // NB: On the clock HighResolutionTime::unsafe_shared_current_time() reads, an embedder's host clock if it installed
++    //     one (Embedder/HostClock.h): the player shows or hides the caret at a time the embedder passes on that clock,
++    //     or at MonotonicTime::now(), the same clock as the shared one's without a host clock.
++    m_cursor_blink_cycle_start_time_ns = static_cast<i64>(HighResolutionTime::unsafe_shared_current_time() * 1'000'000.0);
+ }
+ 
+ void Document::set_cursor_position_needs_repaint()
+diff --git a/Libraries/LibWeb/Embedder/HostClock.cpp b/Libraries/LibWeb/Embedder/HostClock.cpp
+--- a/Libraries/LibWeb/Embedder/HostClock.cpp
++++ b/Libraries/LibWeb/Embedder/HostClock.cpp
+@@ -58,6 +58,11 @@
+ // The thread that installed the clock: the main thread, whose event loop it drives.
+ pthread_t s_clock_thread;
+ 
++// The real monotonic time at which the clock was installed, and the host's wall time then: monotonic_now() is the
++// one plus the host's time since. (MonotonicTime has no public constructor from a time.)
++Optional<MonotonicTime> s_monotonic_at_install;
++i64 s_wall_ns_at_install { 0 };
++
+ HostClock& clock();
+ 
+ // LibJS's Date clock. On the clock's thread, a read from a window's script is a script read of the host clock
+@@ -151,6 +156,8 @@
+     host_clock.wall_offset_ns -= host_clock.wall_offset_ns % 1'000'000;
+     s_wall_now_ns.store(host_clock.wall_offset_ns + static_cast<i64>(llround(now_ms * 1e6)));
+     s_clock_thread = pthread_self();
++    s_monotonic_at_install = MonotonicTime::now();
++    s_wall_ns_at_install = s_wall_now_ns.load();
+     JS::Temporal::set_host_wall_clock(script_wall_now_ns);
+ }
+ 
+@@ -195,6 +202,20 @@
+     return static_cast<double>(wall_now_ns()) / 1e6;
+ }
+ 
++MonotonicTime monotonic_now()
++{
++    if (!host_clock_is_installed())
++        return MonotonicTime::now();
++    return *s_monotonic_at_install + AK::Duration::from_nanoseconds(wall_now_ns() - s_wall_ns_at_install);
++}
++
++UnixDateTime unix_now()
++{
++    if (!host_clock_is_installed())
++        return UnixDateTime::now();
++    return UnixDateTime::from_nanoseconds_since_epoch(wall_now_ns());
++}
++
+ double read_host_clock_for_script(double& next_read)
+ {
+     auto now_ms = max(clock().now, next_read);
+diff --git a/Libraries/LibWeb/Embedder/HostClock.h b/Libraries/LibWeb/Embedder/HostClock.h
+--- a/Libraries/LibWeb/Embedder/HostClock.h
++++ b/Libraries/LibWeb/Embedder/HostClock.h
+@@ -8,6 +8,7 @@
+ 
+ #include <AK/Function.h>
+ #include <AK/Optional.h>
++#include <AK/Time.h>
+ #include <AK/Types.h>
+ #include <LibGC/Forward.h>
+ #include <LibWeb/Export.h>
+@@ -58,6 +59,14 @@
+ double host_clock_wall_offset();
+ double host_clock_wall_time();
+ 
++// "Now" for LibWeb's own readers of the monotonic and Unix clocks (a caret's blink cycle, a main-thread smooth
++// scroll's steps, a wheel gesture's latch, media and FileReader event throttles, File.lastModified, cookie expiry):
++// the host clock and its wall clock once one is installed, so what they decide comes out the same however long the
++// host's frames take; the real clocks otherwise. Safe off the main thread (a worker's File): both read the host's
++// wall time, which is atomic. A MonotonicTime taken on one clock means nothing on the other, as with deadlines.
++WEB_API MonotonicTime monotonic_now();
++WEB_API UnixDateTime unix_now();
++
+ // The step, in milliseconds, each script read of the host clock takes (see above).
+ constexpr double script_read_step_ms = 0.001;
+ 
+diff --git a/Libraries/LibWeb/FileAPI/File.cpp b/Libraries/LibWeb/FileAPI/File.cpp
+--- a/Libraries/LibWeb/FileAPI/File.cpp
++++ b/Libraries/LibWeb/FileAPI/File.cpp
+@@ -8,6 +8,7 @@
+ #include <LibGC/Heap.h>
+ #include <LibJS/Runtime/Completion.h>
+ #include <LibJS/Runtime/Realm.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/FileAPI/File.h>
+ #include <LibWeb/HTML/StructuredSerialize.h>
+ #include <LibWebCommon/Infra/Strings.h>
+@@ -71,7 +72,7 @@
+ 
+         // 3. If the lastModified member is provided, let d be set to the lastModified dictionary member. If it is not provided, set d to the current date and time represented as the number of milliseconds since the Unix Epoch (which is the equivalent of Date.now() [ECMA-262]).
+         //    Note: Since ECMA-262 Date objects convert to long long values representing the number of milliseconds since the Unix Epoch, the lastModified member could be a Date object [ECMA-262].
+-        last_modified = options->last_modified.has_value() ? options->last_modified.value() : UnixDateTime::now().milliseconds_since_epoch();
++        last_modified = options->last_modified.has_value() ? options->last_modified.value() : Embedder::unix_now().milliseconds_since_epoch();
+     }
+ 
+     // 4. Return a new File object F such that:
+diff --git a/Libraries/LibWeb/FileAPI/FileReader.cpp b/Libraries/LibWeb/FileAPI/FileReader.cpp
+--- a/Libraries/LibWeb/FileAPI/FileReader.cpp
++++ b/Libraries/LibWeb/FileAPI/FileReader.cpp
+@@ -17,6 +17,7 @@
+ #include <LibTextCodec/Decoder.h>
+ #include <LibWeb/DOM/Event.h>
+ #include <LibWeb/DOM/EventTarget.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/FileAPI/Blob.h>
+ #include <LibWeb/FileAPI/FileReader.h>
+ #include <LibWeb/HTML/EventLoop/EventLoop.h>
+@@ -288,7 +289,7 @@
+                     }
+ 
+                     // 3. If roughly 50ms have passed since these steps were last invoked, queue a task to fire a progress event called progress at fr.
+-                    auto now = MonotonicTime::now();
++                    auto now = Embedder::monotonic_now();
+                     bool enough_time_passed = !state->progress_timer.has_value() || (now - state->progress_timer.value() >= AK::Duration::from_milliseconds(50));
+                     // WPT tests for this and expects no progress event to fire when there isn't any data.
+                     // See http://wpt.live/FileAPI/reading-data-section/filereader_events.any.html
+diff --git a/Libraries/LibWeb/HTML/HTMLFormElement.cpp b/Libraries/LibWeb/HTML/HTMLFormElement.cpp
+--- a/Libraries/LibWeb/HTML/HTMLFormElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLFormElement.cpp
+@@ -19,6 +19,7 @@
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Event.h>
+ #include <LibWeb/DOMURL/DOMURL.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/HTML/BrowsingContext.h>
+ #include <LibWeb/HTML/EventNames.h>
+ #include <LibWeb/HTML/Focus.h>
+@@ -1180,7 +1181,7 @@
+     // 4. For each entry past entry in the past names map add an entry to sourced names with the past entry's name as
+     //    the string, past entry's element as the element, past as the source, and the length of time past entry has
+     //    been in the past names map as the age.
+-    auto const now = MonotonicTime::now();
++    auto const now = Embedder::monotonic_now();
+     for (auto const& entry : m_past_names_map) {
+         auto element_index = m_associated_elements_in_tree_order.find_first_index_if([&](auto const& element) { return element.ptr() == entry.value.node.ptr(); });
+         sourced_names.append(SourcedName { entry.key, element_index.value(), SourcedName::Source::Past, now - entry.value.insertion_time });
+@@ -1291,7 +1292,7 @@
+ 
+     // 5. Otherwise, candidates contains exactly one node. Add a mapping from name to the node in candidates in the form
+     //    element's past names map, replacing the previous entry with the same name, if any.
+-    m_past_names_map.set(name, HTMLFormElement::PastNameEntry { .node = first_candidate, .insertion_time = MonotonicTime::now() });
++    m_past_names_map.set(name, HTMLFormElement::PastNameEntry { .node = first_candidate, .insertion_time = Embedder::monotonic_now() });
+ 
+     // 6. Return the node in candidates.
+     return GC::Ref { *first_candidate };
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+@@ -24,6 +24,7 @@
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/DocumentObserver.h>
+ #include <LibWeb/DOM/Event.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/Fetch/Fetching/Fetching.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchController.h>
+@@ -2361,7 +2362,7 @@
+ 
+         // While the load is not suspended (see below), every 350ms (±200ms) or for every byte received, whichever is
+         // least frequent, queue a media element task given the media element to:
+-        auto now = MonotonicTime::now();
++        auto now = Embedder::monotonic_now();
+         if (!m_last_progress_event_time.has_value() || now - m_last_progress_event_time.value() > AK::Duration::from_milliseconds(350)) {
+             m_last_progress_event_time = now;
+             queue_a_media_element_task([](HTMLMediaElement& self) {
+@@ -3338,7 +3339,7 @@
+     ScopeGuard guard { [this] { m_running_time_update_event_handler = false; } };
+     m_running_time_update_event_handler = true;
+ 
+-    m_last_time_update_event_time = MonotonicTime::now();
++    m_last_time_update_event_time = Embedder::monotonic_now();
+ 
+     dispatch_event(create_event_for_element(*this, HTML::EventNames::timeupdate));
+ }
+@@ -3369,7 +3370,7 @@
+         constexpr auto interval = AK::Duration::from_milliseconds(250);
+         auto dispatch_event = true;
+ 
+-        auto now = MonotonicTime::now();
++        auto now = Embedder::monotonic_now();
+         if (m_last_time_update_event_time.has_value()) {
+             auto time_since_last_event = now - *m_last_time_update_event_time;
+             dispatch_event = time_since_last_event > interval;
+diff --git a/Libraries/LibWeb/HTML/LocalNavigable.cpp b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+--- a/Libraries/LibWeb/HTML/LocalNavigable.cpp
++++ b/Libraries/LibWeb/HTML/LocalNavigable.cpp
+@@ -41,6 +41,7 @@
+ #include <LibWeb/Editing/ClipboardSerializer.h>
+ #include <LibWeb/Editing/EditingHistory.h>
+ #include <LibWeb/Editing/Internal/Algorithms.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/Fetch/Fetching/Fetching.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchController.h>
+@@ -5841,7 +5842,9 @@
+ 
+ void LocalNavigable::process_main_thread_smooth_scrolls()
+ {
+-    auto now = MonotonicTime::now();
++    // NB: On an embedder's host clock, if one is installed (Embedder/HostClock.h), so each step of the scroll moves by
++    //     the host's time, not by how long the host's frames took.
++    auto now = Embedder::monotonic_now();
+ 
+     Vector<FinishedScroll> finished_smooth_scrolls;
+     for (size_t index = 0; index < m_main_thread_smooth_scrolls.size();) {
+@@ -7393,7 +7396,7 @@
+     m_main_thread_smooth_scrolls.append(MainThreadSmoothScroll {
+         .stable_node_id = stable_node_id,
+         .animation = Compositing::SmoothScrollAnimation { initial_scroll_offset->to_type<float>(), position.to_type<float>(), 1.0, animation_kind },
+-        .last_tick = MonotonicTime::now(),
++        .last_tick = Embedder::monotonic_now(),
+         .elapsed = AK::Duration::zero(),
+         .initial_scroll_offset = *initial_scroll_offset,
+         .destination_scroll_offset = position,
+diff --git a/Libraries/LibWeb/Page/EventHandler.cpp b/Libraries/LibWeb/Page/EventHandler.cpp
+--- a/Libraries/LibWeb/Page/EventHandler.cpp
++++ b/Libraries/LibWeb/Page/EventHandler.cpp
+@@ -25,6 +25,7 @@
+ #include <LibWeb/DOM/Text.h>
+ #include <LibWeb/Editing/EditingHistory.h>
+ #include <LibWeb/Editing/Internal/Algorithms.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/GraphemeEdgeTracker.h>
+ #include <LibWeb/HTML/CloseWatcherManager.h>
+ #include <LibWeb/HTML/DataTransfer.h>
+@@ -837,7 +838,7 @@
+     if (!document->is_fully_active())
+         return EventResult::Dropped;
+ 
+-    auto now = MonotonicTime::now();
++    auto now = Embedder::monotonic_now();
+     auto gesture_position = visual_viewport_position.to_type<float>();
+     bool wheel_event_has_delta = wheel_delta_x != 0 || wheel_delta_y != 0;
+     bool continues_latched_gesture = m_wheel_scroll_latch.has_value()

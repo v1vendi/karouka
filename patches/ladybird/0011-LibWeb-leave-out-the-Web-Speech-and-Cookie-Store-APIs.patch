@@ -1,0 +1,124 @@
+diff --git a/Libraries/LibWeb/Embedder/Prune/CookieStore.cmake b/Libraries/LibWeb/Embedder/Prune/CookieStore.cmake
+new file mode 100644
+index 0000000000..eb471e8c91
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/CookieStore.cmake
+@@ -0,0 +1,4 @@
++# karouka: the Cookie Store API. Pages render with no cookie jar behind them (no RequestClient), so
++# `cookieStore` would only ever see an empty store. `cookieStore` and CookieChangeEvent are not exposed;
++# `document.cookie` is unaffected.
++list(APPEND LIBWEB_PRUNED_FAMILIES CookieStore)
+diff --git a/Libraries/LibWeb/Embedder/Prune/Speech.cmake b/Libraries/LibWeb/Embedder/Prune/Speech.cmake
+new file mode 100644
+index 0000000000..f02e70d663
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/Speech.cmake
+@@ -0,0 +1,3 @@
++# karouka: the Web Speech API (speech synthesis and recognition). There is no audio output or input
++# in a texture renderer. `speechSynthesis` and the Speech* interfaces are not exposed.
++list(APPEND LIBWEB_PRUNED_FAMILIES Speech)
+diff --git a/Libraries/LibWeb/HTML/Window.cpp b/Libraries/LibWeb/HTML/Window.cpp
+index a52089fa5d..e85b65eae3 100644
+--- a/Libraries/LibWeb/HTML/Window.cpp
++++ b/Libraries/LibWeb/HTML/Window.cpp
+@@ -38,7 +38,9 @@
+ #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/RatioStyleValue.h>
+ #include <LibWeb/CSS/StyleValues/ResolutionStyleValue.h>
+-#include <LibWeb/CookieStore/CookieStore.h>
++#ifndef LIBWEB_PRUNE_COOKIESTORE
++#    include <LibWeb/CookieStore/CookieStore.h>
++#endif
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Element.h>
+ #include <LibWeb/DOM/Event.h>
+@@ -90,7 +92,9 @@
+ #include <LibWeb/Painting/PaintingRustBridge.h>
+ #include <LibWeb/RequestIdleCallback/IdleDeadline.h>
+ #include <LibWeb/Selection/Selection.h>
+-#include <LibWeb/Speech/SpeechSynthesis.h>
++#ifndef LIBWEB_PRUNE_SPEECH
++#    include <LibWeb/Speech/SpeechSynthesis.h>
++#endif
+ #include <LibWeb/StorageAPI/StorageBottle.h>
+ #include <LibWeb/ViewTransition/ViewTransition.h>
+ #include <LibWeb/WebIDL/AbstractOperations.h>
+@@ -379,8 +383,12 @@ void Window::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_pdf_viewer_plugin_objects);
+     visitor.visit(m_pdf_viewer_mime_type_objects);
+     visitor.visit(m_close_watcher_manager);
++#ifndef LIBWEB_PRUNE_COOKIESTORE
+     visitor.visit(m_cookie_store);
++#endif
++#ifndef LIBWEB_PRUNE_SPEECH
+     visitor.visit(m_speech_synthesis);
++#endif
+     visitor.visit(m_locationbar);
+     visitor.visit(m_menubar);
+     visitor.visit(m_personalbar);
+@@ -1507,6 +1515,7 @@ GC::Ref<CloseWatcherManager> Window::close_watcher_manager()
+     return GC::Ref { *m_close_watcher_manager };
+ }
+ 
++#ifndef LIBWEB_PRUNE_COOKIESTORE
+ // https://cookiestore.spec.whatwg.org/#Window
+ GC::Ref<CookieStore::CookieStore> Window::cookie_store()
+ {
+@@ -1515,14 +1524,17 @@ GC::Ref<CookieStore::CookieStore> Window::cookie_store()
+         m_cookie_store = GC::Heap::the().allocate<CookieStore::CookieStore>(page().client());
+     return *m_cookie_store;
+ }
++#endif
+ 
+ // https://wicg.github.io/speech-api/#tts-section
++#ifndef LIBWEB_PRUNE_SPEECH
+ GC::Ref<Speech::SpeechSynthesis> Window::speech_synthesis()
+ {
+     if (!m_speech_synthesis)
+         m_speech_synthesis = Speech::SpeechSynthesis::create();
+     return *m_speech_synthesis;
+ }
++#endif
+ 
+ // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#dom-alert
+ void Window::alert(Utf16String const& message)
+diff --git a/Libraries/LibWeb/ServiceWorker/ServiceWorkerGlobalScope.cpp b/Libraries/LibWeb/ServiceWorker/ServiceWorkerGlobalScope.cpp
+index bf792b298b..1f1ab0a804 100644
+--- a/Libraries/LibWeb/ServiceWorker/ServiceWorkerGlobalScope.cpp
++++ b/Libraries/LibWeb/ServiceWorker/ServiceWorkerGlobalScope.cpp
+@@ -5,7 +5,9 @@
+  */
+ 
+ #include <LibGC/Heap.h>
+-#include <LibWeb/CookieStore/CookieStore.h>
++#ifndef LIBWEB_PRUNE_COOKIESTORE
++#    include <LibWeb/CookieStore/CookieStore.h>
++#endif
+ #include <LibWeb/Page/Page.h>
+ #include <LibWeb/ServiceWorker/EventNames.h>
+ #include <LibWeb/ServiceWorker/ServiceWorkerGlobalScope.h>
+@@ -25,7 +27,9 @@ void ServiceWorkerGlobalScope::visit_edges(Cell::Visitor& visitor)
+ {
+     Base::visit_edges(visitor);
+ 
++#ifndef LIBWEB_PRUNE_COOKIESTORE
+     visitor.visit(m_cookie_store);
++#endif
+ }
+ 
+ // https://w3c.github.io/ServiceWorker/#dom-serviceworkerglobalscope-oninstall
+@@ -88,6 +92,7 @@ GC::Ptr<WebIDL::CallbackType> ServiceWorkerGlobalScope::onmessageerror()
+     return event_handler_attribute(EventNames::messageerror);
+ }
+ 
++#ifndef LIBWEB_PRUNE_COOKIESTORE
+ // https://cookiestore.spec.whatwg.org/#ServiceWorkerGlobalScope
+ GC::Ref<CookieStore::CookieStore> ServiceWorkerGlobalScope::cookie_store()
+ {
+@@ -96,5 +101,6 @@ GC::Ref<CookieStore::CookieStore> ServiceWorkerGlobalScope::cookie_store()
+         m_cookie_store = GC::Heap::the().allocate<CookieStore::CookieStore>(page()->client());
+     return *m_cookie_store;
+ }
++#endif
+ 
+ }

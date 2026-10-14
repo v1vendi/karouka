@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta content="--scroll 0,100@4..6 --poke 40,40@10" name='karouka-check-input'>
+<style>
+  /* Scripted input for tools/dev.sh multi_view_check. The meta above is the input
+     dev.sh check gives this page (to the first view, or the one --input-view names):
+     three wheel steps scroll the viewport 300px down, then a click at (40, 40) flips the
+     square in the corner. The multi-view check puts this page first in a group, scrolled and
+     clicked, and again second with no input; then in another group fourth with the input
+     (--input-view 4) and first without it: a view that misses its input, or one that gets
+     input meant for another view, then captures other pixels than this page alone (with and
+     without the input). The fixed bar counts wheel events, 40px each, so a wheel event that
+     arrives without scrolling still shows. Text-free, so the capture does not depend on a font. */
+  * { margin: 0; }
+  body { background: rgb(255, 255, 255); }
+  .band { height: 100px; }
+  .band:nth-child(4n + 1) { background: rgb(230, 80, 80); }
+  .band:nth-child(4n + 2) { background: rgb(80, 180, 80); }
+  .band:nth-child(4n + 3) { background: rgb(80, 110, 230); }
+  .band:nth-child(4n) { background: rgb(240, 200, 60); }
+  #wheels { position: fixed; right: 0; top: 0; width: 20px; height: 0; background: rgb(0, 0, 0); }
+  #clicked { position: fixed; left: 20px; top: 20px; width: 40px; height: 40px; background: rgb(255, 255, 255); }
+</style>
+</head>
+<body>
+<div id="bands"></div>
+<div id="wheels"></div>
+<div id="clicked"></div>
+<script>
+  const bands = document.getElementById("bands");
+  for (let i = 0; i < 30; i++) {
+    const band = document.createElement("div");
+    band.className = "band";
+    band.style.marginLeft = (i * 10) + "px";
+    bands.appendChild(band);
+  }
+  let wheels = 0;
+  addEventListener("wheel", () => {
+    wheels++;
+    document.getElementById("wheels").style.height = (wheels * 40) + "px";
+  });
+  addEventListener("click", () => {
+    document.getElementById("clicked").style.background = "rgb(0, 0, 0)";
+  });
+</script>
+</body>
+</html>

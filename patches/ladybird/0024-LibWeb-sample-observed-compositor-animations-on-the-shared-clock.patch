@@ -1,0 +1,14 @@
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -6590,7 +6590,9 @@ void Document::run_the_update_intersection_observations_steps(HighResolutionTime
+     update_paint_and_hit_testing_properties_if_needed();
+ 
+     HashMap<Document*, Compositing::AccumulatedVisualContextTree> observation_visual_context_trees;
+-    auto sample_time_ns = MonotonicTime::now().nanoseconds();
++    // NB: On the clock the compositor animations' timing anchors are on (the shared monotonic clock, which an
++    //     embedder's host clock replaces; Embedder/HostClock.h), not the real monotonic clock.
++    auto sample_time_ns = static_cast<i64>(HighResolutionTime::unsafe_shared_current_time() * 1'000'000.0);
+     auto sampled_visual_context_tree = [&](Document& document) -> Optional<Compositing::AccumulatedVisualContextTree> {
+         if (!document.m_paint_state)
+             return {};

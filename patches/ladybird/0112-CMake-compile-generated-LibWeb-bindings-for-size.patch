@@ -1,0 +1,18 @@
+diff --git a/Meta/CMake/libweb_generators.cmake b/Meta/CMake/libweb_generators.cmake
+index c3005e0..49bb06a 100644
+--- a/Meta/CMake/libweb_generators.cmake
++++ b/Meta/CMake/libweb_generators.cmake
+@@ -417,5 +417,13 @@ function (generate_js_bindings target)
+     add_dependencies(${target} generate_exposed_interfaces)
+     add_dependencies(generate_exposed_interfaces ${generated_idl_targets})
+ 
++    # karouka: the generated bindings are mostly cold argument-conversion glue, a quarter of an
++    # embedder's code. A build that prunes Web APIs (an embedder's) compiles them for size.
++    if (LIBWEB_PRUNE_WEB_APIS)
++        set(size_optimized_bindings_sources ${LIBWEB_ALL_BINDINGS_SOURCES} ${exposed_interface_sources})
++        list(FILTER size_optimized_bindings_sources INCLUDE REGEX "\\.cpp$")
++        set_property(SOURCE ${size_optimized_bindings_sources} APPEND PROPERTY COMPILE_OPTIONS -Os)
++    endif()
++
+     set(LIBWEB_ALL_GENERATED_HEADERS ${LIBWEB_ALL_GENERATED_HEADERS} PARENT_SCOPE)
+ endfunction()

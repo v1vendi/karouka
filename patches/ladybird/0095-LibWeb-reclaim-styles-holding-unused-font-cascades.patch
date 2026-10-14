@@ -1,0 +1,120 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: reclaim the style groups that hold unused font cascades
+
+The document's font computer forgets the cascades only its memo holds
+(patch 0091), but a computed FontValues group holds its cascade too, and
+the engine's groups outlive the records that used them until a
+reclamation sweeps the unreachable ones. That ran once 1024 records (or
+as many as were live) were interned since the last one. A page that
+animates font-size makes one record but a new font group and cascade at
+every size, so for a thousand frames every cascade stayed held: the memo
+kept 65, 131, 263 and 527 of them at its trims, then 41 after the sweep.
+
+The computed group sets now count their live font groups, and a
+reclamation is also due once those reach twice what the last one left
+(and at least 32, half of what the memo keeps before it forgets). The
+memo then finds the groups of all but the newest cascades gone: on a
+label stepping its font size by 0.1 px a frame it keeps 7 at each trim.
+
+diff --git a/Libraries/LibWeb/Rust/src/css/computed_values.rs b/Libraries/LibWeb/Rust/src/css/computed_values.rs
+index f7ca555238..0931727e5f 100644
+--- a/Libraries/LibWeb/Rust/src/css/computed_values.rs
++++ b/Libraries/LibWeb/Rust/src/css/computed_values.rs
+@@ -1651,6 +1651,11 @@ pub(crate) fn style_group_payloads_hold_image_values(payloads: &[*const c_void])
+     })
+ }
+ 
++/// Whether the group's payloads are `FontValues`, each of which holds a font cascade.
++pub(crate) fn group_holds_font_cascade(group_index: usize) -> bool {
++    matches!(vtable(group_index).lifecycle, StyleGroupLifecycle::Font)
++}
++
+ pub(crate) fn default_group_payload(group_index: usize) -> *const c_void {
+     REGISTRY.get().expect("style groups used before registration").defaults[group_index]
+ }
+diff --git a/Libraries/LibWeb/Rust/src/css/style/computed.rs b/Libraries/LibWeb/Rust/src/css/style/computed.rs
+index 3dd415ca49..a51d82b727 100644
+--- a/Libraries/LibWeb/Rust/src/css/style/computed.rs
++++ b/Libraries/LibWeb/Rust/src/css/style/computed.rs
+@@ -41,6 +41,7 @@ use crate::css::computed_longhand_table::{
+     longhand_slot_hash,
+ };
+ use crate::css::computed_values::computed_group_output_mask;
++use crate::css::computed_values::group_holds_font_cascade;
+ use crate::css::computed_values::release_group_payload;
+ use crate::css::computed_values::retain_group_payload;
+ use crate::css::computed_values::retained_group_payload_bytes;
+@@ -98,6 +99,11 @@ const COMPUTED_VALUE_DEPENDENCY_FLAGS: u8 = (INHERITED_GROUP_SWAP_ELIGIBLE - 1)
+     | HIGHLIGHT_COLORS_AUTHORED
+     | HIGHLIGHT_COLOR_IS_CURRENT_COLOR;
+ 
++/// Font groups live before one is due to be reclaimed for them, which is half of what the document's font computer
++/// keeps before it forgets the cascades nothing holds (FontComputer::forget_unused_font_cascades), so that the groups
++/// of most of the cascades it finds are gone by then.
++const FONT_GROUPS_LIVE_WITHOUT_RECLAMATION: usize = 32;
++
+ define_id! { interned pub struct ComputedGroupID(); }
+ 
+ define_id! { interned pub struct ComputedGroupSetID(); }
+@@ -833,6 +839,13 @@ pub struct ComputedGroupSets {
+     pseudo_assignment_nested_memory: MemoryLease,
+     style_records_interned_since_reclamation: usize,
+     next_reclamation_after: usize,
++    /// The interned groups whose payloads hold a font cascade (`FontValues`). A group outlives
++    /// the records that used it until a reclamation, and its cascade with it: the document's
++    /// font computer forgets only the cascades nothing else holds.
++    live_font_groups: usize,
++    /// How many font groups may be live before a reclamation is due, however few records were
++    /// interned since the last one.
++    next_reclamation_at_font_groups: usize,
+     style_record_view_epoch_depth: u32,
+ }
+ 
+@@ -866,6 +879,8 @@ impl Default for ComputedGroupSets {
+             pseudo_assignment_nested_memory: MemoryLease::new(MemoryCategory::ComputedPseudoAssignment),
+             style_records_interned_since_reclamation: 0,
+             next_reclamation_after: 1024,
++            live_font_groups: 0,
++            next_reclamation_at_font_groups: FONT_GROUPS_LIVE_WITHOUT_RECLAMATION,
+             style_record_view_epoch_depth: 0,
+         }
+     }
+@@ -1048,6 +1063,9 @@ impl ComputedGroupSets {
+         );
+         self.groups_by_content.insert_identity(payload_content_hash, identity);
+         self.identity_mints.groups += 1;
++        if group_holds_font_cascade(index) {
++            self.live_font_groups += 1;
++        }
+         self.group_set_nested_memory
+             .grow_committed(retained_group_payload_bytes(index, payload.as_ptr()) as u64);
+         (identity, true)
+@@ -3486,6 +3504,9 @@ impl ComputedGroupSets {
+             self.groups_by_content.remove_identity(group.content_hash, identity);
+             self.groups
+                 .retire_identity(content_hash((group.index, group.payload.addr())), identity);
++            if group_holds_font_cascade(group.index) {
++                self.live_font_groups -= 1;
++            }
+             self.group_set_nested_memory
+                 .shrink_committed(retained_group_payload_bytes(group.index, group.payload.as_ptr()) as u64);
+             release_group_payload(group.index, group.payload.as_ptr());
+@@ -3502,12 +3523,17 @@ impl ComputedGroupSets {
+         if self.style_record_view_epoch_depth != 0 || self.style_records_are_leased() {
+             return None;
+         }
+-        if self.style_records_interned_since_reclamation < self.next_reclamation_after {
++        if self.style_records_interned_since_reclamation < self.next_reclamation_after
++            && self.live_font_groups < self.next_reclamation_at_font_groups
++        {
+             return None;
+         }
+         self.style_records_interned_since_reclamation = 0;
+         let retention = self.reclaim_unreachable();
+         self.next_reclamation_after = self.style_records.live_identities().len().max(1024);
++        // A page that animates font-size makes a font group, and a cascade, at every size it passes through, but
++        // only one record each: counting records alone left a thousand sizes' fonts held between reclamations.
++        self.next_reclamation_at_font_groups = (self.live_font_groups * 2).max(FONT_GROUPS_LIVE_WITHOUT_RECLAMATION);
+         Some(retention)
+     }
+ 

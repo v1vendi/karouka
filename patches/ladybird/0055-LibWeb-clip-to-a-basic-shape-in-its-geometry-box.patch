@@ -1,0 +1,229 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibWeb: clip to a basic shape in its geometry box
+
+clip-path only parsed a lone <basic-shape>, so `polygon(...) border-box`
+(css-masking's <basic-shape> || <geometry-box>) was an invalid
+declaration and the element wasn't clipped at all. The shape's reference
+box was always the border box.
+
+Parse the shape with an optional <geometry-box> into a [shape, box]
+value list, as shape-outside does, and lay the shape out in that box:
+content, padding, border or margin box, with fill-box used as
+content-box and stroke-box and view-box as border-box for boxes with a
+CSS layout box. A lone <geometry-box> is still rejected.
+
+Fixes WPT css/css-masking/clip-path/clip-path-polygon-007, -011, -012.
+---
+diff --git a/Libraries/LibWeb/Rust/src/css/parser/positions_shapes_parser.rs b/Libraries/LibWeb/Rust/src/css/parser/positions_shapes_parser.rs
+index 880ee0a8da..f54853e6dc 100644
+--- a/Libraries/LibWeb/Rust/src/css/parser/positions_shapes_parser.rs
++++ b/Libraries/LibWeb/Rust/src/css/parser/positions_shapes_parser.rs
+@@ -1081,6 +1081,67 @@ fn parse_shape_outside(context: &ParseContext, property: u16, values: &[Componen
+     }
+ }
+ 
++const BASIC_SHAPE_FUNCTIONS: [&str; 8] = ["inset", "xywh", "rect", "circle", "ellipse", "polygon", "path", "shape"];
++
++// https://drafts.fxtf.org/css-masking/#typedef-geometry-box
++fn geometry_box(value: &ComponentValue) -> Option<StyleValueData> {
++    let ident = value.ident()?;
++    let parsed_keyword = keyword_from_ascii_case_insensitive(ident)?;
++    [
++        "content-box",
++        "padding-box",
++        "border-box",
++        "margin-box",
++        "fill-box",
++        "stroke-box",
++        "view-box",
++    ]
++    .iter()
++    .any(|accepted| equals_ascii_case_insensitive(ident, accepted.as_bytes()))
++    .then_some(StyleValueData::Keyword {
++        keyword: parsed_keyword,
++    })
++}
++
++// https://drafts.fxtf.org/css-masking/#the-clip-path
++// <basic-shape> || <geometry-box>, the shape first and the box second when both are given.
++// FIXME: A <geometry-box> alone (clip to that box) isn't supported; the caller leaves it to the generic parser,
++//        which rejects it.
++fn parse_clip_path_shape(context: &ParseContext, property: u16, values: &[ComponentValue]) -> Option<StyleValueData> {
++    let mut tokens = TokenStream::new(values);
++    let mut shape = None;
++    let mut box_value = None;
++    while tokens.has_next_token() {
++        tokens.discard_whitespace();
++        if !tokens.has_next_token() {
++            break;
++        }
++        if tokens.next_token().function().is_some() {
++            if shape.is_some() {
++                return None;
++            }
++            shape = Some(parse_basic_shape(
++                context,
++                property,
++                std::slice::from_ref(tokens.consume_a_token()),
++            )?);
++        } else {
++            if box_value.is_some() {
++                return None;
++            }
++            box_value = Some(geometry_box(tokens.consume_a_token())?);
++        }
++    }
++    match (shape?, box_value) {
++        (shape, Some(box_value)) => Some(StyleValueData::ValueList {
++            values: RetainedStyleValueDataList::from_retained_values(vec![retained(shape), retained(box_value)]),
++            separator: 0,
++            collapsible: false,
++        }),
++        (shape, None) => Some(shape),
++    }
++}
++
+ fn is_border_radius_longhand(property: u16) -> bool {
+     matches!(
+         property,
+@@ -1552,6 +1613,16 @@ pub(crate) fn parse_geometry_property(
+             return ParseOutcome::NotHandled;
+         }
+         parse_shape_outside(context, property, values)
++    } else if property == property_id::CLIP_PATH
++        && values.iter().any(|value| {
++            value.function().is_some_and(|(name, _)| {
++                BASIC_SHAPE_FUNCTIONS
++                    .iter()
++                    .any(|expected| equals_ascii_case_insensitive(name, expected.as_bytes()))
++            })
++        })
++    {
++        parse_clip_path_shape(context, property, values)
+     } else if property == property_id::D {
+         if let Some(value) = values
+             .iter()
+diff --git a/Libraries/LibWeb/Rust/src/css/style/style_invalidation.rs b/Libraries/LibWeb/Rust/src/css/style/style_invalidation.rs
+index ce58ece2bd..7989bdfd87 100644
+--- a/Libraries/LibWeb/Rust/src/css/style/style_invalidation.rs
++++ b/Libraries/LibWeb/Rust/src/css/style/style_invalidation.rs
+@@ -412,7 +412,11 @@ fn accumulated_visual_context_property_always_requires_repaint(property: u16) ->
+ }
+ 
+ fn clip_path_value_is_a_visual_context_frame(values: ComputedValuesView<'_>) -> bool {
+-    matches!(values.mask().clip_path.data(), Some(StyleValueData::BasicShape { .. }))
++    values
++        .mask()
++        .clip_path
++        .data()
++        .is_some_and(|value| value.basic_shape_with_geometry_box().is_some())
+ }
+ 
+ fn accumulated_visual_context_change_alters_hit_test_items(
+diff --git a/Libraries/LibWeb/Rust/src/css/style_value.rs b/Libraries/LibWeb/Rust/src/css/style_value.rs
+index 6cd6a2d86a..577fc4d359 100644
+--- a/Libraries/LibWeb/Rust/src/css/style_value.rs
++++ b/Libraries/LibWeb/Rust/src/css/style_value.rs
+@@ -2213,6 +2213,21 @@ impl StyleValueData {
+         }
+     }
+ 
++    /// A clip-path's `<basic-shape> || <geometry-box>`: the shape, and the box keyword when one was given.
++    pub(crate) fn basic_shape_with_geometry_box(&self) -> Option<(&BasicShapeData, Option<u16>)> {
++        match self {
++            Self::BasicShape { shape } => Some((shape.as_ref(), None)),
++            Self::ValueList { values, .. } => match values.as_slice() {
++                [shape, geometry_box] => match (shape.data(), geometry_box.data()) {
++                    (Self::BasicShape { shape }, Self::Keyword { keyword }) => Some((shape.as_ref(), Some(*keyword))),
++                    _ => None,
++                },
++                _ => None,
++            },
++            _ => None,
++        }
++    }
++
+     pub(crate) fn unresolved_authored_source(&self) -> Option<TokenizerInput<'_>> {
+         let Self::Unresolved { source_text, .. } = self else {
+             return None;
+diff --git a/Libraries/LibWeb/Rust/src/painting/style_queries.rs b/Libraries/LibWeb/Rust/src/painting/style_queries.rs
+index 957747b11f..f4344d86b0 100644
+--- a/Libraries/LibWeb/Rust/src/painting/style_queries.rs
++++ b/Libraries/LibWeb/Rust/src/painting/style_queries.rs
+@@ -156,7 +156,7 @@ pub(crate) fn mask_layers_have_image(mask: &MaskValues) -> bool {
+ 
+ fn clip_path_has_value(mask: &MaskValues) -> bool {
+     handle_value(&mask.clip_path)
+-        .is_some_and(|value| matches!(value, StyleValueData::Url { .. } | StyleValueData::BasicShape { .. }))
++        .is_some_and(|value| matches!(value, StyleValueData::Url { .. }) || value.basic_shape_with_geometry_box().is_some())
+ }
+ 
+ fn view_transition_name_has_value(style: ComputedValuesView<'_>) -> bool {
+diff --git a/Libraries/LibWeb/Rust/src/painting/visual_context/basic_shapes.rs b/Libraries/LibWeb/Rust/src/painting/visual_context/basic_shapes.rs
+index b6da95e184..83fb0a2a52 100644
+--- a/Libraries/LibWeb/Rust/src/painting/visual_context/basic_shapes.rs
++++ b/Libraries/LibWeb/Rust/src/painting/visual_context/basic_shapes.rs
+@@ -5,6 +5,7 @@
+  */
+ 
+ use crate::css::computed_value_views::LengthPercentageRef;
++use crate::css::css_enums::keyword;
+ use crate::css::css_pixels::CssPixels;
+ use crate::css::css_pixels::{CssPixelPoint, CssPixelRect, CssPixelSize};
+ use crate::css::style_value::{BasicShapeData, RetainedStyleValueData, StyleValueData};
+@@ -412,6 +413,34 @@ fn polygon_to_path(points: &crate::css::style_value::RetainedShapePointList, ref
+     path.build()
+ }
+ 
++// https://drafts.fxtf.org/css-masking/#the-clip-path
++// The reference box of a <basic-shape> clip-path: the <geometry-box> given with it, border-box by default.
++// https://drafts.fxtf.org/css-masking/#typedef-geometry-box
++// For elements with associated CSS layout box, the used value for fill-box is content-box, and for stroke-box and
++// view-box it is border-box.
++// FIXME: SVG elements, which have no CSS layout box, should use their fill, stroke and viewport boxes.
++fn clip_path_reference_box_rect(
++    layout_arena: &impl PaintRead,
++    slot: NodeSlotId,
++    geometry_box: Option<u16>,
++) -> CssPixelRect {
++    match geometry_box {
++        Some(keyword::CONTENT_BOX | keyword::FILL_BOX) => paintable_geometry::absolute_rect(layout_arena, slot),
++        Some(keyword::PADDING_BOX) => paintable_geometry::absolute_padding_box_rect(layout_arena, slot),
++        Some(keyword::MARGIN_BOX) => {
++            let border_box = paintable_geometry::absolute_border_box_rect(layout_arena, slot);
++            let margin = paintable_geometry::committed_margin(layout_arena, slot);
++            CssPixelRect::new(
++                border_box.x - margin.left,
++                border_box.y - margin.top,
++                border_box.width + margin.left + margin.right,
++                border_box.height + margin.top + margin.bottom,
++            )
++        }
++        _ => paintable_geometry::absolute_border_box_rect(layout_arena, slot),
++    }
++}
++
+ pub(crate) fn compute_basic_shape_clip_path_data(
+     layout_arena: &impl PaintRead,
+     slot: NodeSlotId,
+@@ -420,6 +449,7 @@ pub(crate) fn compute_basic_shape_clip_path_data(
+     let node = slot;
+     let style = layout_arena.node_style_if_live(node)?;
+     let clip_path = style_queries::handle_value(&style.mask().clip_path)?;
++    let (shape, geometry_box) = clip_path.basic_shape_with_geometry_box()?;
+     let BasicShapeData {
+         kind,
+         v0,
+@@ -430,10 +460,9 @@ pub(crate) fn compute_basic_shape_clip_path_data(
+         fill_rule,
+         points,
+         path,
+-    } = clip_path.basic_shape()?;
++    } = shape;
+ 
+-    // FIXME: Support other geometry boxes. See: https://drafts.fxtf.org/css-masking/#typedef-geometry-box
+-    let masking_area = paintable_geometry::absolute_border_box_rect(layout_arena, slot);
++    let masking_area = clip_path_reference_box_rect(layout_arena, slot, geometry_box);
+     let reference_box = CssPixelRect::new(
+         CssPixels::from_raw(0),
+         CssPixels::from_raw(0),

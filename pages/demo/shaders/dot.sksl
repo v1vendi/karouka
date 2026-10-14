@@ -1,0 +1,13 @@
+// A pulsing orb for list-style-image markers; the phase is a CSS argument.
+uniform float2 uSize;
+uniform float uTime;
+uniform float phase;
+
+half4 main(float2 coord) {
+    float2 p = coord / uSize - 0.5;
+    float r = length(p);
+    float pulse = 0.32 + 0.06 * sin(uTime * 3.0 + phase);
+    half a = half(smoothstep(pulse, pulse - 0.06, r));
+    half3 c = mix(half3(0.2, 0.9, 1.0), half3(1.0, 0.3, 0.8), half(0.5 + 0.5 * sin(phase)));
+    return half4(c * a, a);
+}

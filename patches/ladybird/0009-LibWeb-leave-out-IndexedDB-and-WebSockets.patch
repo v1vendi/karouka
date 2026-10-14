@@ -1,0 +1,187 @@
+diff --git a/Libraries/LibWeb/Embedder/Prune/IndexedDB.cmake b/Libraries/LibWeb/Embedder/Prune/IndexedDB.cmake
+new file mode 100644
+index 0000000000..0e473fe058
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/IndexedDB.cmake
+@@ -0,0 +1,3 @@
++# karouka: IndexedDB. The engine renders pages into textures with no profile directory, so there is
++# nothing for a database to persist into. `indexedDB` is not exposed.
++list(APPEND LIBWEB_PRUNED_FAMILIES IndexedDB)
+diff --git a/Libraries/LibWeb/Embedder/Prune/WebSockets.cmake b/Libraries/LibWeb/Embedder/Prune/WebSockets.cmake
+new file mode 100644
+index 0000000000..398ba0f738
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/Prune/WebSockets.cmake
+@@ -0,0 +1,3 @@
++# karouka: WebSockets. The engine opens no sockets (patch 0002), so every WebSocket would only fail.
++# `WebSocket` is not exposed.
++list(APPEND LIBWEB_PRUNED_FAMILIES WebSockets)
+diff --git a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+index a639fdff7c..1a5fe6bddd 100644
+--- a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
++++ b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+@@ -32,7 +32,9 @@
+ #include <LibWeb/HTML/WorkletGlobalScope.h>
+ #include <LibWeb/HighResolutionTime/Performance.h>
+ #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+-#include <LibWeb/IndexedDB/Internal/Algorithms.h>
++#ifndef LIBWEB_PRUNE_INDEXEDDB
++#    include <LibWeb/IndexedDB/Internal/Algorithms.h>
++#endif
+ #include <LibWeb/Layout/Node.h>
+ #include <LibWeb/Layout/TreeBuilderRustFFI.h>
+ #include <LibWeb/Page/Page.h>
+@@ -1320,7 +1322,9 @@ void EventLoop::perform_a_microtask_checkpoint()
+     }
+ 
+     // 5. Cleanup Indexed Database transactions.
++#ifndef LIBWEB_PRUNE_INDEXEDDB
+     IndexedDB::cleanup_indexed_database_transactions(*this);
++#endif
+ 
+     // 6. Perform ClearKeptObjects().
+     vm().finish_execution_generation();
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+index 4628399277..8325176089 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.cpp
+@@ -59,9 +59,11 @@
+ #include <LibWeb/HighResolutionTime/Performance.h>
+ #include <LibWeb/HighResolutionTime/SupportedPerformanceTypes.h>
+ #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+-#include <LibWeb/IndexedDB/IDBDatabase.h>
+-#include <LibWeb/IndexedDB/IDBFactory.h>
+-#include <LibWeb/IndexedDB/Internal/Algorithms.h>
++#ifndef LIBWEB_PRUNE_INDEXEDDB
++#    include <LibWeb/IndexedDB/IDBDatabase.h>
++#    include <LibWeb/IndexedDB/IDBFactory.h>
++#    include <LibWeb/IndexedDB/Internal/Algorithms.h>
++#endif
+ #include <LibWeb/Infra/SerializedURL.h>
+ #include <LibWeb/Loader/ResourceLoader.h>
+ #include <LibWeb/NavigationTiming/PerformanceNavigationTiming.h>
+@@ -136,7 +138,9 @@ void WindowOrWorkerGlobalScopeMixin::visit_edges(JS::Cell::Visitor& visitor)
+     visitor.visit(m_performance);
+     visitor.visit(m_timers);
+     visitor.visit(m_registered_performance_observer_objects);
++#ifndef LIBWEB_PRUNE_INDEXEDDB
+     visitor.visit(m_indexed_db);
++#endif
+     for (auto& entry : m_performance_entry_buffer_map)
+         entry.value.visit_edges(visitor);
+     visitor.visit(m_registered_event_sources);
+@@ -1241,6 +1245,7 @@ void WindowOrWorkerGlobalScopeMixin::remove_strong_reference_to_broadcast_channe
+ 
+ void WindowOrWorkerGlobalScopeMixin::close_all_idb_connections()
+ {
++#ifndef LIBWEB_PRUNE_INDEXEDDB
+     IndexedDB::Database::for_each_database([&](IndexedDB::Database& database) {
+         for (auto& connection : database.associated_connections_as_root_vector()) {
+             if (connection->close_pending())
+@@ -1249,8 +1254,10 @@ void WindowOrWorkerGlobalScopeMixin::close_all_idb_connections()
+                 IndexedDB::close_a_database_connection(connection);
+         }
+     });
++#endif
+ }
+ 
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
+ void WindowOrWorkerGlobalScopeMixin::register_web_socket(Badge<WebSockets::WebSocket>, GC::Ref<WebSockets::WebSocket> web_socket)
+ {
+     m_registered_web_sockets.append(web_socket);
+@@ -1260,15 +1267,18 @@ void WindowOrWorkerGlobalScopeMixin::unregister_web_socket(Badge<WebSockets::Web
+ {
+     m_registered_web_sockets.remove(web_socket);
+ }
++#endif
+ 
+ WindowOrWorkerGlobalScopeMixin::AffectedAnyWebSockets WindowOrWorkerGlobalScopeMixin::make_disappear_all_web_sockets()
+ {
+     auto affected_any_web_sockets = AffectedAnyWebSockets::No;
+ 
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
+     for (auto& web_socket : m_registered_web_sockets) {
+         web_socket.make_disappear();
+         affected_any_web_sockets = AffectedAnyWebSockets::Yes;
+     }
++#endif
+ 
+     return affected_any_web_sockets;
+ }
+@@ -1620,12 +1630,14 @@ GC::Ref<HighResolutionTime::Performance> WindowOrWorkerGlobalScopeMixin::perform
+     return GC::Ref { *m_performance };
+ }
+ 
++#ifndef LIBWEB_PRUNE_INDEXEDDB
+ GC::Ref<IndexedDB::IDBFactory> WindowOrWorkerGlobalScopeMixin::indexed_db()
+ {
+     if (!m_indexed_db)
+         m_indexed_db = GC::Heap::the().allocate<IndexedDB::IDBFactory>(*this);
+     return *m_indexed_db;
+ }
++#endif
+ 
+ // https://html.spec.whatwg.org/multipage/webappapis.html#dom-reporterror
+ void WindowOrWorkerGlobalScopeMixin::report_error(JS::Value e)
+diff --git a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
+index efe8e2efc8..6372ea5a2b 100644
+--- a/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
++++ b/Libraries/LibWeb/HTML/WindowOrWorkerGlobalScope.h
+@@ -23,7 +23,9 @@
+ #include <LibWeb/HTML/Timer.h>
+ #include <LibWeb/PerformanceTimeline/PerformanceEntry.h>
+ #include <LibWeb/PerformanceTimeline/PerformanceEntryTuple.h>
+-#include <LibWeb/WebSockets/WebSocket.h>
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
++#    include <LibWeb/WebSockets/WebSocket.h>
++#endif
+ 
+ namespace Web::HTML {
+ 
+@@ -91,8 +93,10 @@ public:
+ 
+     void close_all_idb_connections();
+ 
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
+     void register_web_socket(Badge<WebSockets::WebSocket>, GC::Ref<WebSockets::WebSocket>);
+     void unregister_web_socket(Badge<WebSockets::WebSocket>, GC::Ref<WebSockets::WebSocket>);
++#endif
+ 
+     enum class AffectedAnyWebSockets {
+         No,
+@@ -224,7 +228,9 @@ private:
+ 
+     bool m_error_reporting_mode { false };
+ 
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
+     WebSockets::WebSocket::List m_registered_web_sockets;
++#endif
+ 
+     // https://w3c.github.io/resource-timing/#sec-extensions-performance-interface
+     // Each ECMAScript global environment has:
+diff --git a/Libraries/LibWeb/Internals/Internals.cpp b/Libraries/LibWeb/Internals/Internals.cpp
+index 1f581d3c6b..9fa7a3ab90 100644
+--- a/Libraries/LibWeb/Internals/Internals.cpp
++++ b/Libraries/LibWeb/Internals/Internals.cpp
+@@ -101,7 +101,9 @@
+ #include <LibWeb/StyleValueRustFFI.h>
+ #include <LibWeb/WebIDL/ExceptionOr.h>
+ #include <LibWeb/WebIDL/Promise.h>
+-#include <LibWeb/WebSockets/WebSocket.h>
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
++#    include <LibWeb/WebSockets/WebSocket.h>
++#endif
+ #include <LibWeb/XHR/XMLHttpRequest.h>
+ #include <LibWebCommon/CSS/PreferredColorScheme.h>
+ #include <LibWebCommon/Clipboard/SystemClipboard.h>
+@@ -447,8 +449,10 @@ bool Internals::has_activity_root(JS::Object& object)
+         return xhr->has_activity_root();
+     if (auto* resize_observer = Bindings::impl_from<ResizeObserver::ResizeObserver>(&object))
+         return resize_observer->has_activity_root();
++#ifndef LIBWEB_PRUNE_WEBSOCKETS
+     if (auto* web_socket = Bindings::impl_from<WebSockets::WebSocket>(&object))
+         return web_socket->has_activity_root();
++#endif
+     return false;
+ }
+ 

@@ -1,0 +1,30 @@
+// waves.sksl — M5, written to be used as a border-image-source.
+//
+// Nine-slice paints this shader into nine separate destination rects, each
+// with its own tile size. That is the interesting part of M5: uSize differs
+// per slice, so anything keyed to uSize will look discontinuous across the
+// corners. This shader deliberately keys its stripes to absolute coordinates
+// instead, so the bands stay continuous around the frame.
+//
+// CSS:
+//   border-image-source: shader(url(shaders/waves.sksl), --amp 0.1);
+//   border-image-slice: 30;
+//   border-image-repeat: round;
+
+uniform float2 uSize;
+uniform float  uTime;
+
+uniform float amp;   // --amp : band contrast, 0..1
+
+const float kPeriod = 24.0;   // CSS px per band, absolute — not uSize-relative
+
+half4 main(float2 coord) {
+    float phase = (coord.x + coord.y) / kPeriod - uTime * 0.6;
+    float band  = sin(phase * 6.2831853) * 0.5 + 0.5;
+
+    half3 lo = half3(0.15, 0.20, 0.45);
+    half3 hi = half3(0.45, 0.85, 1.00);
+    half3 rgb = mix(lo, hi, half(band * amp + (1.0 - amp) * 0.5));
+
+    return half4(rgb, 1.0);
+}

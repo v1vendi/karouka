@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-animated" content="the highlighted row moves every frame by design">
+<style>
+  /* Partial raster. A full page of rows (text, gradients, rounded corners, shadows) where
+     one row at a time is highlighted, as a hover would, and the highlight moves to the next row
+     every rAF frame: only two rows' pixels change a frame, so kr_view_render rasterizes their
+     damage, not the viewport (kr_view_stats.last_raster_pixels, --stats raster_px_*). At frame 30 the highlight sits on row 30 % 24 = 6, at
+     60 on row 12, so the check's two captures differ. */
+  * { margin: 0; box-sizing: border-box; }
+  body { background: linear-gradient(135deg, rgb(236, 240, 246), rgb(214, 222, 236)); font: 13px/1 sans-serif; padding: 12px; }
+  .row { height: 26px; margin: 0 0 3px 0; padding: 6px 12px; border-radius: 6px; color: rgb(30, 40, 60);
+         background: linear-gradient(90deg, rgb(255, 255, 255), rgb(244, 247, 252));
+         box-shadow: 0 1px 3px rgba(20, 30, 60, 0.18); display: flex; justify-content: space-between; }
+  .row.hot { background: linear-gradient(90deg, rgb(60, 110, 220), rgb(90, 150, 240)); color: white; }
+  .row span:last-child { opacity: 0.6; }
+</style>
+</head>
+<body>
+<div id="rows"></div>
+<script>
+  const rows = document.getElementById("rows");
+  for (let i = 0; i < 24; ++i) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span>Row ${i + 1}: order #${1000 + i * 37} for customer ${String.fromCharCode(65 + i)}</span><span>${(i * 13.7).toFixed(2)} kg</span>`;
+    rows.appendChild(row);
+  }
+  let frame = 0;
+  let hot = null;
+  function step() {
+    if (hot)
+      hot.classList.remove("hot");
+    hot = rows.children[frame % rows.children.length];
+    hot.classList.add("hot");
+    ++frame;
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

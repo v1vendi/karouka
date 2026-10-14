@@ -1,0 +1,16 @@
+diff --git a/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp b/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp
+index 8e8ce8a..004e9a2 100644
+--- a/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp
++++ b/Libraries/LibWeb/HTML/Canvas/CanvasHost.cpp
+@@ -59,6 +59,11 @@ RefPtr<Gfx::Bitmap> CanvasHost::get_bitmap_from_surface()
+ 
+     if (auto* context = canvas_2d_context()) {
+         context->ensure_backing_storage();
++        // AD-HOC: Without a compositor host (an embedder that renders on its own) the context has no
++        //         backing storage, so nothing it drew is readable. Serialize the canvas's size as
++        //         transparent black, the bitmap of a fresh canvas, instead of reporting no pixels.
++        if (!context->canvas_id().has_value())
++            return create_transparent_canvas_bitmap(size);
+         if (auto pixels = context->read_pixels({ {}, size }); pixels && pixels->size() == size)
+             return pixels;
+         return nullptr;

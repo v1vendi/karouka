@@ -1,0 +1,213 @@
+diff --git a/Libraries/LibWeb/Rust/src/css/css_tokenizer.rs b/Libraries/LibWeb/Rust/src/css/css_tokenizer.rs
+index d19965b947..0c260b2964 100644
+--- a/Libraries/LibWeb/Rust/src/css/css_tokenizer.rs
++++ b/Libraries/LibWeb/Rust/src/css/css_tokenizer.rs
+@@ -361,22 +361,95 @@ impl<'a> From<&'a Vec<u16>> for TokenizerInput<'a> {
+     }
+ }
+ 
++/// Every parser token holds up to one string and one source, and the user-agent sheet alone is
++/// thousands of tokens and component values, so both are kept small: a `ParserString` is 32 bytes
++/// (the inline string's length is an enum with 16 values, whose unused values hold the variant),
++/// a `ParserSource` 24 (shared ranges are 32-bit), a `ParserToken` 88.
++const _: () = assert!(std::mem::size_of::<ParserString>() == 32);
++const _: () = assert!(std::mem::size_of::<ParserSource>() == 24);
++const _: () = assert!(std::mem::size_of::<ParserToken>() == 88);
++
+ #[derive(Clone, Debug)]
+ pub(crate) enum ParserString {
+-    Inline(SmallVec<[u16; 16]>),
++    Inline(InlineUnits),
+     Owned(Box<[u16]>),
+-    Shared { storage: Arc<[u16]>, range: Range<usize> },
++    Shared { storage: Arc<[u16]>, range: Range<u32> },
+     Pending(Range<usize>),
+ }
+ 
++/// Up to 15 UTF-16 code units stored in place, for the tokens of short inputs (property values)
++/// that keep no shared storage.
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct InlineUnits {
++    units: [u16; InlineUnits::CAPACITY],
++    length: InlineLength,
++}
++
++#[derive(Clone, Copy, Debug)]
++#[repr(u8)]
++enum InlineLength {
++    L0,
++    L1,
++    L2,
++    L3,
++    L4,
++    L5,
++    L6,
++    L7,
++    L8,
++    L9,
++    L10,
++    L11,
++    L12,
++    L13,
++    L14,
++    L15,
++}
++
++impl InlineUnits {
++    const CAPACITY: usize = 15;
++    const LENGTHS: [InlineLength; Self::CAPACITY + 1] = {
++        use InlineLength::*;
++        [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15]
++    };
++
++    fn new(value: &[u16]) -> Option<Self> {
++        let length = *Self::LENGTHS.get(value.len())?;
++        let mut units = [0; Self::CAPACITY];
++        units[..value.len()].copy_from_slice(value);
++        Some(Self { units, length })
++    }
++
++    fn as_slice(&self) -> &[u16] {
++        &self.units[..self.length as usize]
++    }
++}
++
++/// A range of shared storage as 32-bit offsets, or `None` past `u32::MAX` (the caller then copies).
++fn compact_range(range: &Range<usize>) -> Option<Range<u32>> {
++    Some(u32::try_from(range.start).ok()?..u32::try_from(range.end).ok()?)
++}
++
++fn expand_range(range: &Range<u32>) -> Range<usize> {
++    range.start as usize..range.end as usize
++}
++
+ impl ParserString {
++    pub(crate) fn from_units(value: &[u16]) -> Self {
++        match InlineUnits::new(value) {
++            Some(inline) => Self::Inline(inline),
++            None => Self::Owned(value.into()),
++        }
++    }
++
+     fn finish_shared(&mut self, storage: Arc<[u16]>, offset: usize) {
+         let Self::Pending(range) = self else {
+             return;
+         };
+-        *self = Self::Shared {
+-            storage,
+-            range: range.start + offset..range.end + offset,
++        let range = range.start + offset..range.end + offset;
++        *self = match compact_range(&range) {
++            Some(range) => Self::Shared { storage, range },
++            None => Self::Owned(storage[range].into()),
+         };
+     }
+ }
+@@ -384,9 +457,9 @@ impl ParserString {
+ impl AsRef<[u16]> for ParserString {
+     fn as_ref(&self) -> &[u16] {
+         match self {
+-            Self::Inline(value) => value,
++            Self::Inline(value) => value.as_slice(),
+             Self::Owned(value) => value,
+-            Self::Shared { storage, range } => &storage[range.clone()],
++            Self::Shared { storage, range } => &storage[expand_range(range)],
+             Self::Pending(_) => unreachable!(),
+         }
+     }
+@@ -486,7 +559,7 @@ pub(crate) enum ParserSource {
+     Owned(Box<[u16]>),
+     Shared {
+         storage: Arc<SourceStorage>,
+-        range: Range<usize>,
++        range: Range<u32>,
+     },
+ }
+ 
+@@ -521,7 +594,13 @@ impl ParserSource {
+     }
+ 
+     fn shared(storage: Arc<SourceStorage>, range: Range<usize>) -> Self {
+-        Self::Shared { storage, range }
++        match compact_range(&range) {
++            Some(range) => Self::Shared { storage, range },
++            None => Self::Owned(match storage.as_ref() {
++                SourceStorage::Ascii(source) => source[range].iter().copied().map(u16::from).collect(),
++                SourceStorage::Utf16(source) => source[range].into(),
++            }),
++        }
+     }
+ 
+     pub(crate) fn covering(first: &Self, last: &Self) -> Option<Self> {
+@@ -549,7 +628,7 @@ impl ParserSource {
+         match self {
+             Self::Empty => 0,
+             Self::Owned(source) => source.len(),
+-            Self::Shared { range, .. } => range.len(),
++            Self::Shared { range, .. } => (range.end - range.start) as usize,
+         }
+     }
+ 
+@@ -558,8 +637,8 @@ impl ParserSource {
+             Self::Empty => ParserSourceIter::Empty,
+             Self::Owned(source) => ParserSourceIter::Owned(source.iter()),
+             Self::Shared { storage, range } => match storage.as_ref() {
+-                SourceStorage::Ascii(source) => ParserSourceIter::Ascii(source[range.clone()].iter()),
+-                SourceStorage::Utf16(source) => ParserSourceIter::Utf16(source[range.clone()].iter()),
++                SourceStorage::Ascii(source) => ParserSourceIter::Ascii(source[expand_range(range)].iter()),
++                SourceStorage::Utf16(source) => ParserSourceIter::Utf16(source[expand_range(range)].iter()),
+             },
+         }
+     }
+@@ -569,8 +648,8 @@ impl ParserSource {
+             Self::Empty => {}
+             Self::Owned(source) => target.extend_from_slice(source),
+             Self::Shared { storage, range } => match storage.as_ref() {
+-                SourceStorage::Ascii(source) => target.extend(source[range.clone()].iter().copied().map(u16::from)),
+-                SourceStorage::Utf16(source) => target.extend_from_slice(&source[range.clone()]),
++                SourceStorage::Ascii(source) => target.extend(source[expand_range(range)].iter().copied().map(u16::from)),
++                SourceStorage::Utf16(source) => target.extend_from_slice(&source[expand_range(range)]),
+             },
+         }
+     }
+@@ -586,8 +665,8 @@ impl ParserSource {
+                 .zip(expected)
+                 .all(|(&left, &right)| left == u16::from(right)),
+             Self::Shared { storage, range } => match storage.as_ref() {
+-                SourceStorage::Ascii(source) => &source[range.clone()] == expected,
+-                SourceStorage::Utf16(source) => source[range.clone()]
++                SourceStorage::Ascii(source) => &source[expand_range(range)] == expected,
++                SourceStorage::Utf16(source) => source[expand_range(range)]
+                     .iter()
+                     .zip(expected)
+                     .all(|(&left, &right)| left == u16::from(right)),
+@@ -627,7 +706,7 @@ fn tokenize_for_parser_without_source_internal<'a>(input: impl Into<TokenizerInp
+         if matches!(token.token_type, TokenType::EndOfFile) {
+             return;
+         }
+-        let string = |value: &TokenString| ParserString::Inline(value.clone());
++        let string = |value: &TokenString| ParserString::from_units(value);
+         let kind = match &token.token_type {
+             TokenType::Ident { value } => ParserTokenKind::Ident(string(value)),
+             TokenType::Function { name } => ParserTokenKind::Function(string(name)),
+@@ -687,7 +766,10 @@ fn tokenize_for_parser_internal<'a>(
+         TokenizerInput::Ascii(units) => uncommented_length(units),
+         TokenizerInput::Utf16(units) => uncommented_length(units),
+     };
+-    let estimated_token_count = uncommented_length / 3;
++    // About one token per 2.8 code units of uncommented CSS in the user-agent sheet (6.2k tokens
++    // for 17.4k units). A third reserved too few and the vector doubled while tokenizing it, a
++    // second, 1.3 MB allocation; a slight overestimate is much cheaper than that.
++    let estimated_token_count = uncommented_length * 2 / 5;
+     let mut tokens = Vec::with_capacity(estimated_token_count);
+     let mut string_storage = Vec::with_capacity(uncommented_length / 2);
+     let mut source_storage = None;
+@@ -2348,7 +2430,7 @@ mod tests {
+             panic!("token source should use shared storage");
+         };
+         assert!(matches!(storage.as_ref(), SourceStorage::Utf16(_)));
+-        assert_eq!(range.clone(), 0..utf16.len());
++        assert_eq!(range.clone(), 0..utf16.len() as u32);
+         assert_eq!(utf16_tokens[0].source.to_vec(), utf16);
+     }
+ 

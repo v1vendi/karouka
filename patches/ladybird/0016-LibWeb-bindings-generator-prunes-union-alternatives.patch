@@ -1,0 +1,145 @@
+diff --git a/Meta/Generators/libweb_bindings/pruning.py b/Meta/Generators/libweb_bindings/pruning.py
+index 1b3b2f83b6..8576dcaddc 100644
+--- a/Meta/Generators/libweb_bindings/pruning.py
++++ b/Meta/Generators/libweb_bindings/pruning.py
+@@ -3,6 +3,9 @@
+ # members of the remaining IDL files that name one of the family's definitions are dropped: an
+ # attribute, operation or constant whose type mentions it, a dictionary member, an `includes` of one
+ # of its mixins. `navigator.serial` then simply does not exist, the same as in a browser without it.
++# A union keeps its other alternatives: `(CanvasRenderingContext2D or WebGLRenderingContext)` becomes
++# `(CanvasRenderingContext2D)`, and the C++ Variant behind it drops the same alternatives under
++# LIBWEB_PRUNE_<FAMILY>. Only a union whose every alternative is pruned takes its member with it.
+ 
+ from dataclasses import replace
+ from typing import Iterable
+@@ -11,7 +14,9 @@ from typing import Optional
+ from typing import Set
+ 
+ from Utils.webidl_parser import Dictionary
++from Utils.webidl_parser import IDLParameterizedType
+ from Utils.webidl_parser import IDLType
++from Utils.webidl_parser import IDLUnionType
+ from Utils.webidl_parser import Interface
+ from Utils.webidl_parser import Module
+ from Utils.webidl_parser import OperationParameter
+@@ -32,9 +37,31 @@ def pruned_definition_names(pruned_modules: Iterable[Module]) -> Set[str]:
+     return names
+ 
+ 
++def _without_pruned_alternatives(type_: IDLType, pruned: Set[str]) -> IDLType:
++    if isinstance(type_, IDLUnionType):
++        member_types = [_without_pruned_alternatives(member_type, pruned) for member_type in type_.member_types]
++        kept_member_types = [
++            member_type
++            for member_type in member_types
++            if not any(nested_type.name in pruned for nested_type in member_type.nested_types())
++        ]
++        if kept_member_types:
++            member_types = kept_member_types
++        return IDLUnionType(member_types, type_.nullable, type_.extended_attributes)
++    if isinstance(type_, IDLParameterizedType):
++        return IDLParameterizedType(
++            type_.name,
++            [_without_pruned_alternatives(parameter, pruned) for parameter in type_.parameters],
++            type_.nullable,
++            type_.extended_attributes,
++        )
++    return type_
++
++
+ def _names_pruned(type_: Optional[IDLType], pruned: Set[str]) -> bool:
+     if type_ is None:
+         return False
++    type_ = _without_pruned_alternatives(type_, pruned)
+     return any(nested_type.name in pruned for nested_type in type_.nested_types())
+ 
+ 
+@@ -42,6 +69,19 @@ def _parameters_pruned(parameters: List[OperationParameter], pruned: Set[str]) -
+     return any(_names_pruned(parameter.type, pruned) for parameter in parameters)
+ 
+ 
++def _strip_parameters(parameters: List[OperationParameter], pruned: Set[str]) -> List[OperationParameter]:
++    return [replace(parameter, type=_without_pruned_alternatives(parameter.type, pruned)) for parameter in parameters]
++
++
++def _strip_operation(operation, pruned: Set[str]):
++    # An operation or a callback function: both have a return type and parameters.
++    return replace(
++        operation,
++        return_type=_without_pruned_alternatives(operation.return_type, pruned),
++        parameters=_strip_parameters(operation.parameters, pruned),
++    )
++
++
+ def _prune_interface(interface: Interface, pruned: Set[str]) -> Interface:
+     for declaration in (interface.iterable, interface.async_iterable, interface.maplike, interface.setlike):
+         if declaration is not None and any(
+@@ -52,25 +92,29 @@ def _prune_interface(interface: Interface, pruned: Set[str]) -> Interface:
+         interface,
+         constants=[constant for constant in interface.constants if not _names_pruned(constant.type, pruned)],
+         regular_attributes=[
+-            attribute for attribute in interface.regular_attributes if not _names_pruned(attribute.type, pruned)
++            replace(attribute, type=_without_pruned_alternatives(attribute.type, pruned))
++            for attribute in interface.regular_attributes
++            if not _names_pruned(attribute.type, pruned)
+         ],
+         static_attributes=[
+-            attribute for attribute in interface.static_attributes if not _names_pruned(attribute.type, pruned)
++            replace(attribute, type=_without_pruned_alternatives(attribute.type, pruned))
++            for attribute in interface.static_attributes
++            if not _names_pruned(attribute.type, pruned)
+         ],
+         regular_operations=[
+-            operation
++            _strip_operation(operation, pruned)
+             for operation in interface.regular_operations
+             if not _names_pruned(operation.return_type, pruned)
+             and not _parameters_pruned(operation.parameters, pruned)
+         ],
+         static_operations=[
+-            operation
++            _strip_operation(operation, pruned)
+             for operation in interface.static_operations
+             if not _names_pruned(operation.return_type, pruned)
+             and not _parameters_pruned(operation.parameters, pruned)
+         ],
+         constructors=[
+-            constructor
++            replace(constructor, parameters=_strip_parameters(constructor.parameters, pruned))
+             for constructor in interface.constructors
+             if not _parameters_pruned(constructor.parameters, pruned)
+         ],
+@@ -80,7 +124,11 @@ def _prune_interface(interface: Interface, pruned: Set[str]) -> Interface:
+ def _prune_dictionary(dictionary: Dictionary, pruned: Set[str]) -> Dictionary:
+     return replace(
+         dictionary,
+-        members=[member for member in dictionary.members if not _names_pruned(member.type, pruned)],
++        members=[
++            replace(member, type=_without_pruned_alternatives(member.type, pruned))
++            for member in dictionary.members
++            if not _names_pruned(member.type, pruned)
++        ],
+     )
+ 
+ 
+@@ -97,14 +145,18 @@ def prune_module(module: Module, pruned: Set[str]) -> Module:
+             included_mixin for included_mixin in module.included_mixins if included_mixin.mixin_name not in pruned
+         ],
+         callback_functions=[
+-            callback_function
++            _strip_operation(callback_function, pruned)
+             for callback_function in module.callback_functions
+             if not _names_pruned(callback_function.return_type, pruned)
+             and not _parameters_pruned(callback_function.parameters, pruned)
+         ],
+         dictionaries=[_prune_dictionary(dictionary, pruned) for dictionary in module.dictionaries],
+         partial_dictionaries=[_prune_dictionary(dictionary, pruned) for dictionary in module.partial_dictionaries],
+-        typedefs=[typedef for typedef in module.typedefs if not _names_pruned(typedef.type, pruned)],
++        typedefs=[
++            replace(typedef, type=_without_pruned_alternatives(typedef.type, pruned))
++            for typedef in module.typedefs
++            if not _names_pruned(typedef.type, pruned)
++        ],
+     )
+ 
+ 

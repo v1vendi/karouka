@@ -1,0 +1,893 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e8b3f33..ffcc662 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -50,6 +50,21 @@ else()
+ endif()
+ option(LIBCRYPTO_COMMONCRYPTO "Build LibCrypto without OpenSSL: big integers, ASN.1, and SHA-1/SHA-2 over CommonCrypto" ${LIBCRYPTO_COMMONCRYPTO_DEFAULT})
+ 
++# karouka: most of libicudata (33 MB) is other locales' data. Builds with LADYBIRD_TRIM_ICU_DATA keep
++# root and English plus the locale-independent data (segmentation, normalization, the collation
++# root, time zones) and nothing else: the "trimmed-icu-data" feature of vcpkg.json, which builds the
++# icu overlay port with its "karouka-data" feature (Meta/CMake/vcpkg/overlay-ports/icu). Intl and
++# toLocaleString fall back to en-US for every other locale.
++if (KAROUKA_SOURCE_DIR)
++    set(LADYBIRD_TRIM_ICU_DATA_DEFAULT ON)
++else()
++    set(LADYBIRD_TRIM_ICU_DATA_DEFAULT OFF)
++endif()
++option(LADYBIRD_TRIM_ICU_DATA "Package only root and English locale data into libicudata" ${LADYBIRD_TRIM_ICU_DATA_DEFAULT})
++if (LADYBIRD_TRIM_ICU_DATA)
++    list(APPEND VCPKG_MANIFEST_FEATURES trimmed-icu-data)
++endif()
++
+ if (LADYBIRD_MEDIA_STUB OR LIBWEB_PRUNE_WEB_APIS OR LIBCRYPTO_COMMONCRYPTO)
+     set(VCPKG_MANIFEST_NO_DEFAULT_FEATURES ON)
+     if (NOT LADYBIRD_MEDIA_STUB)
+diff --git a/vcpkg.json b/vcpkg.json
+index cbffaae..99e64d3 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -257,6 +257,17 @@
+         }
+       ]
+     },
++    "trimmed-icu-data": {
++      "description": "Build ICU with only root and English locale data plus segmentation, normalization, the collation root and time zones (33 MB of data down to about 5.5 MB). Builds with LADYBIRD_TRIM_ICU_DATA (karouka) select it; other locales then fall back to en-US.",
++      "dependencies": [
++        {
++          "name": "icu",
++          "features": [
++            "karouka-data"
++          ]
++        }
++      ]
++    },
+     "openssl": {
+       "description": "LibCrypto's OpenSSL backend: WebCrypto's ciphers, MACs, KDFs and key pairs, TLS, DNSSEC. Builds with LIBCRYPTO_COMMONCRYPTO (karouka: no SubtleCrypto, SHA-1/SHA-2 over CommonCrypto) leave it out.",
+       "dependencies": [
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/disable-static-prefix.patch b/Meta/CMake/vcpkg/overlay-ports/icu/disable-static-prefix.patch
+new file mode 100644
+index 0000000000..4e63e3375b
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/disable-static-prefix.patch
+@@ -0,0 +1,20 @@
++diff --git a/source/icudefs.mk.in b/source/icudefs.mk.in
++index 24bd97a..33169de 100644
++--- a/source/icudefs.mk.in
+++++ b/source/icudefs.mk.in
++@@ -213,13 +213,13 @@ LIBICU = $(LIBPREFIX)$(ICUPREFIX)
++ 
++ ## If we can't use the shared libraries, use the static libraries
++ ifneq ($(ENABLE_SHARED),YES)
++-STATIC_PREFIX_WHEN_USED = s
+++STATIC_PREFIX_WHEN_USED =
++ else
++ STATIC_PREFIX_WHEN_USED = 
++ endif
++ 
++ # Static library prefix and file extension
++-STATIC_PREFIX = s
+++STATIC_PREFIX =
++ LIBSICU = $(LIBPREFIX)$(STATIC_PREFIX)$(ICUPREFIX)
++ A = a
++ SOBJ = $(SO)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/fix-python-path-with-spaces.patch b/Meta/CMake/vcpkg/overlay-ports/icu/fix-python-path-with-spaces.patch
+new file mode 100644
+index 0000000000..19c9bee913
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/fix-python-path-with-spaces.patch
+@@ -0,0 +1,22 @@
++diff --git a/source/configure b/source/configure
++index abcdef1..1234567 100755
++--- a/source/configure
+++++ b/source/configure
++@@ -9534,7 +9534,7 @@ else
++     then
++         echo "Spawning Python to generate data/rules.mk..."
++         PYTHONPATH="$srcdir/python" \
++-            $PYTHON -m icutools.databuilder \
+++            "$PYTHON" -m icutools.databuilder \
++             --mode gnumake \
++             --seqmode parallel \
++             --src_dir "$srcdir/data" \
++@@ -9550,7 +9550,7 @@ else
++     fi
++     echo "Spawning Python to generate test/testdata/rules.mk..."
++     PYTHONPATH="$srcdir/python" \
++-        $PYTHON -m icutools.databuilder \
+++        "$PYTHON" -m icutools.databuilder \
++         --mode gnumake \
++         --seqmode parallel \
++         --src_dir "$srcdir/test/testdata" \
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/fix-using-install-sh.diff b/Meta/CMake/vcpkg/overlay-ports/icu/fix-using-install-sh.diff
+new file mode 100644
+index 0000000000..43a86dea5a
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/fix-using-install-sh.diff
+@@ -0,0 +1,39 @@
++diff --git a/source/Makefile.in b/source/Makefile.in
++index 9e15b6a016..53330a3921 100644
++--- a/source/Makefile.in
+++++ b/source/Makefile.in
++@@ -189,7 +189,10 @@ install-icu: $(INSTALLED_BUILT_FILES)
++ 	$(INSTALL_SCRIPT) $(top_srcdir)/mkinstalldirs $(DESTDIR)$(pkgdatadir)/mkinstalldirs
++ 	$(INSTALL_SCRIPT) $(top_srcdir)/install-sh $(DESTDIR)$(pkgdatadir)/install-sh
++ 	@$(MKINSTALLDIRS) $(DESTDIR)$(libdir)/pkgconfig
++-	$(INSTALL_DATA) $(ALL_PKGCONFIG_FILES) $(DESTDIR)$(libdir)/pkgconfig/
+++	# icu's fallback install-sh does not support multi-file install
+++	@for file in $(ALL_PKGCONFIG_FILES); do \
+++	  $(INSTALL_DATA) "$${file}" $(DESTDIR)$(libdir)/pkgconfig/ ; \
+++	done
++ 	$(INSTALL_DATA) $(top_srcdir)/../LICENSE $(DESTDIR)$(pkgdatadir)/LICENSE
++ ifeq ($(INSTALL_ICU_CONFIG),true)
++ 	$(INSTALL_SCRIPT) $(top_builddir)/config/icu-config $(DESTDIR)$(bindir)/icu-config
++diff --git a/source/configure b/source/configure
++index dfa3a091f8..8ee911d42d 100755
++--- a/source/configure
+++++ b/source/configure
++@@ -4935,12 +4935,12 @@ test -z "$INSTALL_DATA" && INSTALL_DATA='${INSTALL} -m 644'
++ 
++ 
++ 
++-# make sure install is relative to srcdir - if a script
++-if test "$srcdir" = "."; then
++-  # If srcdir isn't just ., then (srcdir) is already prepended.
++-  if test "${ac_install_sh}" = "${INSTALL}"; then
++-   INSTALL="\\\$(top_srcdir)/${ac_install_sh}"
++-  fi
+++# If using the included install-sh, make INSTALL work from any build dir.
+++if test "${ac_install_sh}" = "${INSTALL}"; then
+++    case "$srcdir" in
+++        .|./*|../*)  INSTALL="\\\$(top_builddir)/${ac_install_sh}" ;;
+++        *) ;;
+++    esac
++ fi
++ 
++ # TODO(ICU-20301): Remove fallback to Python 2.
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/fix_bsd_and_solaris.patch b/Meta/CMake/vcpkg/overlay-ports/icu/fix_bsd_and_solaris.patch
+new file mode 100644
+index 0000000000..5490a641b0
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/fix_bsd_and_solaris.patch
+@@ -0,0 +1,19 @@
++diff --git a/source/configure b/source/configure
++index d1b5812..7b93221 100755
++--- a/source/configure
+++++ b/source/configure
++@@ -7008,12 +7008,12 @@ printf %s "checking for genccode assembly... " >&6; }
++ # Check to see if genccode can generate simple assembly.
++ GENCCODE_ASSEMBLY=
++ case "${host}" in
++-*-linux*|*-kfreebsd*-gnu*|i*86-*-*bsd*|i*86-pc-gnu)
+++*-linux*|*-kfreebsd*-gnu*|*86*-*bsd*|*86*-pc-gnu)
++     if test "$GCC" = yes; then
++         # We're using gcc, and the simple -a gcc command line works for genccode
++         GENCCODE_ASSEMBLY="-a gcc"
++     fi ;;
++-i*86-*-solaris*)
+++*86*-solaris*)
++     if test "$GCC" = yes; then
++         # When using gcc, look if we're also using GNU as.
++         # When using GNU as, the simple -a gcc command line works for genccode.
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/fix_parallel_build_on_windows.patch b/Meta/CMake/vcpkg/overlay-ports/icu/fix_parallel_build_on_windows.patch
+new file mode 100644
+index 0000000000..6bd91094a1
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/fix_parallel_build_on_windows.patch
+@@ -0,0 +1,25 @@
++diff --urN a/source/data/Makefile.in b/source/data/Makefile.in
++--- a/source/data/Makefile.in
+++++ b/source/data/Makefile.in
++@@ -236,11 +236,12 @@
++ ## Include the main build rules for data files
++ include $(top_builddir)/$(subdir)/rules.mk
++ 
+++PKGDATA_LIST = $(TMP_DIR)/icudata.lst
++ 
++ ifeq ($(ENABLE_SO_VERSION_DATA),1)
++ ifeq ($(PKGDATA_MODE),dll)
++ SO_VERSION_DATA = $(OUTTMPDIR)/icudata.res
++-$(SO_VERSION_DATA) : $(MISCSRCDIR)/icudata.rc | $(TMP_DIR)/dirs.timestamp
+++$(SO_VERSION_DATA) : $(MISCSRCDIR)/icudata.rc $(PKGDATA_LIST)
++ ifeq ($(MSYS_RC_MODE),1)
++ 	rc.exe -i$(srcdir)/../common -i$(top_builddir)/common -fo$@ $(CPPFLAGS) $<
++ else
++@@ -249,7 +250,6 @@
++ endif
++ endif
++ 
++-PKGDATA_LIST = $(TMP_DIR)/icudata.lst
++ 
++ 
++ #####################################################
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-filter.patch b/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-filter.patch
+new file mode 100644
+index 0000000000..0878622a37
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-filter.patch
+@@ -0,0 +1,12 @@
++--- a/source/data/Makefile.in
+++++ b/source/data/Makefile.in
++@@ -239,6 +239,9 @@
++ 	@echo "Unpacking $(ICUDATA_SOURCE_ARCHIVE) and generating $@ (list of data files)"
++ 	@-$(RMV) $@
++ 	$(INVOKE) $(TOOLBINDIR)/icupkg -d $(BUILDDIR) --list -x \* $(ICUDATA_SOURCE_ARCHIVE) -o $@
+++ifneq ($(KAROUKA_DATA_FILTER),)
+++	@PYTHON@ $(KAROUKA_DATA_FILTER) --list $@ --data-dir $(BUILDDIR) --tool-dir $(TOOLBINDIR) --invoke "$(INVOKE)"
+++endif
++ else
++ 	@echo "$@" > $@
++ endif
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-filter.py b/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-filter.py
+new file mode 100644
+index 0000000000..816231f47f
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-filter.py
+@@ -0,0 +1,126 @@
++#!/usr/bin/env python3
++# karouka: package only the ICU data karouka uses (the "karouka-data" feature of this port).
++#
++# ICU's source release ships its data prebuilt (source/data/in/icudt78l.dat), without the text
++# sources ICU_DATA_FILTER_FILE needs. The data Makefile unpacks that archive into $(BUILDDIR) and
++# lists every item in icudata.lst, which pkgdata then links into libicudata
++# (karouka-data-filter.patch runs this script in between). This script:
++#   1. keeps the items matching a regex in karouka-data-keep.txt and rewrites icudata.lst, and
++#   2. regenerates each kept tree's res_index.res so that its InstalledLocales lists only the
++#      locales still present. icu::Locale::getAvailableLocales() reads it, and LibJS's Intl uses
++#      that to pick a locale: a dropped one (de-DE) then falls back to the default (en-US) instead
++#      of resolving to a locale whose data is missing.
++
++import argparse
++import os
++import re
++import subprocess
++import sys
++import tempfile
++
++LOCALE_FILE = re.compile(r"[a-z]{2,3}(?:_[A-Za-z0-9]+)*\.res")
++NOT_LOCALES = {"root.res", "pool.res", "res_index.res"}
++
++
++def read_keep_patterns(path):
++    patterns = []
++    with open(path) as file:
++        for line in file:
++            line = line.strip()
++            if line and not line.startswith("#"):
++                patterns.append(line)
++    return re.compile("|".join(f"(?:{pattern})" for pattern in patterns))
++
++
++def parse_res_index(dump):
++    """Parses derb's dump of a res_index.res into (cldr_version, aliases, installed)."""
++    cldr_version = None
++    sections = {"AliasLocales": [], "InstalledLocales": []}
++    section = None
++    for line in dump.splitlines():
++        stripped = line.strip()
++        if not stripped or stripped.startswith("//"):
++            continue
++        header = re.fullmatch(r"(\w+)\s*\{", stripped)
++        if header:
++            section = header.group(1) if header.group(1) in sections else None
++            continue
++        if stripped == "}":
++            section = None
++            continue
++        entry = re.fullmatch(r'(\S+)\s*\{\s*"([^"]*)"\s*\}', stripped)
++        if not entry:
++            continue
++        if section:
++            sections[section].append(entry.group(1))
++        elif entry.group(1) == "CLDRVersion":
++            cldr_version = entry.group(2)
++    return cldr_version, sections["AliasLocales"], sections["InstalledLocales"]
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--list", required=True, help="icudata.lst, rewritten in place")
++    parser.add_argument("--data-dir", required=True, help="where the archive was unpacked")
++    parser.add_argument("--tool-dir", required=True, help="the build's bin (derb, genrb)")
++    parser.add_argument("--invoke", default="", help="ICU's $(INVOKE) prefix for its tools")
++    parser.add_argument(
++        "--keep",
++        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "karouka-data-keep.txt"),
++    )
++    args = parser.parse_args()
++
++    keep = read_keep_patterns(args.keep)
++    with open(args.list) as file:
++        items = [line.strip() for line in file if line.strip()]
++    kept = [item for item in items if keep.fullmatch(item)]
++    kept_set = set(kept)
++
++    def tool(name):
++        return f"{args.invoke} {os.path.join(args.tool_dir, name)}"
++
++    for index in [item for item in kept if os.path.basename(item) == "res_index.res"]:
++        tree = os.path.dirname(index)
++        tree_dir = os.path.join(args.data_dir, tree)
++        dump = subprocess.run(
++            f"{tool('derb')} -c -s {tree_dir} res_index.res",
++            shell=True, check=True, capture_output=True, text=True,
++        ).stdout
++        cldr_version, aliases, installed = parse_res_index(dump)
++
++        def present(locale):
++            return os.path.join(tree, locale + ".res") in kept_set
++
++        lines = ["res_index:table(nofallback) {"]
++        if cldr_version:
++            lines.append(f'    CLDRVersion {{ "{cldr_version}" }}')
++        for name, locales in (("AliasLocales", aliases), ("InstalledLocales", installed)):
++            lines.append(f"    {name} {{")
++            lines += [f'        {locale} {{ "" }}' for locale in locales if present(locale)]
++            lines.append("    }")
++        lines.append("}")
++
++        listed = set(aliases) | set(installed)
++        for item in kept:
++            name = os.path.basename(item)
++            if os.path.dirname(item) == tree and LOCALE_FILE.fullmatch(name) and name not in NOT_LOCALES:
++                if name[:-4] not in listed:
++                    sys.exit(f"karouka-data-filter: {item} is kept but not in {index}")
++
++        with tempfile.TemporaryDirectory() as source_dir:
++            with open(os.path.join(source_dir, "res_index.txt"), "w") as file:
++                file.write("\n".join(lines) + "\n")
++            subprocess.run(
++                f"{tool('genrb')} -q -k -s {source_dir} -d {tree_dir} res_index.txt",
++                shell=True, check=True,
++            )
++
++    with open(args.list, "w") as file:
++        file.write("\n".join(kept) + "\n")
++
++    total = sum(os.path.getsize(os.path.join(args.data_dir, item)) for item in kept)
++    print(f"karouka-data-filter: kept {len(kept)} of {len(items)} ICU data items, {total} bytes")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-keep.txt b/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-keep.txt
+new file mode 100644
+index 0000000000..1fe596ab52
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/karouka-data-keep.txt
+@@ -0,0 +1,28 @@
++# karouka: the ICU data items karouka-data-filter.py keeps, one regex per line, matched against the
++# whole item name as icupkg lists it ("brkitr/line.brk"). Anything else is left out of libicudata.
++
++# Locales: root and English only. Other locales fall back to the default locale (en-US).
++(root|en|en_[A-Za-z0-9_]+|pool|res_index)\.res
++(brkitr|coll|curr|lang|rbnf|region|translit|unit|zone)/(root|en|en_[A-Za-z0-9_]+|pool|res_index)\.res
++# The languages with their own case mappings (SpecialCasing: Turkish, Azeri, Lithuanian; ICU also
++# uppercases Greek without accents). String.prototype.toLocaleLowerCase/UpperCase only apply them to
++# an available locale, so these four keep their main locale data (about 70 KB) but nothing else.
++(tr|az|lt|el)\.res
++
++# Locale-independent data: likely subtags and aliases, plurals, units, calendars and day periods
++# (supplementalData), numbering systems, and time zones for Temporal and Intl.DateTimeFormat.
++(supplementalData|langInfo|metadata|metaZones|timezoneTypes|windowsZones|zoneinfo64|plurals|pluralRanges|dayPeriods|numberingSystems|keyTypeData|units|grammaticalFeatures|genderList|currencyNumericCodes|icuver|icustd)\.res
++
++# Normalization beyond the NFC/NFD built into libicuuc (NFKC, case folding, UTS #46 for IDNA),
++# layout and emoji properties, and the converter alias table.
++(nfkc|nfkc_cf|nfkc_scf|uts46)\.nrm
++(ulayout|uemoji|cnvalias)\.icu
++
++# Collation root (Intl.Collator, localeCompare).
++coll/ucadata\.icu
++
++# Segmentation: grapheme, word, line and sentence rules, plus the dictionaries line breaking needs
++# for Thai, Lao, Khmer and Burmese. The CJK word dictionary (cjdict, 2 MB) is left out: CJK line
++# breaking doesn't use it; for word segmentation a run of CJK text becomes one word.
++brkitr/(char|line|sent|title|word|word_POSIX)\.brk
++brkitr/(thai|lao|khmer|burmese)dict\.dict
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/mh-darwin.patch b/Meta/CMake/vcpkg/overlay-ports/icu/mh-darwin.patch
+new file mode 100644
+index 0000000000..3de84594fd
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/mh-darwin.patch
+@@ -0,0 +1,14 @@
++diff --git a/source/config/mh-darwin b/source/config/mh-darwin
++index 7b15709..e2cdbdb 100644
++--- a/source/config/mh-darwin
+++++ b/source/config/mh-darwin
++@@ -31,7 +31,8 @@ SHLIB.cc=	$(CXX) -dynamiclib -dynamic $(CXXFLAGS) $(LDFLAGS) $(LD_SOOPTIONS)
++ 
++ ## Compiler switches to embed a library name and version information
++ ifeq ($(ENABLE_RPATH),YES)
++-LD_SONAME = -Wl,-compatibility_version -Wl,$(SO_TARGET_VERSION_MAJOR) -Wl,-current_version -Wl,$(SO_TARGET_VERSION) -install_name $(libdir)/$(notdir $(MIDDLE_SO_TARGET))
+++ID_PREFIX = @rpath
+++LD_SONAME = -Wl,-compatibility_version -Wl,$(SO_TARGET_VERSION_MAJOR) -Wl,-current_version -Wl,$(SO_TARGET_VERSION) -install_name $(ID_PREFIX)/$(notdir $(MIDDLE_SO_TARGET))
++ else
++ LD_SONAME = -Wl,-compatibility_version -Wl,$(SO_TARGET_VERSION_MAJOR) -Wl,-current_version -Wl,$(SO_TARGET_VERSION) -install_name $(notdir $(MIDDLE_SO_TARGET)) $(PKGDATA_TRAILING_SPACE)
++ endif
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/mh-mingw.patch b/Meta/CMake/vcpkg/overlay-ports/icu/mh-mingw.patch
+new file mode 100644
+index 0000000000..af3b448ac6
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/mh-mingw.patch
+@@ -0,0 +1,26 @@
++diff --git a/source/config/mh-mingw b/source/config/mh-mingw
++index 30f6e5be81..b6364551ea 100644
++--- a/source/config/mh-mingw
+++++ b/source/config/mh-mingw
++@@ -13,7 +13,7 @@
++ # On Windows we generally have the DLLs in the bin directory rather than the lib directory.
++ # This setting moves the ICU DLLs into the bin folder for MinGW/MSYS2 when "make install" is run.
++ # If you prefer to have the DLLs in the lib folder, then set this to NO instead.
++-MINGW_MOVEDLLSTOBINDIR = YES
+++MINGW_MOVEDLLSTOBINDIR = NO
++ 
++ # We install sbin tools into the same bin directory because
++ # pkgdata needs some of the tools in sbin, and we can't always depend on
++diff --git a/source/config/mh-mingw64 b/source/config/mh-mingw64
++index fb64c56260..a43cc4dd71 100644
++--- a/source/config/mh-mingw64
+++++ b/source/config/mh-mingw64
++@@ -10,7 +10,7 @@
++ # On Windows we generally have the DLLs in the bin directory rather than the lib directory.
++ # This setting moves the ICU DLLs into the bin folder for MinGW/MSYS2 when "make install" is run.
++ # If you prefer to have the DLLs in the lib folder, then set this to NO instead.
++-MINGW_MOVEDLLSTOBINDIR = YES
+++MINGW_MOVEDLLSTOBINDIR = NO
++ 
++ # This file is similar to mh-mingw
++ # Any changes made here may also need to be made in mh-mingw
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/mh-msys-msvc.patch b/Meta/CMake/vcpkg/overlay-ports/icu/mh-msys-msvc.patch
+new file mode 100644
+index 0000000000..4b49bb0a9f
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/mh-msys-msvc.patch
+@@ -0,0 +1,22 @@
++diff --git a/source/config/mh-msys-msvc b/source/config/mh-msys-msvc
++index 6f50798..2a669b3 100644
++--- a/source/config/mh-msys-msvc
+++++ b/source/config/mh-msys-msvc
++@@ -54,7 +54,7 @@ endif
++ # -D_CRT_SECURE_NO_DEPRECATE is needed to quiet warnings about using standard C functions.
++ # -utf-8 set source file encoding to utf-8.
++ CFLAGS+=-GF -nologo -utf-8
++-CXXFLAGS+=-GF -nologo -EHsc -Zc:wchar_t -utf-8
+++CXXFLAGS+=-GF -nologo -EHsc -Zc:wchar_t -utf-8 -std:c++17
++ CPPFLAGS+=-D_CRT_SECURE_NO_DEPRECATE
++ DEFS+=-DWIN32 -DCYGWINMSVC
++ LDFLAGS+=-nologo
++@@ -90,8 +90,6 @@ LIBSICU = $(STATIC_PREFIX)$(ICUPREFIX)
++ A = lib
++ 
++ # Cygwin's ar can't handle Win64 right now. So we use Microsoft's tool instead.
++-AR = LIB.EXE#M#
++-ARFLAGS := -nologo $(ARFLAGS:r=)#M#
++ RANLIB = ls -s#M#
++ AR_OUTOPT = -OUT:#M#
++ 
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/portfile.cmake b/Meta/CMake/vcpkg/overlay-ports/icu/portfile.cmake
+new file mode 100644
+index 0000000000..744dc75fdc
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/portfile.cmake
+@@ -0,0 +1,166 @@
++vcpkg_download_distfile(
++    ARCHIVE
++    URLS "https://github.com/unicode-org/icu/releases/download/release-${VERSION}/icu4c-${VERSION}-sources.tgz"
++    FILENAME "icu4c-${VERSION}-sources.tgz"
++    SHA512 04A49455E1489030C520A4BFD2664FA2171E7938D08F2ACDBBCB1FDA976639FD8B1F0704F2EEC89BA59A7B6D118CEAAB6EC5A096E40D9085A0895D91CE225245
++)
++
++vcpkg_extract_source_archive(SOURCE_PATH
++    ARCHIVE "${ARCHIVE}"
++    PATCHES
++        disable-static-prefix.patch # https://gitlab.kitware.com/cmake/cmake/-/issues/16617; also mingw.
++        fix_bsd_and_solaris.patch
++        fix_parallel_build_on_windows.patch
++        fix-python-path-with-spaces.patch
++        fix-using-install-sh.diff
++        mh-darwin.patch
++        mh-mingw.patch
++        mh-msys-msvc.patch
++        subdirs.patch
++        vcpkg-cross-data.patch
++        karouka-data-filter.patch # karouka: a hook for the "karouka-data" feature, inert without it
++)
++
++vcpkg_find_acquire_program(PYTHON3)
++set(ENV{PYTHON} "${PYTHON3}")
++
++vcpkg_list(SET CONFIGURE_OPTIONS)
++vcpkg_list(SET BUILD_OPTIONS)
++
++if(VCPKG_TARGET_IS_EMSCRIPTEN)
++    vcpkg_list(APPEND CONFIGURE_OPTIONS --disable-extras icu_cv_host_frag=mh-linux)
++    vcpkg_list(APPEND BUILD_OPTIONS "\"PKGDATA_OPTS=--without-assembly -O ../data/icupkg.inc\"")
++elseif(VCPKG_TARGET_IS_UWP)
++    vcpkg_list(APPEND CONFIGURE_OPTIONS --disable-extras ac_cv_func_tzset=no ac_cv_func__tzset=no)
++    string(APPEND VCPKG_C_FLAGS " -DU_PLATFORM_HAS_WINUWP_API=1")
++    string(APPEND VCPKG_CXX_FLAGS " -DU_PLATFORM_HAS_WINUWP_API=1")
++    vcpkg_list(APPEND BUILD_OPTIONS "\"PKGDATA_OPTS=--windows-uwp-build -O ../data/icupkg.inc\"")
++elseif(VCPKG_TARGET_IS_OSX AND VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")
++    vcpkg_list(APPEND CONFIGURE_OPTIONS --enable-rpath)
++    if(DEFINED CMAKE_INSTALL_NAME_DIR)
++        vcpkg_list(APPEND BUILD_OPTIONS "ID_PREFIX=${CMAKE_INSTALL_NAME_DIR}")
++    endif()
++endif()
++
++if(VCPKG_TARGET_IS_WINDOWS AND NOT VCPKG_TARGET_IS_MINGW)
++    list(APPEND CONFIGURE_OPTIONS ac_cv_lib_m_floor=no)
++endif()
++
++# karouka: run karouka-data-filter.py on the data list before pkgdata links libicudata.
++if("karouka-data" IN_LIST FEATURES)
++    vcpkg_list(APPEND BUILD_OPTIONS "KAROUKA_DATA_FILTER=${CMAKE_CURRENT_LIST_DIR}/karouka-data-filter.py")
++endif()
++
++if("tools" IN_LIST FEATURES)
++  list(APPEND CONFIGURE_OPTIONS --enable-tools)
++else()
++  list(APPEND CONFIGURE_OPTIONS --disable-tools)
++endif()
++if(CMAKE_HOST_WIN32 AND VCPKG_TARGET_IS_MINGW AND NOT HOST_TRIPLET MATCHES "mingw")
++    # Assuming no cross compiling because the host (windows) pkgdata tool doesn't
++    # use the '/' path separator when creating compiler commands for mingw bash.
++elseif(VCPKG_CROSSCOMPILING)
++    set(TOOL_PATH "${CURRENT_HOST_INSTALLED_DIR}/tools/${PORT}")
++    # convert to unix path
++    string(REGEX REPLACE "^([a-zA-Z]):/" "/\\1/" _VCPKG_TOOL_PATH "${TOOL_PATH}")
++    list(APPEND CONFIGURE_OPTIONS "--with-cross-build=${_VCPKG_TOOL_PATH}")
++endif()
++
++vcpkg_make_configure(
++    SOURCE_PATH "${SOURCE_PATH}/source"
++    # AUTORECONF # needs Autoconf version 2.72
++    OPTIONS
++        ${CONFIGURE_OPTIONS}
++        --disable-samples
++        --disable-tests
++        --disable-layoutex
++    OPTIONS_RELEASE
++        --disable-debug
++        --enable-release
++    OPTIONS_DEBUG
++        --enable-debug
++        --disable-release
++)
++vcpkg_make_install(OPTIONS ${BUILD_OPTIONS})
++
++file(REMOVE_RECURSE
++    "${CURRENT_PACKAGES_DIR}/share"
++    "${CURRENT_PACKAGES_DIR}/debug/share"
++    "${CURRENT_PACKAGES_DIR}/lib/icu"
++    "${CURRENT_PACKAGES_DIR}/debug/lib/icu"
++    "${CURRENT_PACKAGES_DIR}/debug/lib/icud")
++
++file(GLOB TEST_LIBS
++    "${CURRENT_PACKAGES_DIR}/lib/*test*"
++    "${CURRENT_PACKAGES_DIR}/debug/lib/*test*")
++if(TEST_LIBS)
++    file(REMOVE ${TEST_LIBS})
++endif()
++
++if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
++    # force U_STATIC_IMPLEMENTATION macro
++    foreach(HEADER utypes.h utf_old.h platform.h)
++        vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/include/unicode/${HEADER}" "defined(U_STATIC_IMPLEMENTATION)" "1")
++    endforeach()
++endif()
++
++# Install executables from /tools/icu/sbin to /tools/icu/bin on unix (/bin because icu require this for cross compiling)
++if(VCPKG_TARGET_IS_LINUX OR VCPKG_TARGET_IS_OSX AND "tools" IN_LIST FEATURES)
++    vcpkg_copy_tools(
++        TOOL_NAMES icupkg gennorm2 gencmn genccode gensprep
++        SEARCH_DIR "${CURRENT_PACKAGES_DIR}/tools/icu/sbin"
++        DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}/bin"
++    )
++endif()
++
++file(REMOVE_RECURSE
++    "${CURRENT_PACKAGES_DIR}/tools/icu/sbin"
++    "${CURRENT_PACKAGES_DIR}/tools/icu/debug")
++
++# To cross compile, we need some files at specific positions. So lets copy them
++file(GLOB CROSS_COMPILE_DEFS "${CURRENT_BUILDTREES_DIR}/${TARGET_TRIPLET}-rel/config/icucross.*")
++file(INSTALL ${CROSS_COMPILE_DEFS} DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}/config")
++
++if(VCPKG_TARGET_IS_WINDOWS)
++    string(REGEX MATCH "^[0-9]*" ICU_VERSION_MAJOR "${VERSION}")
++    file(GLOB RELEASE_DLLS "${CURRENT_PACKAGES_DIR}/lib/*icu*${ICU_VERSION_MAJOR}.dll")
++    file(COPY ${RELEASE_DLLS} DESTINATION "${CURRENT_PACKAGES_DIR}/tools/${PORT}/bin")
++
++    # copy dlls
++    file(GLOB RELEASE_DLLS "${CURRENT_PACKAGES_DIR}/lib/*icu*${ICU_VERSION_MAJOR}.dll")
++    file(COPY ${RELEASE_DLLS} DESTINATION "${CURRENT_PACKAGES_DIR}/bin")
++    if(NOT VCPKG_BUILD_TYPE)
++        file(GLOB DEBUG_DLLS "${CURRENT_PACKAGES_DIR}/debug/lib/*icu*${ICU_VERSION_MAJOR}.dll")
++        file(COPY ${DEBUG_DLLS} DESTINATION "${CURRENT_PACKAGES_DIR}/debug/bin")
++    endif()
++
++    # remove any remaining dlls in /lib
++    file(GLOB DUMMY_DLLS "${CURRENT_PACKAGES_DIR}/lib/*.dll" "${CURRENT_PACKAGES_DIR}/debug/lib/*.dll")
++    if(DUMMY_DLLS)
++        file(REMOVE ${DUMMY_DLLS})
++    endif()
++
++    vcpkg_copy_pdbs()
++endif()
++
++vcpkg_fixup_pkgconfig()
++set(cxx_link_libraries "")
++if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
++    block(PROPAGATE cxx_link_libraries)
++        vcpkg_cmake_get_vars(cmake_vars_file)
++        include("${cmake_vars_file}")
++        list(REMOVE_ITEM VCPKG_DETECTED_CMAKE_CXX_IMPLICIT_LINK_LIBRARIES ${VCPKG_DETECTED_CMAKE_C_IMPLICIT_LINK_LIBRARIES})
++        list(TRANSFORM VCPKG_DETECTED_CMAKE_CXX_IMPLICIT_LINK_LIBRARIES REPLACE "^([^/]+)\$" "-l\\1")
++        string(JOIN " " cxx_link_libraries ${VCPKG_DETECTED_CMAKE_CXX_IMPLICIT_LINK_LIBRARIES})
++    endblock()
++    vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/lib/pkgconfig/icu-uc.pc" "baselibs = " "baselibs = ${cxx_link_libraries} ")
++    if(NOT VCPKG_BUILD_TYPE)
++        vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/debug/lib/pkgconfig/icu-uc.pc" "baselibs = " "baselibs = ${cxx_link_libraries} ")
++    endif()
++endif()
++
++vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/tools/icu/bin/icu-config" "${CURRENT_INSTALLED_DIR}" "`dirname $0`/../../../" IGNORE_UNCHANGED)
++vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/tools/icu/bin/icu-config" "${CURRENT_HOST_INSTALLED_DIR}" "`dirname $0`/../../../../${_HOST_TRIPLET}/" IGNORE_UNCHANGED)
++
++configure_file("${CMAKE_CURRENT_LIST_DIR}/vcpkg-cmake-wrapper.cmake" "${CURRENT_PACKAGES_DIR}/share/${PORT}/vcpkg-cmake-wrapper.cmake" @ONLY)
++vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/remove-MD-from-configure.patch b/Meta/CMake/vcpkg/overlay-ports/icu/remove-MD-from-configure.patch
+new file mode 100644
+index 0000000000..fe4782b344
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/remove-MD-from-configure.patch
+@@ -0,0 +1,18 @@
++diff -urN a/source/runConfigureICU b/source/runConfigureICU
++--- a/source/runConfigureICU	2018-03-26 21:38:44.000000000 +0800
+++++ b/source/runConfigureICU	2018-08-26 09:04:53.197454400 +0800
++@@ -322,10 +322,10 @@
++         THE_COMP="Microsoft Visual C++"
++         CC=cl; export CC
++         CXX=cl; export CXX
++-        RELEASE_CFLAGS='-Gy -MD'
++-        RELEASE_CXXFLAGS='-Gy -MD'
++-        DEBUG_CFLAGS='-FS -Zi -MDd'
++-        DEBUG_CXXFLAGS='-FS -Zi -MDd'
+++        RELEASE_CFLAGS='-Gy'
+++        RELEASE_CXXFLAGS='-Gy'
+++        DEBUG_CFLAGS='-FS -Zi'
+++        DEBUG_CXXFLAGS='-FS -Zi'
++         DEBUG_LDFLAGS='-DEBUG'
++         ;;
++     *BSD)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/subdirs.patch b/Meta/CMake/vcpkg/overlay-ports/icu/subdirs.patch
+new file mode 100644
+index 0000000000..9832fadfeb
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/subdirs.patch
+@@ -0,0 +1,25 @@
++diff --git a/source/extra/Makefile.in b/source/extra/Makefile.in
++index 2e48dba..3bbae74 100644
++--- a/source/extra/Makefile.in
+++++ b/source/extra/Makefile.in
++@@ -23,7 +23,7 @@ subdir = extra
++ ## Files to remove for 'make clean'
++ CLEANFILES = *~
++ 
++-SUBDIRS = scrptrun uconv
+++SUBDIRS =          uconv
++ 
++ ## List of phony targets
++ .PHONY : all all-local all-recursive install install-local		\
++diff --git a/source/tools/Makefile.in b/source/tools/Makefile.in
++index e0896f1..d009382 100644
++--- a/source/tools/Makefile.in
+++++ b/source/tools/Makefile.in
++@@ -20,7 +20,6 @@ gencnval gensprep icuinfo genccode gencmn icupkg pkgdata \
++ gentest gennorm2 gencfu gendict icuexportdata
++ 
++ ifneq (@platform_make_fragment_name@,mh-cygwin-msvc)
++-SUBDIRS += escapesrc
++ endif
++ 
++ ## List of phony targets
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg-cmake-wrapper.cmake b/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg-cmake-wrapper.cmake
+new file mode 100644
+index 0000000000..2132129e68
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg-cmake-wrapper.cmake
+@@ -0,0 +1,134 @@
++set(z_vcpkg_icu_fixup "")
++set(z_vcpkg_icu_config_mode_args "${ARGS}")
++list(FILTER z_vcpkg_icu_config_mode_args INCLUDE REGEX "^(CONFIGS?|HINTS|NAMES|NO_MODULE|PATH_SUFFIXES|PATHS)\$")
++if(z_vcpkg_icu_config_mode_args STREQUAL "")
++    cmake_policy(PUSH)
++    cmake_policy(SET CMP0057 NEW)
++    if("@VCPKG_LIBRARY_LINKAGE@" STREQUAL "static")
++        # Fix problem: Static link libraries, ordered for traditional linker
++        if("io" IN_LIST ARGS AND NOT TARGET ICU::io)
++            if("in" IN_LIST ARGS)
++                list(APPEND z_vcpkg_icu_fixup "io->in")
++                list(REMOVE_ITEM ARGS in)
++                list(APPEND ARGS COMPONENTS in)
++            else()
++                list(APPEND z_vcpkg_icu_fixup "io->i18n")
++                list(REMOVE_ITEM ARGS i18n)
++                list(APPEND ARGS COMPONENTS i18n)
++            endif()
++        endif()
++        if("i18n" IN_LIST ARGS AND NOT TARGET ICU::i18n)
++            list(APPEND z_vcpkg_icu_fixup "i18n->uc")
++            list(REMOVE_ITEM ARGS uc)
++            list(APPEND ARGS COMPONENTS uc)
++        endif()
++        if("in" IN_LIST ARGS AND NOT TARGET ICU::in)
++            list(APPEND z_vcpkg_icu_fixup "in->uc")
++            list(REMOVE_ITEM ARGS uc)
++            list(APPEND ARGS COMPONENTS uc)
++        endif()
++        if("uc" IN_LIST ARGS AND NOT TARGET ICU::uc)
++            if("dt" IN_LIST ARGS)
++                list(APPEND z_vcpkg_icu_fixup "uc->dt")
++                list(REMOVE_ITEM ARGS dt)
++                list(APPEND ARGS COMPONENTS dt)
++            else()
++                list(APPEND z_vcpkg_icu_fixup "uc->data")
++                list(REMOVE_ITEM ARGS data)
++                list(APPEND ARGS COMPONENTS data)
++            endif()
++            # Fix problem: C++ linkage
++            add_library(ICU::uc STATIC IMPORTED)
++            list(APPEND z_vcpkg_icu_fixup "uc->c++")
++        endif()
++    endif()
++    # Fix problem: Find debug variant without 'd' suffix
++    # Fix problem: Apply NAMES_PER_DIR
++    if("data" IN_LIST ARGS)
++        find_library(ICU_DATA_LIBRARY_RELEASE NAMES icudata icudt NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH REQUIRED)
++        find_library(ICU_DATA_LIBRARY_DEBUG NAMES icudatad icudtd icudata icudt NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    if("dt" IN_LIST ARGS)
++        find_library(ICU_DT_LIBRARY_RELEASE NAMES icudata icudt NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH REQUIRED)
++        find_library(ICU_DT_LIBRARY_DEBUG NAMES icudatad icudtd icudata icudt NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    if("i18n" IN_LIST ARGS)
++        find_library(ICU_I18N_LIBRARY_RELEASE NAMES icui18n icuin NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH REQUIRED)
++        find_library(ICU_I18N_LIBRARY_DEBUG NAMES icui18nd icuind icui18n icuin NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    if("in" IN_LIST ARGS)
++        find_library(ICU_IN_LIBRARY_RELEASE NAMES icui18n icuin NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH REQUIRED)
++        find_library(ICU_IN_LIBRARY_DEBUG NAMES icui18nd icuind icui18n icuin NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    if("io" IN_LIST ARGS)
++        find_library(ICU_IO_LIBRARY_RELEASE NAMES icuio NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH REQUIRED)
++        find_library(ICU_IO_LIBRARY_DEBUG NAMES icuiod icuio NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    if("tu" IN_LIST ARGS)
++        # optional, subject to icu[tools].
++        find_library(ICU_TU_LIBRARY_RELEASE NAMES icutu NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH)
++        find_library(ICU_TU_LIBRARY_DEBUG NAMES icutud icutu NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    if("uc" IN_LIST ARGS)
++        find_library(ICU_UC_LIBRARY_RELEASE NAMES icuuc NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib" NO_DEFAULT_PATH REQUIRED)
++        find_library(ICU_UC_LIBRARY_DEBUG NAMES icuucd icuuc NAMES_PER_DIR PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib" NO_DEFAULT_PATH)
++    endif()
++    cmake_policy(POP)
++endif()
++
++_find_package(${ARGS})
++
++if(ICU_FOUND AND NOT z_vcpkg_icu_fixup STREQUAL "")
++    cmake_policy(PUSH)
++    cmake_policy(SET CMP0057 NEW)
++    if("uc->c++" IN_LIST z_vcpkg_icu_fixup)
++        list(REMOVE_ITEM z_vcpkg_icu_fixup "uc->c++")
++        if(ICU_INCLUDE_DIR)
++          set_target_properties(ICU::uc PROPERTIES
++            INTERFACE_INCLUDE_DIRECTORIES "${ICU_INCLUDE_DIR}")
++        endif()
++        if(EXISTS "${ICU_UC_LIBRARY}")
++          set_target_properties(ICU::uc PROPERTIES
++            IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
++            IMPORTED_LOCATION "${ICU_UC_LIBRARY}")
++        endif()
++        if(EXISTS "${ICU_UC_LIBRARY_RELEASE}")
++          set_property(TARGET ICU::uc APPEND PROPERTY
++            IMPORTED_CONFIGURATIONS RELEASE)
++          set_target_properties(ICU::uc PROPERTIES
++            IMPORTED_LINK_INTERFACE_LANGUAGES_RELEASE "CXX"
++            IMPORTED_LOCATION_RELEASE "${ICU_UC_LIBRARY_RELEASE}")
++        endif()
++        if(EXISTS "${ICU_UC_LIBRARY_DEBUG}")
++          set_property(TARGET ICU::uc APPEND PROPERTY
++            IMPORTED_CONFIGURATIONS DEBUG)
++          set_target_properties(ICU::uc PROPERTIES
++            IMPORTED_LINK_INTERFACE_LANGUAGES_DEBUG "CXX"
++            IMPORTED_LOCATION_DEBUG "${ICU_UC_LIBRARY_DEBUG}")
++        endif()
++    endif()
++    if("i18n->uc" IN_LIST z_vcpkg_icu_fixup)
++        list(REMOVE_ITEM z_vcpkg_icu_fixup "i18n->uc")
++        set_target_properties(ICU::i18n PROPERTIES INTERFACE_LINK_LIBRARIES ICU::uc)
++    endif()
++    if("in->uc" IN_LIST z_vcpkg_icu_fixup)
++        list(REMOVE_ITEM z_vcpkg_icu_fixup "in->uc")
++        set_target_properties(ICU::in PROPERTIES INTERFACE_LINK_LIBRARIES ICU::uc)
++    endif()
++    if("uc->data" IN_LIST z_vcpkg_icu_fixup)
++        list(REMOVE_ITEM z_vcpkg_icu_fixup "uc->data")
++        set_target_properties(ICU::uc PROPERTIES INTERFACE_LINK_LIBRARIES ICU::data)
++    endif()
++    if("uc->dt" IN_LIST z_vcpkg_icu_fixup)
++        list(REMOVE_ITEM z_vcpkg_icu_fixup "uc->dt")
++        set_target_properties(ICU::uc PROPERTIES INTERFACE_LINK_LIBRARIES ICU::dt)
++    endif()
++    if(NOT z_vcpkg_icu_fixup STREQUAL "")
++        message(WARNING "Missing fixup handler for ${z_vcpkg_icu_fixup}.")
++    endif()
++    cmake_policy(POP)
++endif()
++
++if(TARGET ICU::uc)
++    target_compile_features(ICU::uc INTERFACE cxx_std_17)
++endif()
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg-cross-data.patch b/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg-cross-data.patch
+new file mode 100644
+index 0000000000..36f2dd3a9b
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg-cross-data.patch
+@@ -0,0 +1,13 @@
++diff --git a/source/configure b/source/configure
++index d1b5812..1dfbf59 100755
++--- a/source/configure
+++++ b/source/configure
++@@ -8063,7 +8063,7 @@ fi
++ 
++ 
++ 
++-if test "$tools" = true || test "$cross_compiling" = "yes"; then
+++if true; then
++   DATA_TRUE=
++   U_HAVE_DATA=1
++ else
+diff --git a/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg.json b/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg.json
+new file mode 100644
+index 0000000000..475f01d3de
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/icu/vcpkg.json
+@@ -0,0 +1,34 @@
++{
++  "name": "icu",
++  "version": "78.3",
++  "port-version": 2,
++  "description": "Mature and widely used Unicode and localization library.",
++  "homepage": "https://icu.unicode.org/home",
++  "license": "ICU",
++  "dependencies": [
++    {
++      "name": "icu",
++      "host": true,
++      "features": [
++        "tools"
++      ]
++    },
++    {
++      "name": "vcpkg-cmake-get-vars",
++      "host": true
++    },
++    {
++      "name": "vcpkg-make",
++      "host": true
++    }
++  ],
++  "features": {
++    "karouka-data": {
++      "description": "Package only the data karouka uses into libicudata: root and English locales, segmentation, normalization, the collation root and time zones (karouka-data-keep.txt)"
++    },
++    "tools": {
++      "description": "Build tools",
++      "supports": "!uwp"
++    }
++  }
++}

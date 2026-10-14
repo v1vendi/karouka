@@ -1,0 +1,77 @@
+# WPT reftests karouka is allowed to fail: tools/wpt.py's ratchet. The corpus is third_party/wpt/,
+# a vendored WPT subset pinned by tests/wpt/corpus.pin; see tools/wpt.py's docstring for the rules. A test not listed here must
+# pass; a listed test that passes fails the run too: delete its line in the commit that fixed it.
+# One corpus-relative path per line, then `# reason`.
+
+css/css-contain/contain-content-002.html  # an empty collapse-through child's top and bottom margins add (60px) instead of collapsing to 30px inside a contained BFC root
+css/css-contain/contain-layout-baseline-006.html  # layout containment doesn't suppress baselines: the inline-block/inline-grid takes the contained child's or item's baseline
+css/css-contain/contain-layout-grid-001.html  # layout containment doesn't suppress baselines: the inline-block/inline-grid takes the contained child's or item's baseline
+css/css-contain/contain-paint-clip-003.html  # contain: paint suppresses a scroll container's overlay scrollbar thumbs (the reference, without contain, paints both)
+css/css-contain/contain-paint-clip-004.html  # contain: paint suppresses a scroll container's overlay scrollbar thumbs (the reference, without contain, paints both)
+css/css-contain/contain-paint-ifc-011.html  # an empty collapse-through child's top and bottom margins add (60px) instead of collapsing to 30px inside a contained BFC root
+css/css-contain/contain-size-scrollbars-002.html  # size containment doesn't suppress the baseline: the empty inline-flex/inline-grid aligns by its clipped 'FAIL' text, sitting 5px high (not a scrollbar size bug: overlay scrollbars)
+css/css-contain/contain-size-scrollbars-003.html  # size containment doesn't suppress the baseline: the empty inline-flex/inline-grid aligns by its clipped 'FAIL' text, sitting 5px high (not a scrollbar size bug: overlay scrollbars)
+css/css-display/display-contents-fieldset-nested-legend.html  # display: contents element still paints its own border/background here (as a fieldset legend, under ::first-letter, inside an inline)
+css/css-display/display-contents-first-letter-002.html  # display: contents element still paints its own border/background here (as a fieldset legend, under ::first-letter, inside an inline)
+css/css-display/display-contents-inline-001.html  # display: contents element still paints its own border/background here (as a fieldset legend, under ::first-letter, inside an inline)
+css/css-flexbox/flexbox-baseline-multi-line-horiz-002.html  # inline-flex with flex-wrap: wrap-reverse exports the wrong flex line's baseline (container sits ~8px off)
+css/css-flexbox/flexbox_object.html  # <object> without data renders no fallback content, so it isn't a visible flex item
+css/css-grid/grid-items/replaced-element-011.html  # a canvas's min/max-content width uses its natural width, not its percentage height transferred through the aspect ratio (10-20px wide, not 100px)
+css/css-grid/grid-items/replaced-element-013.html  # a canvas's min/max-content width uses its natural width, not its percentage height transferred through the aspect ratio (10-20px wide, not 100px)
+css/css-grid/layout-algorithm/grid-inline-grid-intrinsic-width-percent-height-aspect-ratio-001.html  # intrinsic column sizing resolves the item's height: 100% against the grid container (100px), not its 50px row: canvas 200px wide, not 100px
+css/css-grid/layout-algorithm/grid-max-content-width-percent-height-aspect-ratio-001.html  # intrinsic column sizing resolves the item's height: 100% against the grid container (100px), not its 50px row: canvas 200px wide, not 100px
+css/css-grid/layout-algorithm/grid-min-content-width-percent-height-aspect-ratio-001.html  # intrinsic column sizing resolves the item's height: 100% against the grid container (100px), not its 50px row: canvas 200px wide, not 100px
+css/css-masking/clip-path/clip-path-reference-box-004.html  # clip-path on an inline split across lines uses one reference box (the fragments union) instead of one per fragment
+css/css-masking/clip-path/clip-path-shape-003.html  # the shape() basic shape is not parsed (parse_basic_shape has no shape()), so nothing is clipped
+css/css-masking/clip-path/clip-path-shape-004.html  # the shape() basic shape is not parsed (parse_basic_shape has no shape()), so nothing is clipped
+css/css-scroll-snap/large-scroll-margin-001.html  # the reference is .xht and karouka parses every file as HTML (kr_view_load_file -> load_html_in_place): its <![CDATA[ drops the style rule; the test itself renders right
+css/css-scroll-snap/scroll-target-align-002.html  # scrollIntoView() ignores scroll-snap-align: center, aligning the snap area at the snapport start
+css/css-sizing/intrinsic-percent-replaced-005.html  # a canvas's min/max-content width uses its natural width, not its percentage height transferred through the aspect ratio (10-20px wide, not 100px)
+css/css-sizing/intrinsic-percent-replaced-007.html  # a canvas's min/max-content width uses its natural width, not its percentage height transferred through the aspect ratio (10-20px wide, not 100px)
+css/css-text-decor/text-shadow/multiple-noblur.html  # software-raster AA only: passes with --viewer-arg=--backend=metal
+css/css-text/bidi/empty-span-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/line-breaking-002.html  # no wrap opportunity after U+200B when the next character is in another element/text node; the line overflows instead
+css/css-text/line-breaking/line-breaking-004.html  # no wrap opportunity after U+200B when the next character is in another element/text node; the line overflows instead
+css/css-text/line-breaking/line-breaking-006.html  # no wrap opportunity after U+200B when the next character is in another element/text node; the line overflows instead
+css/css-text/line-breaking/line-breaking-007.html  # no wrap opportunity after U+200B when the next character is in another element/text node; the line overflows instead
+css/css-text/line-breaking/line-breaking-009.html  # no wrap opportunity after U+200B when the next character is in another element/text node; the line overflows instead
+css/css-text/line-breaking/line-breaking-011.html  # no wrap opportunity after U+200B when the next character is in another element/text node; the line overflows instead
+css/css-text/line-breaking/line-breaking-atomic-009.html  # an atomic inline isn't U+FFFC (LB class CB) for line breaking: no wrap opportunity before the ':' after it
+css/css-text/line-breaking/segment-break-transformation-punctuation-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-punctuation-002.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-punctuation-003.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-removable-1.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-removable-2.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-removable-3.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-removable-4.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-002.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-003.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-008.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-009.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-010.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-015.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-016.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/line-breaking/segment-break-transformation-rules-017.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/full-width-leading-spaces-004.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/object-replacement-1.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/object-replacement-2.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/pre-wrap-019.html  # not glyph dilation (karouka no longer dilates glyphs): at 2rem (32px) Ahem's em box spans baseline-25.6..baseline+6.4, so on a whole-pixel baseline its top and bottom rows are partial (CoreText does no vertical grid-fitting, FreeType's slight hinting would) and the red glyph under the green one shows through them
+css/css-text/white-space/pre-wrap-020.html  # not glyph dilation (karouka no longer dilates glyphs): at 2rem (32px) Ahem's em box spans baseline-25.6..baseline+6.4, so on a whole-pixel baseline its top and bottom rows are partial (CoreText does no vertical grid-fitting, FreeType's slight hinting would) and the red glyph under the green one shows through them
+css/css-text/white-space/trailing-ogham-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/trailing-ogham-003.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/trailing-other-space-separators-002.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/trailing-space-rtl-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/white-space/white-space-wrap-after-nowrap-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-text/word-break/word-break-break-all-015.html  # word-break: break-all wraps at the preceding space instead of between letters (the word after a space is measured whole)
+css/css-text/word-break/word-break-break-all-016.html  # word-break: break-all wraps at the preceding space instead of between letters (the word after a space is measured whole)
+css/css-text/word-break/word-break-break-all-019.html  # word-break: break-all wraps at the preceding space instead of between letters (the word after a space is measured whole)
+css/css-text/word-break/word-break-break-all-022.html  # word-break: break-all with white-space: break-spaces: the trailing 'X X' wraps differently (red at line 4, column 3); the nbsp (GL) part matches
+css/css-text/word-break/word-break-break-all-023.html  # word-break: break-all wraps at the preceding space instead of between letters (the word after a space is measured whole); also keeps UAX14's letter pair rules: no break between a letter and a following \ (PR), so X\X moves whole
+css/css-text/word-break/word-break-break-all-024.html  # word-break: break-all keeps UAX14's letter pair rules: no break between a letter and a following \ (PR), so X\X moves whole
+css/css-text/word-break/word-break-break-all-025.html  # word-break: break-all keeps UAX14's letter pair rules: no break between a letter and a following \ (PR), so X\X moves whole
+css/css-text/word-break/word-break-break-all-026.html  # word-break: break-all wraps at the preceding space instead of between letters (the word after a space is measured whole)
+css/css-text/writing-system/writing-system-segment-break-001.html  # text in a script SF lacks (.notdef, docs/ENGINE.md Fonts); still fails with --fallback-font Arial Unicode
+css/css-transforms/transform-input-018.html  # software-raster AA only: passes with --viewer-arg=--backend=metal
+css/css-variables/variable-reference-13.html  # an !important custom property loses to a later normal declaration of it in the same block
+css/css-variables/variable-supports-30.html  # @supports (color: var(1px)) is true: an invalid var() still counts as supported

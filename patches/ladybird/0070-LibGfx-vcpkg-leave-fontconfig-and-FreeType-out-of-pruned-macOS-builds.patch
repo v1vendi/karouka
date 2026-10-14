@@ -1,0 +1,541 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibGfx+vcpkg: leave fontconfig and FreeType out of pruned macOS builds
+
+On macOS, Skia was installed with its fontconfig feature, which brings
+fontconfig, FreeType and FreeType's bzip2, and HarfBuzz with its
+default freetype feature. The only user is TypefaceSkia.cpp's fallback
+to SkFontMgr_New_FontConfig + SkFontScanner_Make_FreeType when
+FontDatabase::force_freetype_rasterization() is set, which only
+WebContent's and the Compositor's --force-fontconfig do. A
+LIBWEB_PRUNE_WEB_APIS build (karouka) builds neither, yet loaded
+libfreetype, libfontconfig and libbz2 (1.2 MB) before main.
+
+The osx skia dependency drops "fontconfig"; the "browser" feature,
+which pruned builds leave out, adds it back. The osx harfbuzz
+dependency drops its default features (freetype): nothing uses hb-ft.
+HarfBuzz 10.2.0's meson.build looked freetype2 up through pkg-config
+even with -Dfreetype=disabled, and found and linked Homebrew's FreeType
+by absolute path, so a harfbuzz overlay port (the 10.2.0 port plus
+karouka-freetype-option.patch) skips the lookup when it is disabled.
+Its harfbuzzConfig.cmake also looks for the freetype package only with
+the freetype feature.
+A pruned macOS build compiles TypefaceSkia.cpp with
+LIBGFX_SKIA_WITHOUT_FONTCONFIG, which uses CoreText even when
+force_freetype_rasterization is set. Skia still links expat itself
+(SkXMLParser), so libexpat stays.
+
+---
+diff --git a/Libraries/LibGfx/CMakeLists.txt b/Libraries/LibGfx/CMakeLists.txt
+index c7fdafb8e5..dc52b2fb83 100644
+--- a/Libraries/LibGfx/CMakeLists.txt
++++ b/Libraries/LibGfx/CMakeLists.txt
+@@ -75,6 +75,14 @@ if (HAS_FONTCONFIG)
+     list(APPEND SOURCES Font/GlobalFontConfig.cpp)
+ endif()
+ 
++# karouka: on macOS a LIBWEB_PRUNE_WEB_APIS build installs Skia without its fontconfig feature (the
++# fontconfig font manager and FreeType rasterizer behind --force-fontconfig move to vcpkg.json's
++# "browser" feature), which leaves libfreetype, libfontconfig and libbz2 out of the dylibs loaded
++# before main. TypefaceSkia.cpp then uses CoreText even when force_freetype_rasterization is set.
++if (APPLE AND LIBWEB_PRUNE_WEB_APIS)
++    set_source_files_properties(Font/TypefaceSkia.cpp PROPERTIES COMPILE_DEFINITIONS LIBGFX_SKIA_WITHOUT_FONTCONFIG=1)
++endif()
++
+ ladybird_lib(LibGfx gfx)
+ 
+ target_link_libraries(LibGfx PRIVATE LibCompress LibCore LibCrypto LibFileSystem LibTextCodec LibIPC LibUnicode)
+diff --git a/Libraries/LibGfx/Font/TypefaceSkia.cpp b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+index 260f6f129b..919354c97b 100644
+--- a/Libraries/LibGfx/Font/TypefaceSkia.cpp
++++ b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+@@ -32,6 +32,8 @@
+ #elif defined(AK_OS_WINDOWS)
+ #    include <ports/SkFontMgr_empty.h>
+ #    include <ports/SkTypeface_win.h>
++#elif defined(AK_OS_MACOS) && defined(LIBGFX_SKIA_WITHOUT_FONTCONFIG)
++// karouka: CoreText only (LibGfx's CMakeLists.txt)
+ #else
+ #    include <ports/SkFontMgr_fontconfig.h>
+ #    include <ports/SkFontScanner_FreeType.h>
+@@ -183,6 +185,12 @@ static SkFontMgr& font_manager()
+             font_manager = SkFontMgr_New_Custom_Empty();
+         else
+             font_manager = SkFontMgr_New_DirectWrite();
++#elif defined(AK_OS_MACOS) && defined(LIBGFX_SKIA_WITHOUT_FONTCONFIG)
++        // karouka: this Skia has no fontconfig font manager or FreeType rasterizer, so CoreText
++        // serves --force-fontconfig too. Only WebContent and the Compositor set it, and a
++        // LIBWEB_PRUNE_WEB_APIS build doesn't build them.
++        if (!font_manager)
++            font_manager = create_core_text_font_manager();
+ #else
+         if (!font_manager) {
+             font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
+diff --git a/Meta/CMake/vcpkg/overlay-ports/harfbuzz/fix-win32-build.patch b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/fix-win32-build.patch
+new file mode 100644
+index 0000000000..84c6e76670
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/fix-win32-build.patch
+@@ -0,0 +1,26 @@
++diff --git a/src/meson.build b/src/meson.build
++index 87e8962..bdfa797 100644
++--- a/src/meson.build
+++++ b/src/meson.build
++@@ -387,6 +387,11 @@ hb_subset_sources = files(
++   'hb-subset.hh',
++ )
++ 
+++extra_hb_cpp_args = []
+++if cpp.get_argument_syntax() == 'msvc'
+++  extra_hb_cpp_args += ['/bigobj']
+++endif
+++
++ hb_subset_headers = files(
++   'hb-subset.h',
++   'hb-subset-serialize.h'
++@@ -559,8 +564,7 @@ defs_list = [harfbuzz_def]
++ 
++ version = '0.@0@.0'.format(hb_version_int)
++ 
++-extra_hb_cpp_args = []
++-if cpp.get_define('_MSC_FULL_VER') != ''
+++if cpp.get_argument_syntax() == 'msvc'
++   if get_option('default_library') != 'static'
++     extra_hb_cpp_args += '-DHB_DLL_EXPORT'
++   endif
+diff --git a/Meta/CMake/vcpkg/overlay-ports/harfbuzz/harfbuzzConfig.cmake.in b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/harfbuzzConfig.cmake.in
+new file mode 100644
+index 0000000000..3fa5f54d92
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/harfbuzzConfig.cmake.in
+@@ -0,0 +1,105 @@
++# For old projects where the minimum CMake version is lower than 3.3.
++cmake_policy(SET CMP0012 NEW)
++cmake_policy(SET CMP0054 NEW)
++cmake_policy(SET CMP0057 NEW)
++
++include(CMakeFindDependencyMacro)
++
++# Traditional find module variables (vcpkg polyfill)
++set(HARFBUZZ_INCLUDE_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/harfbuzz" CACHE INTERNAL "")
++set(HARFBUZZ_INCLUDE_DIRS "${HARFBUZZ_INCLUDE_DIR}")
++set(HARFBUZZ_LIBRARY harfbuzz::harfbuzz CACHE INTERNAL "")
++set(HARFBUZZ_LIBRARIES harfbuzz::harfbuzz)
++
++if(TARGET harfbuzz)
++    set(HARFBUZZ_FOUND TRUE)
++    return()
++endif()
++
++add_library(harfbuzz UNKNOWN IMPORTED)
++add_library(harfbuzz::harfbuzz ALIAS harfbuzz)
++
++find_library(HARFBUZZ_LIBRARY_DEBUG NAMES harfbuzz PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug" PATH_SUFFIXES lib NO_DEFAULT_PATH)
++find_library(HARFBUZZ_LIBRARY_RELEASE NAMES harfbuzz PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}" PATH_SUFFIXES lib NO_DEFAULT_PATH)
++if(NOT HARFBUZZ_LIBRARY_DEBUG)
++    set_target_properties(harfbuzz PROPERTIES
++        INTERFACE_INCLUDE_DIRECTORIES "${HARFBUZZ_INCLUDE_DIR}"
++        IMPORTED_CONFIGURATIONS "RELEASE"
++        IMPORTED_LOCATION_RELEASE "${HARFBUZZ_LIBRARY_RELEASE}"
++    )
++else()
++    set_target_properties(harfbuzz PROPERTIES
++        INTERFACE_INCLUDE_DIRECTORIES "${HARFBUZZ_INCLUDE_DIR}"
++        IMPORTED_CONFIGURATIONS "DEBUG;RELEASE"
++        IMPORTED_LOCATION_RELEASE "${HARFBUZZ_LIBRARY_RELEASE}"
++        IMPORTED_LOCATION_DEBUG "${HARFBUZZ_LIBRARY_DEBUG}"
++    )
++endif()
++
++set(HARFBUZZ_FEATURES @FEATURES@)
++
++if(APPLE)
++    find_library(APPLICATIONSERVICES_LIBRARY ApplicationServices)
++    if(APPLICATIONSERVICES_LIBRARY)
++        target_link_libraries(harfbuzz INTERFACE ${APPLICATIONSERVICES_LIBRARY})
++    endif()    
++endif()
++
++# karouka: only with the freetype feature (a macOS build without it has no freetype package).
++if ("freetype" IN_LIST HARFBUZZ_FEATURES)
++    find_dependency(freetype CONFIG)
++    target_link_libraries(harfbuzz INTERFACE freetype)
++endif()
++
++if ("graphite2" IN_LIST HARFBUZZ_FEATURES)
++    find_library(GRAPHITE2_LIBRARY_DEBUG NAMES graphite2 PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug" PATH_SUFFIXES lib NO_DEFAULT_PATH)
++    find_library(GRAPHITE2_LIBRARY_RELEASE NAMES graphite2 PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}" PATH_SUFFIXES lib NO_DEFAULT_PATH)
++    if(NOT GRAPHITE2_LIBRARY_DEBUG)
++        target_link_libraries(harfbuzz INTERFACE "${GRAPHITE2_LIBRARY_RELEASE}")
++    else()
++        target_link_libraries(harfbuzz INTERFACE "$<$<NOT:$<CONFIG:DEBUG>>:${GRAPHITE2_LIBRARY_RELEASE}>$<$<CONFIG:DEBUG>:${GRAPHITE2_LIBRARY_DEBUG}>")
++    endif()
++endif()
++
++if ("glib" IN_LIST HARFBUZZ_FEATURES)
++    find_library(GLIB_LIBRARY_DEBUG NAMES glib glib-2.0 PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug" PATH_SUFFIXES lib NO_DEFAULT_PATH)
++    find_library(GLIB_LIBRARY_RELEASE NAMES glib glib-2.0 PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}" PATH_SUFFIXES lib NO_DEFAULT_PATH)
++    if(NOT GLIB_LIBRARY_DEBUG)
++        target_link_libraries(harfbuzz INTERFACE "${GLIB_LIBRARY_RELEASE}")
++    else()
++        target_link_libraries(harfbuzz INTERFACE "$<$<NOT:$<CONFIG:DEBUG>>:${GLIB_LIBRARY_RELEASE}>$<$<CONFIG:DEBUG>:${GLIB_LIBRARY_DEBUG}>")
++    endif()
++endif()
++
++if ("icu" IN_LIST HARFBUZZ_FEATURES)
++    find_dependency(ICU 61 COMPONENTS uc)
++    target_link_libraries(harfbuzz INTERFACE ICU::uc)
++endif()
++
++add_library(harfbuzz::harfbuzz-subset UNKNOWN IMPORTED)
++
++find_library(HARFBUZZ_SUBSET_LIBRARY_DEBUG 
++    NAMES harfbuzz-subset 
++    PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug" 
++    PATH_SUFFIXES lib NO_DEFAULT_PATH)
++find_library(HARFBUZZ_SUBSET_LIBRARY_RELEASE 
++    NAMES harfbuzz-subset 
++    PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}" 
++    PATH_SUFFIXES lib NO_DEFAULT_PATH)
++    
++if(NOT HARFBUZZ_LIBRARY_DEBUG)
++    set_target_properties(harfbuzz::harfbuzz-subset PROPERTIES
++        INTERFACE_INCLUDE_DIRECTORIES "${HARFBUZZ_INCLUDE_DIR}"
++        IMPORTED_CONFIGURATIONS "RELEASE"
++        IMPORTED_LOCATION_RELEASE "${HARFBUZZ_SUBSET_LIBRARY_RELEASE}"
++    )
++else()
++    set_target_properties(harfbuzz::harfbuzz-subset PROPERTIES
++        INTERFACE_INCLUDE_DIRECTORIES "${HARFBUZZ_INCLUDE_DIR}"
++        IMPORTED_CONFIGURATIONS "DEBUG;RELEASE"
++        IMPORTED_LOCATION_RELEASE "${HARFBUZZ_SUBSET_LIBRARY_RELEASE}"
++        IMPORTED_LOCATION_DEBUG "${HARFBUZZ_SUBSET_LIBRARY_DEBUG}"
++    )
++endif()
++
++target_link_libraries(harfbuzz::harfbuzz-subset INTERFACE harfbuzz)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/harfbuzz/karouka-freetype-option.patch b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/karouka-freetype-option.patch
+new file mode 100644
+index 0000000000..653abd72dd
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/karouka-freetype-option.patch
+@@ -0,0 +1,25 @@
++--- a/meson.build
+++++ b/meson.build
++@@ -105,11 +105,17 @@
++ if meson.version().version_compare('>=0.60.0')
++   # Sadly, FreeType's versioning schemes are different between pkg-config and CMake
++   # pkg-config: freetype2, cmake: Freetype
++-  freetype_dep = dependency('freetype2',
++-                            version: freetype_min_version,
++-                            method: 'pkg-config',
++-                            required: false,
++-                            allow_fallback: false)
+++  # karouka: look freetype2 up only if the freetype option allows it. Unconditionally, a disabled
+++  # option still found and linked the system's FreeType (Homebrew's, through pkg-config's default
+++  # search path).
+++  freetype_dep = dependency('', required: false)
+++  if not get_option('freetype').disabled()
+++    freetype_dep = dependency('freetype2',
+++                              version: freetype_min_version,
+++                              method: 'pkg-config',
+++                              required: false,
+++                              allow_fallback: false)
+++  endif
++   if not freetype_dep.found()
++     freetype_dep = dependency('FreeType',
++                               version: freetype_min_version_actual,
+diff --git a/Meta/CMake/vcpkg/overlay-ports/harfbuzz/portfile.cmake b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/portfile.cmake
+new file mode 100644
+index 0000000000..8c258da7f7
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/portfile.cmake
+@@ -0,0 +1,132 @@
++vcpkg_from_github(
++    OUT_SOURCE_PATH SOURCE_PATH
++    REPO harfbuzz/harfbuzz
++    REF ${VERSION}
++    SHA512 697205a571bb3d52d83598e8511e2e21e7cd15630aac32d8deb4354e462efda6a5ce46510cf4a1c18365dffe935cf2e4f1fda65d1779f17c9bb60c503315bf5c
++    HEAD_REF master
++    PATCHES
++        fix-win32-build.patch
++        karouka-freetype-option.patch # karouka: -Dfreetype=disabled no longer links the system's FreeType
++)
++
++if("icu" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dicu=enabled) # Enable ICU library unicode functions
++else()
++    list(APPEND FEATURE_OPTIONS -Dicu=disabled)
++endif()
++if("graphite2" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dgraphite=enabled) #Enable Graphite2 complementary shaper
++else()
++    list(APPEND FEATURE_OPTIONS -Dgraphite=disabled)
++endif()
++if("coretext" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dcoretext=enabled) # Enable CoreText shaper backend on macOS
++else()
++    list(APPEND FEATURE_OPTIONS -Dcoretext=disabled)
++endif()
++if("directwrite" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Ddirectwrite=enabled) # Enable DirectWrite support on Windows
++else()
++    list(APPEND FEATURE_OPTIONS -Ddirectwrite=disabled)
++endif()
++if("glib" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dglib=enabled) # Enable GLib unicode functions
++    list(APPEND FEATURE_OPTIONS -Dgobject=enabled) #Enable GObject bindings
++    list(APPEND FEATURE_OPTIONS -Dchafa=disabled)
++else()
++    list(APPEND FEATURE_OPTIONS -Dglib=disabled)
++    list(APPEND FEATURE_OPTIONS -Dgobject=disabled)
++endif()
++if("cairo" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dcairo=enabled) # Enable Cairo graphics library support
++else()
++    list(APPEND FEATURE_OPTIONS -Dcairo=disabled)
++endif()
++if("freetype" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dfreetype=enabled) #Enable freetype interop helpers
++else()
++    list(APPEND FEATURE_OPTIONS -Dfreetype=disabled)
++endif()
++if("experimental-api" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dexperimental_api=true) #Enable experimental api
++else()
++    list(APPEND FEATURE_OPTIONS -Dexperimental_api=false)
++endif()
++if("gdi" IN_LIST FEATURES)
++    list(APPEND FEATURE_OPTIONS -Dgdi=enabled) # enable gdi helpers and uniscribe shaper backend (windows only)
++endif()
++
++if("introspection" IN_LIST FEATURES)
++    list(APPEND OPTIONS_DEBUG -Dgobject=enabled -Dintrospection=disabled)
++    list(APPEND OPTIONS_RELEASE -Dgobject=enabled -Dintrospection=enabled)
++else()
++    list(APPEND OPTIONS -Dintrospection=disabled)
++endif()
++
++if(CMAKE_HOST_WIN32 AND VCPKG_TARGET_ARCHITECTURE STREQUAL "x86")
++    set(GIR_TOOL_DIR ${CURRENT_INSTALLED_DIR})
++else()
++    set(GIR_TOOL_DIR ${CURRENT_HOST_INSTALLED_DIR})
++endif()
++
++vcpkg_configure_meson(
++    SOURCE_PATH "${SOURCE_PATH}"
++    OPTIONS
++        ${FEATURE_OPTIONS}
++        -Ddocs=disabled          # Generate documentation with gtk-doc
++        -Dtests=disabled
++        -Dbenchmark=disabled
++        ${OPTIONS}
++    OPTIONS_DEBUG
++        ${OPTIONS_DEBUG}
++    OPTIONS_RELEASE
++        ${OPTIONS_RELEASE}
++    ADDITIONAL_BINARIES
++        glib-genmarshal='${CURRENT_HOST_INSTALLED_DIR}/tools/glib/glib-genmarshal'
++        glib-mkenums='${CURRENT_HOST_INSTALLED_DIR}/tools/glib/glib-mkenums'
++        g-ir-compiler='${CURRENT_HOST_INSTALLED_DIR}/tools/gobject-introspection/g-ir-compiler${VCPKG_HOST_EXECUTABLE_SUFFIX}'
++        g-ir-scanner='${GIR_TOOL_DIR}/tools/gobject-introspection/g-ir-scanner'
++)
++
++vcpkg_install_meson(ADD_BIN_TO_PATH)
++vcpkg_copy_pdbs()
++vcpkg_fixup_pkgconfig()
++
++if(VCPKG_TARGET_IS_WINDOWS)
++	file(GLOB PC_FILES 
++		"${CURRENT_PACKAGES_DIR}/debug/lib/pkgconfig/*.pc" 
++		"${CURRENT_PACKAGES_DIR}/lib/pkgconfig/*.pc")
++	
++	foreach(PC_FILE IN LISTS PC_FILES)
++		file(READ "${PC_FILE}" PC_FILE_CONTENT)
++		string(REGEX REPLACE 
++			"\\$\\{prefix\}\\/lib\\/([a-zA-Z0-9\-]*)\\.lib" 
++			"-l\\1" PC_FILE_CONTENT 
++			"${PC_FILE_CONTENT}")
++		file(WRITE "${PC_FILE}" ${PC_FILE_CONTENT})
++	endforeach()
++endif()
++
++file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/lib/cmake")
++file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/lib/cmake")
++configure_file("${CMAKE_CURRENT_LIST_DIR}/harfbuzzConfig.cmake.in"
++        "${CURRENT_PACKAGES_DIR}/share/${PORT}/harfbuzzConfig.cmake" @ONLY)
++
++vcpkg_list(SET TOOL_NAMES)
++if("glib" IN_LIST FEATURES)
++    vcpkg_list(APPEND TOOL_NAMES hb-subset hb-shape hb-ot-shape-closure hb-info)
++    if("cairo" IN_LIST FEATURES)
++        vcpkg_list(APPEND TOOL_NAMES hb-view)
++    endif()
++endif()
++if(TOOL_NAMES)
++    vcpkg_copy_tools(TOOL_NAMES ${TOOL_NAMES} AUTO_CLEAN)
++endif()
++
++if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
++    file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/bin" "${CURRENT_PACKAGES_DIR}/debug/bin")
++endif()
++
++vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING")
++
++file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/usage" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}")
+diff --git a/Meta/CMake/vcpkg/overlay-ports/harfbuzz/usage b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/usage
+new file mode 100644
+index 0000000000..83e5feff05
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/usage
+@@ -0,0 +1,4 @@
++The harfbuzz package provides CMake targets:
++
++    find_package(harfbuzz CONFIG REQUIRED)
++    target_link_libraries(main PRIVATE harfbuzz::harfbuzz harfbuzz::harfbuzz-subset)
+diff --git a/Meta/CMake/vcpkg/overlay-ports/harfbuzz/vcpkg.json b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/vcpkg.json
+new file mode 100644
+index 0000000000..dae3ed42f0
+--- /dev/null
++++ b/Meta/CMake/vcpkg/overlay-ports/harfbuzz/vcpkg.json
+@@ -0,0 +1,88 @@
++{
++  "name": "harfbuzz",
++  "version": "10.2.0",
++  "description": "HarfBuzz OpenType text shaping engine",
++  "homepage": "https://github.com/harfbuzz/harfbuzz",
++  "license": "MIT-Modern-Variant",
++  "supports": "!uwp",
++  "dependencies": [
++    {
++      "name": "gettext",
++      "platform": "osx"
++    },
++    {
++      "name": "vcpkg-tool-meson",
++      "host": true
++    }
++  ],
++  "default-features": [
++    "freetype"
++  ],
++  "features": {
++    "cairo": {
++      "description": "Enable Cairo graphics library support",
++      "dependencies": [
++        {
++          "name": "cairo",
++          "default-features": false,
++          "features": [
++            "freetype"
++          ]
++        }
++      ]
++    },
++    "coretext": {
++      "description": "Enable CoreText shaper backend on macOS",
++      "supports": "osx"
++    },
++    "directwrite": {
++      "description": "Enable DirectWrite support on Windows",
++      "supports": "windows"
++    },
++    "experimental-api": {
++      "description": "Enable experimental api"
++    },
++    "freetype": {
++      "description": "Enable FreeType support",
++      "dependencies": [
++        {
++          "name": "freetype",
++          "default-features": false
++        }
++      ]
++    },
++    "gdi": {
++      "description": "Enable GDI/Uniscribe support on Windows",
++      "supports": "windows"
++    },
++    "glib": {
++      "description": "Glib Unicode callbacks support",
++      "dependencies": [
++        "glib",
++        {
++          "name": "glib",
++          "host": true
++        }
++      ]
++    },
++    "graphite2": {
++      "description": "Graphite2 shaper support",
++      "dependencies": [
++        "graphite2"
++      ]
++    },
++    "icu": {
++      "description": "icu support for harfbuzz",
++      "dependencies": [
++        "icu"
++      ]
++    },
++    "introspection": {
++      "description": "build with introspection",
++      "dependencies": [
++        "glib",
++        "gobject-introspection"
++      ]
++    }
++  }
++}
+diff --git a/vcpkg.json b/vcpkg.json
+index 966996c4f5..2c997034c2 100644
+--- a/vcpkg.json
++++ b/vcpkg.json
+@@ -15,7 +15,7 @@
+     "fmt",
+     {
+       "name": "fontconfig",
+-      "platform": "linux | bsd | osx"
++      "platform": "linux | bsd"
+     },
+     {
+       "name": "harfbuzz",
+@@ -28,6 +28,7 @@
+     {
+       "name": "harfbuzz",
+       "platform": "osx",
++      "default-features": false,
+       "features": [
+         "coretext",
+         "icu"
+@@ -124,7 +125,6 @@
+       "default-features": false,
+       "features": [
+         "metal",
+-        "fontconfig",
+         "harfbuzz",
+         "icu"
+       ]
+@@ -203,7 +203,7 @@
+       ]
+     },
+     "browser": {
+-      "description": "The browser's own dependencies: RequestServer's curl and libproxy, LibURL's libpsl (the public suffix list for cookies and same-site checks), LibDatabase's sqlite3, LibWebView's SDL3, the js REPL's libedit, the pdf.js viewer and the Compositor's ANGLE. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave the browser and this feature out.",
++      "description": "The browser's own dependencies: RequestServer's curl and libproxy, LibURL's libpsl (the public suffix list for cookies and same-site checks), LibDatabase's sqlite3, LibWebView's SDL3, the js REPL's libedit, the pdf.js viewer, the Compositor's ANGLE and, on macOS, Skia's fontconfig font manager and FreeType rasterizer behind WebContent's and the Compositor's --force-fontconfig. Builds with LIBWEB_PRUNE_WEB_APIS (karouka) leave the browser and this feature out.",
+       "dependencies": [
+         {
+           "name": "angle",
+@@ -243,6 +243,14 @@
+           "name": "sdl3",
+           "default-features": false
+         },
++        {
++          "name": "skia",
++          "platform": "osx",
++          "default-features": false,
++          "features": [
++            "fontconfig"
++          ]
++        },
+         "sqlite3"
+       ]
+     },

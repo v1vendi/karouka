@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-title" content="loads=20/20 errors=0 canvas=load$">
+<title>data url image</title>
+<style>
+  body { margin: 16px; background: #1c2128; color: #e6edf3; font: 16px sans-serif; }
+  .row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  img { width: 48px; height: 48px; image-rendering: pixelated; background: #555; }
+  .state { width: 16px; height: 48px; background: #555; }
+  .load { background: #2ea043; }
+  .error { background: #da3633; }
+</style>
+</head>
+<body>
+<!-- Row 1: an <img> gets a new data: URL from every requestAnimationFrame callback for 20
+     frames. Each one has to load before the next frame's callbacks replace it, as in a browser,
+     which runs every ready task between two frames. karouka runs them all at the host clock's last
+     step before the frame; running one leftover task a frame, the load would never fire ("1 of
+     20": only the last src would load). The bar turns green and the count reads "20 of 20" when
+     every src change loaded.
+     Row 2: an <img> whose src is canvas.toDataURL(). It fires load or error, never neither.
+     The canvas replays in-process, so the data: URL holds what was drawn: the bar is green,
+     the row says load and the image is green. A canvas without backing storage serializes as
+     transparent pixels of its size (patch 0035), not "data:,", which is not an image.
+     The title says the same for KR_DEBUG output and dev.sh check. -->
+<div class="row"><div id="churn-state" class="state"></div><img id="churn" alt=""><span id="churn-text">0 of 0 src changes loaded</span></div>
+<div class="row"><div id="canvas-state" class="state"></div><img id="canvas-image" alt=""><span id="canvas-text">canvas.toDataURL(): waiting</span></div>
+<script>
+  // A 1x1 green PNG. The media type parameter makes each URL a different resource.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPQW+D8HwAEIgIRk1YMfgAAAABJRU5ErkJggg==";
+  const churn_frames = 20;
+  const churn = document.getElementById("churn");
+  let changes = 0;
+  let loads = 0;
+  let errors = 0;
+  let canvas_result = "waiting";
+
+  function report() {
+    document.getElementById("churn-text").textContent = `${loads} of ${changes} src changes loaded` + (errors ? `, ${errors} errors` : "");
+    document.getElementById("churn-state").className = "state" + (changes && loads === changes ? " load" : errors ? " error" : "");
+    document.title = `data url image loads=${loads}/${changes} errors=${errors} canvas=${canvas_result}`;
+  }
+  churn.onload = () => { ++loads; report(); };
+  churn.onerror = () => { ++errors; report(); };
+  function step() {
+    if (changes === churn_frames)
+      return;
+    ++changes;
+    churn.src = `data:image/png;n=${changes};base64,${png}`;
+    report();
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 4;
+  canvas.height = 4;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#2ea043";
+  context.fillRect(0, 0, 4, 4);
+  const url = canvas.toDataURL();
+  const canvas_image = document.getElementById("canvas-image");
+  function canvas_done(result) {
+    canvas_result = result;
+    document.getElementById("canvas-state").className = `state ${result}`;
+    document.getElementById("canvas-text").textContent = `canvas.toDataURL() (${url.length > 22 ? url.slice(0, 22) + "..." : url}): ${result}`;
+    report();
+  }
+  canvas_image.onload = () => canvas_done("load");
+  canvas_image.onerror = () => canvas_done("error");
+  canvas_image.src = url;
+</script>
+</body>
+</html>

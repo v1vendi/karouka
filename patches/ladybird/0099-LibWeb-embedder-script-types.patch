@@ -1,0 +1,318 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+index f00b86a..2dd48d1 100644
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -289,6 +289,7 @@ set(SOURCES
+     Embedder/SystemFonts.cpp
+     Embedder/WebFonts.cpp
+     Embedder/FileFetch.cpp
++    Embedder/ScriptTypes.cpp
+     DOM/DocumentObserver.cpp
+     DOM/DocumentType.cpp
+     DOM/DOMEventListener.cpp
+diff --git a/Libraries/LibWeb/Embedder/ScriptTypes.cpp b/Libraries/LibWeb/Embedder/ScriptTypes.cpp
+new file mode 100644
+index 0000000000..ee8702673b
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/ScriptTypes.cpp
+@@ -0,0 +1,120 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <LibCore/ImmutableBytes.h>
++#include <LibTextCodec/Decoder.h>
++#include <LibWeb/DOM/Document.h>
++#include <LibWeb/Embedder/ScriptTypes.h>
++#include <LibWeb/Fetch/Fetching/Fetching.h>
++#include <LibWeb/Fetch/Infrastructure/FetchAlgorithms.h>
++#include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
++#include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
++#include <LibWeb/HTML/HTMLScriptElement.h>
++#include <LibWeb/HTML/PotentialCORSRequest.h>
++#include <LibWeb/HTML/Scripting/Environments.h>
++#include <LibWebCommon/Fetch/Infrastructure/HTTP/Statuses.h>
++#include <LibWebCommon/MimeSniff/MimeType.h>
++
++namespace Web::Embedder {
++
++GC_DEFINE_ALLOCATOR(EmbedderScript);
++
++static ScriptTypeHandler* s_handler = nullptr;
++
++ScriptTypeHandler::~ScriptTypeHandler() = default;
++
++void set_script_type_handler(ScriptTypeHandler* handler)
++{
++    s_handler = handler;
++}
++
++EmbedderScript::EmbedderScript(String mime_essence, String source_text, URL::URL url, size_t line, HTML::EnvironmentSettingsObject& settings, URL::URL base_url)
++    : Script(move(base_url), url.to_byte_string(), settings)
++    , m_mime_essence(move(mime_essence))
++    , m_source_text(move(source_text))
++    , m_url(move(url))
++    , m_line(line)
++{
++}
++
++EmbedderScript::~EmbedderScript() = default;
++
++GC::Ref<EmbedderScript> EmbedderScript::create(String mime_essence, String source_text, URL::URL url, size_t line, HTML::EnvironmentSettingsObject& settings, URL::URL base_url)
++{
++    return settings.realm().heap().allocate<EmbedderScript>(move(mime_essence), move(source_text), move(url), line, settings, move(base_url));
++}
++
++Optional<String> embedder_script_type_essence(DOM::Document const& document, Utf16View script_block_type)
++{
++    if (!s_handler)
++        return {};
++    auto mime_type = MimeSniff::MimeType::parse(script_block_type);
++    if (!mime_type.has_value())
++        return {};
++    auto const& essence = mime_type->essence();
++    if (!s_handler->handles_script_type(document, essence))
++        return {};
++    return essence;
++}
++
++GC::Ref<EmbedderScript> create_inline_embedder_script(HTML::HTMLScriptElement& element, String mime_essence, Utf16View source_text, size_t line)
++{
++    auto& document = element.document();
++    return EmbedderScript::create(move(mime_essence), source_text.to_utf8_but_should_be_ported_to_utf16(), document.url(), line, document.relevant_settings_object(), document.base_url());
++}
++
++void fetch_embedder_script(HTML::HTMLScriptElement& element, String mime_essence, URL::URL const& url, HTML::EnvironmentSettingsObject& settings_object, HTML::ScriptFetchOptions options, HTML::OnFetchScriptComplete on_complete)
++{
++    // As fetch a classic script, with the classic script CORS setting "no-cors".
++    auto request = HTML::create_potential_CORS_request(url, Fetch::Infrastructure::Request::Destination::Script, HTML::CORSSettingAttribute::NoCORS);
++    request->set_client(&settings_object);
++    request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Script);
++    request->set_cryptographic_nonce_metadata(options.cryptographic_nonce);
++    request->set_integrity_metadata(options.integrity_metadata);
++    request->set_parser_metadata(options.parser_metadata);
++    request->set_referrer_policy(options.referrer_policy);
++    request->set_render_blocking(options.render_blocking);
++    request->set_priority(options.fetch_priority);
++
++    Fetch::Infrastructure::FetchAlgorithms::Input fetch_algorithms_input {};
++    fetch_algorithms_input.process_response_consume_body = [&settings_object, mime_essence = move(mime_essence), on_complete](auto response, auto body_bytes) {
++        response = response->unsafe_response();
++        if (!body_bytes.template has<Core::ImmutableBytes>() || !Fetch::Infrastructure::is_ok_status(response->status())) {
++            on_complete->function()(nullptr);
++            return;
++        }
++        auto decoder = TextCodec::decoder_for("utf-8"sv);
++        VERIFY(decoder.has_value());
++        auto source_text = TextCodec::convert_input_to_utf8_using_given_decoder_unless_there_is_a_byte_order_mark(*decoder, StringView { body_bytes.template get<Core::ImmutableBytes>().bytes() });
++        if (source_text.is_error()) {
++            on_complete->function()(nullptr);
++            return;
++        }
++        auto response_url = response->url().value_or({});
++        // The script's base URL is the response's URL, as a classic script's.
++        on_complete->function()(EmbedderScript::create(mime_essence, source_text.release_value(), response_url, 1, settings_object, response_url));
++    };
++
++    Fetch::Fetching::fetch(HTML::relevant_realm(element), request, Fetch::Infrastructure::FetchAlgorithms::create(move(fetch_algorithms_input)));
++}
++
++bool run_embedder_script(HTML::HTMLScriptElement& element, EmbedderScript& script)
++{
++    // A handler unset since the script was prepared: nothing ran it.
++    if (!s_handler)
++        return false;
++
++    // As run a classic script: check if we can run script, prepare to run script, run, clean up.
++    auto& settings = script.settings_object();
++    if (HTML::can_run_script(settings) == HTML::RunScriptDecision::DoNotRun)
++        return true;
++    HTML::prepare_to_run_script(settings);
++    bool succeeded = s_handler->run_script(element, script);
++    HTML::clean_up_after_running_script(settings);
++    return succeeded;
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/ScriptTypes.h b/Libraries/LibWeb/Embedder/ScriptTypes.h
+new file mode 100644
+index 0000000000..1d2f230d76
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/ScriptTypes.h
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/String.h>
++#include <AK/Utf16View.h>
++#include <LibURL/URL.h>
++#include <LibWeb/Export.h>
++#include <LibWeb/Forward.h>
++#include <LibWeb/HTML/Scripting/Fetching.h>
++#include <LibWeb/HTML/Scripting/Script.h>
++
++namespace Web::Embedder {
++
++// A script of an embedder script type: its MIME type essence, its source text as UTF-8, the URL
++// it came from (the document's for an inline script, the response's for src=) and the line its
++// text starts on in that URL's resource (an inline script's line in the document, 1 for src=).
++class WEB_API EmbedderScript final : public HTML::Script {
++    GC_CELL(EmbedderScript, HTML::Script);
++    GC_DECLARE_ALLOCATOR(EmbedderScript);
++
++public:
++    virtual ~EmbedderScript() override;
++
++    String const& mime_essence() const { return m_mime_essence; }
++    String const& source_text() const { return m_source_text; }
++    URL::URL const& url() const { return m_url; }
++    size_t line() const { return m_line; }
++
++    static GC::Ref<EmbedderScript> create(String mime_essence, String source_text, URL::URL url, size_t line, HTML::EnvironmentSettingsObject&, URL::URL base_url);
++
++private:
++    EmbedderScript(String mime_essence, String source_text, URL::URL url, size_t line, HTML::EnvironmentSettingsObject&, URL::URL base_url);
++
++    String m_mime_essence;
++    String m_source_text;
++    URL::URL m_url;
++    size_t m_line { 1 };
++};
++
++// Script types the embedder runs itself, such as <script type="text/python">. A script whose type
++// is not a JavaScript MIME type, "module" or "importmap", and whose type's MIME essence the handler
++// accepts for the element's document, follows the classic-script path of "prepare the script
++// element": parser-blocking, or async or defer ordered, src= fetched as a no-cors "script" request
++// (decoded as UTF-8 whatever the charset), currentScript set while it runs, load after a src=
++// script runs. In place of evaluating JavaScript, the element runs the handler; a handler that
++// fails fires error at the element (and no load). The checks of a classic script still apply
++// (nomodule, event/for, CSP for inline text). A type the handler doesn't accept stays ignored.
++class WEB_API ScriptTypeHandler {
++public:
++    virtual ~ScriptTypeHandler();
++
++    // `mime_essence` is the type's MIME essence, lowercase ("text/python" for "Text/Python;v=3").
++    virtual bool handles_script_type(DOM::Document const&, StringView mime_essence) = 0;
++
++    // Runs inside the document's realm, between "prepare to run script" and "clean up after running
++    // script" (a microtask checkpoint follows when no other script is on the stack).
++    // Returns false when the script failed.
++    virtual bool run_script(HTML::HTMLScriptElement&, EmbedderScript const&) = 0;
++};
++
++// One handler for the process; null (the default) leaves every non-JavaScript type ignored.
++WEB_API void set_script_type_handler(ScriptTypeHandler*);
++
++// HTMLScriptElement's side.
++Optional<String> embedder_script_type_essence(DOM::Document const&, Utf16View script_block_type);
++GC::Ref<EmbedderScript> create_inline_embedder_script(HTML::HTMLScriptElement&, String mime_essence, Utf16View source_text, size_t line);
++void fetch_embedder_script(HTML::HTMLScriptElement&, String mime_essence, URL::URL const&, HTML::EnvironmentSettingsObject&, HTML::ScriptFetchOptions, HTML::OnFetchScriptComplete);
++bool run_embedder_script(HTML::HTMLScriptElement&, EmbedderScript&);
++
++}
+diff --git a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+index 027627df9b..df5a345ef6 100644
+--- a/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLScriptElement.cpp
+@@ -13,6 +13,7 @@
+ #include <LibWeb/DOM/Event.h>
+ #include <LibWeb/DOM/ShadowRoot.h>
+ #include <LibWeb/DOM/Text.h>
++#include <LibWeb/Embedder/ScriptTypes.h>
+ #include <LibWeb/HTML/EventNames.h>
+ #include <LibWeb/HTML/HTMLScriptElement.h>
+ #include <LibWeb/HTML/Scripting/ClassicScript.h>
+@@ -148,6 +149,7 @@ void HTMLScriptElement::execute_script()
+ 
+     // 5. If el's from an external file is true, or el's type is "module", then increment document's ignore-destructive-writes counter.
+     bool incremented_destructive_writes_counter = false;
++    bool embedder_script_failed = false;
+     if (m_from_an_external_file || m_script_type == ScriptType::Module) {
+         document->increment_ignore_destructive_writes_counter();
+         incremented_destructive_writes_counter = true;
+@@ -170,7 +172,12 @@ void HTMLScriptElement::execute_script()
+             dbgln_if(HTML_SCRIPT_DEBUG, "HTMLScriptElement: Running inline script");
+ 
+         // 3. Run the classic script given by el's result.
+-        (void)as<ClassicScript>(*m_result.get<GC::Ref<Script>>()).run();
++        // karouka: or the embedder's script (Embedder/ScriptTypes.h); one that fails fires error, and no load.
++        auto& script = *m_result.get<GC::Ref<Script>>();
++        if (auto* embedder_script = as_if<Embedder::EmbedderScript>(script))
++            embedder_script_failed = !Embedder::run_embedder_script(*this, *embedder_script);
++        else
++            (void)as<ClassicScript>(script).run();
+ 
+         // 4. Set document's currentScript attribute to oldCurrentScript.
+         document->set_current_script({}, old_current_script);
+@@ -196,7 +203,9 @@ void HTMLScriptElement::execute_script()
+         document->decrement_ignore_destructive_writes_counter();
+ 
+     // 8. If el's from an external file is true, then fire an event named load at el.
+-    if (m_from_an_external_file)
++    if (embedder_script_failed)
++        dispatch_event(create_event_for_element(*this, HTML::EventNames::error));
++    else if (m_from_an_external_file)
+         dispatch_event(create_event_for_element(*this, HTML::EventNames::load));
+ }
+ 
+@@ -263,6 +272,10 @@ void HTMLScriptElement::prepare_script()
+         script_block_type = builder.to_string();
+     }
+ 
++    // karouka: the MIME essence of an embedder script type (Embedder/ScriptTypes.h), which runs as a
++    // classic script but through the embedder.
++    Optional<String> embedder_essence;
++
+     // 10. If the script block's type string is a JavaScript MIME type essence match,
+     if (MimeSniff::is_javascript_mime_type_essence_match(script_block_type)) {
+         // then set el's type to "classic".
+@@ -279,6 +292,10 @@ void HTMLScriptElement::prepare_script()
+         m_script_type = ScriptType::ImportMap;
+     }
+     // FIXME: 13. Otherwise, if the script block's type string is an ASCII case-insensitive match for the string "speculationrules", then set el's type to "speculationrules".
++    // karouka: otherwise, if the embedder runs the type, then set el's type to "classic".
++    else if ((embedder_essence = Embedder::embedder_script_type_essence(document(), script_block_type)).has_value()) {
++        m_script_type = ScriptType::Classic;
++    }
+     // 14. Otherwise, return. (No script is executed, and el's type is left as null.)
+     else {
+         VERIFY(m_script_type == ScriptType::Null);
+@@ -472,7 +489,10 @@ void HTMLScriptElement::prepare_script()
+         // -> "classic"
+         if (m_script_type == ScriptType::Classic) {
+             // Fetch a classic script given url, settings object, options, classic script CORS setting, encoding, and onComplete.
+-            fetch_classic_script(*this, *url, settings_object, move(options), classic_script_cors_setting, encoding.release_value(), on_complete);
++            if (embedder_essence.has_value())
++                Embedder::fetch_embedder_script(*this, embedder_essence.release_value(), *url, settings_object, move(options), on_complete);
++            else
++                fetch_classic_script(*this, *url, settings_object, move(options), classic_script_cors_setting, encoding.release_value(), on_complete);
+         }
+         // -> "module"
+         else if (m_script_type == ScriptType::Module) {
+@@ -508,10 +528,15 @@ void HTMLScriptElement::prepare_script()
+         if (m_script_type == ScriptType::Classic) {
+             // 1. Let script be the result of creating a classic script using source text, settings object, base URL, and options.
+             // FIXME: Pass options.
+-            auto script = ClassicScript::create(m_document->url().to_byte_string(), source_text, settings_object, base_url, m_source_line_number, ClassicScript::MutedErrors::No, ScriptRegistry::IsInlineSource::Yes);
+-
+-            // 2. Mark as ready el given script.
+-            mark_as_ready(Result(move(script)));
++            // karouka: or the embedder's script, of the same text.
++            if (embedder_essence.has_value()) {
++                mark_as_ready(Result(Embedder::create_inline_embedder_script(*this, embedder_essence.release_value(), source_text.utf16_view(), m_source_line_number)));
++            } else {
++                auto script = ClassicScript::create(m_document->url().to_byte_string(), source_text, settings_object, base_url, m_source_line_number, ClassicScript::MutedErrors::No, ScriptRegistry::IsInlineSource::Yes);
++
++                // 2. Mark as ready el given script.
++                mark_as_ready(Result(move(script)));
++            }
+         }
+         // -> "module"
+         else if (m_script_type == ScriptType::Module) {

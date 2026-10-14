@@ -1,0 +1,153 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibHTTP: leave the HSTS preload list out of pruned builds
+
+HSTSPreloadData compiled in Chromium's whole preload list: 2.27 MB of
+entries in __DATA_CONST,__const plus 1.47 MB of host names in
+__TEXT,__cstring, the largest single object in libkarouka. Its only
+reader is ResourceLoader::is_known_hsts_host, which upgrades http:
+requests to known HSTS hosts; a LIBWEB_PRUNE_WEB_APIS build (karouka:
+no network) never makes one.
+
+Such a build now neither downloads the list nor compiles it in: the
+generator's new --empty mode writes the same header and an
+implementation that knows no host, and the preload data test isn't
+built with it.
+
+---
+diff --git a/Meta/CMake/hsts_preload.cmake b/Meta/CMake/hsts_preload.cmake
+index 81ca502c18..1e913498dd 100644
+--- a/Meta/CMake/hsts_preload.cmake
++++ b/Meta/CMake/hsts_preload.cmake
+@@ -1,23 +1,36 @@
+ include(${CMAKE_CURRENT_LIST_DIR}/utils.cmake)
+ 
+-set(HSTS_PRELOAD_PATH "${LADYBIRD_CACHE_DIR}/HSTSPreload" CACHE PATH "Download location for HSTS preload files")
+-set(HSTS_PRELOAD_DATA_URL "https://raw.githubusercontent.com/chromium/chromium/main/net/http/transport_security_state_static.json")
+-set(HSTS_PRELOAD_DATA_PATH "${HSTS_PRELOAD_PATH}/transport_security_state_static.json")
+ set(HSTS_PRELOAD_DATA_HEADER HSTSPreloadData.h)
+ set(HSTS_PRELOAD_DATA_IMPLEMENTATION HSTSPreloadData.cpp)
+-if (ENABLE_NETWORK_DOWNLOADS)
+-    download_file("${HSTS_PRELOAD_DATA_URL}" "${HSTS_PRELOAD_DATA_PATH}")
++# karouka: a LIBWEB_PRUNE_WEB_APIS build loads nothing over the network, so it neither downloads nor
++# compiles in Chromium's preload list (3.7 MB in the binary) and HSTSPreloadData knows no host.
++if (LIBWEB_PRUNE_WEB_APIS)
++    invoke_py_generator(
++        "HSTSPreloadData"
++        "generate_hsts_preload_data.py"
++        "${CMAKE_CURRENT_LIST_FILE}"
++        "${HSTS_PRELOAD_DATA_HEADER}"
++        "${HSTS_PRELOAD_DATA_IMPLEMENTATION}"
++        arguments --empty
++    )
+ else()
+-    message(STATUS "Skipping download of ${HSTS_PRELOAD_DATA_URL}, expecting it to be in ${HSTS_PRELOAD_DATA_PATH}")
++    set(HSTS_PRELOAD_PATH "${LADYBIRD_CACHE_DIR}/HSTSPreload" CACHE PATH "Download location for HSTS preload files")
++    set(HSTS_PRELOAD_DATA_URL "https://raw.githubusercontent.com/chromium/chromium/main/net/http/transport_security_state_static.json")
++    set(HSTS_PRELOAD_DATA_PATH "${HSTS_PRELOAD_PATH}/transport_security_state_static.json")
++    if (ENABLE_NETWORK_DOWNLOADS)
++        download_file("${HSTS_PRELOAD_DATA_URL}" "${HSTS_PRELOAD_DATA_PATH}")
++    else()
++        message(STATUS "Skipping download of ${HSTS_PRELOAD_DATA_URL}, expecting it to be in ${HSTS_PRELOAD_DATA_PATH}")
++    endif()
++    invoke_py_generator(
++        "HSTSPreloadData"
++        "generate_hsts_preload_data.py"
++        "${HSTS_PRELOAD_PATH}/"
++        "${HSTS_PRELOAD_DATA_HEADER}"
++        "${HSTS_PRELOAD_DATA_IMPLEMENTATION}"
++        arguments -p "${HSTS_PRELOAD_DATA_PATH}"
++    )
+ endif()
+-invoke_py_generator(
+-    "HSTSPreloadData"
+-    "generate_hsts_preload_data.py"
+-    "${HSTS_PRELOAD_PATH}/"
+-    "${HSTS_PRELOAD_DATA_HEADER}"
+-    "${HSTS_PRELOAD_DATA_IMPLEMENTATION}"
+-    arguments -p "${HSTS_PRELOAD_DATA_PATH}"
+-)
+ set(HSTS_PRELOAD_SOURCES
+     ${HSTS_PRELOAD_DATA_HEADER}
+     ${HSTS_PRELOAD_DATA_IMPLEMENTATION}
+diff --git a/Meta/Generators/generate_hsts_preload_data.py b/Meta/Generators/generate_hsts_preload_data.py
+index 74714112f3..bd914f258b 100644
+--- a/Meta/Generators/generate_hsts_preload_data.py
++++ b/Meta/Generators/generate_hsts_preload_data.py
+@@ -148,6 +148,36 @@ def generate_implementation_file(entries: list[tuple[str, bool]], output_path: P
+     output_path.write_text("\n".join(lines), encoding="utf-8")
+ 
+ 
++# karouka: a LIBWEB_PRUNE_WEB_APIS build (Meta/CMake/hsts_preload.cmake) loads nothing over the network,
++# so it leaves out the preload list (2.3 MB of entries plus 1.5 MB of host names) and knows no preloaded host.
++def generate_empty_implementation_file(output_path: Path) -> None:
++    content = """#include <LibHTTP/HSTSPreloadData.h>
++
++namespace HTTP {
++
++// Generated with --empty: this build has no HSTS preload list.
++
++HSTSPreloadData const& HSTSPreloadData::the()
++{
++    static HSTSPreloadData s_the;
++    return s_the;
++}
++
++Optional<HSTSPreloadEntry> HSTSPreloadData::find_exact(StringView) const
++{
++    return {};
++}
++
++bool HSTSPreloadData::is_known_preloaded_hsts_host(StringView) const
++{
++    return false;
++}
++
++}
++"""
++    output_path.write_text(content, encoding="utf-8")
++
++
+ def main() -> None:
+     parser = argparse.ArgumentParser(description="Generate HSTS preload data files", add_help=False)
+     parser.add_argument("--help", action="help", help="Show this help message and exit")
+@@ -155,14 +185,20 @@ def main() -> None:
+     parser.add_argument(
+         "-c", "--generated-implementation-path", required=True, help="Path to the implementation file to generate"
+     )
+-    parser.add_argument(
++    source = parser.add_mutually_exclusive_group(required=True)
++    source.add_argument(
+         "-p",
+         "--hsts-preload-list-path",
+-        required=True,
+         help="Path to Chromium's transport_security_state_static.json",
+     )
++    source.add_argument("--empty", action="store_true", help="Generate data with no preloaded hosts")
+     args = parser.parse_args()
+ 
++    if args.empty:
++        generate_header_file(Path(args.generated_header_path))
++        generate_empty_implementation_file(Path(args.generated_implementation_path))
++        return
++
+     entries = parse_entries(Path(args.hsts_preload_list_path))
+     generate_header_file(Path(args.generated_header_path))
+     generate_implementation_file(entries, Path(args.generated_implementation_path))
+diff --git a/Tests/LibHTTP/CMakeLists.txt b/Tests/LibHTTP/CMakeLists.txt
+index cc635aa2b9..73daaab3f6 100644
+--- a/Tests/LibHTTP/CMakeLists.txt
++++ b/Tests/LibHTTP/CMakeLists.txt
+@@ -1,9 +1,12 @@
+ set(TEST_SOURCES
+     TestCacheUtilities.cpp
+     TestHSTSPolicy.cpp
+-    TestHSTSPreloadData.cpp
+     TestHTTPUtils.cpp
+ )
++# karouka: a LIBWEB_PRUNE_WEB_APIS build has no HSTS preload list (Meta/CMake/hsts_preload.cmake).
++if (NOT LIBWEB_PRUNE_WEB_APIS)
++    list(APPEND TEST_SOURCES TestHSTSPreloadData.cpp)
++endif()
+ 
+ foreach(source IN LISTS TEST_SOURCES)
+     ladybird_test("${source}" LibWeb LIBS LibHTTP)

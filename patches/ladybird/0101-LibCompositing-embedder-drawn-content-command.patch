@@ -1,0 +1,342 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListCommand.h b/Libraries/LibCompositing/DisplayList/DisplayListCommand.h
+index d014f56f6a..d21f5a17f4 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListCommand.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListCommand.h
+@@ -28,6 +28,7 @@ namespace Compositing {
+     V(DrawCompositedContext, draw_composited_context)                                  \
+     V(DrawCanvas, draw_canvas)                                                         \
+     V(DrawVideoFrame, draw_video_frame)                                                \
++    V(DrawEmbedderContent, draw_embedder_content)                                      \
+     V(PaintLinearGradient, paint_linear_gradient)                                      \
+     V(PaintRadialGradient, paint_radial_gradient)                                      \
+     V(PaintConicGradient, paint_conic_gradient)                                        \
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+index 568dd51c68..dd56affe30 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+@@ -725,6 +725,16 @@ static Vector<SkColor4f> to_skia_gradient_colors(ReadonlySpan<Color> color_stop_
+     return colors;
+ }
+ 
++void DisplayListPlayerSkia::play_command(DrawEmbedderContent const& command)
++{
++    if (!m_embedder_content_resolver || command.dst_rect.is_empty())
++        return;
++    auto& canvas = surface().canvas();
++    auto save_count = canvas.save();
++    (*m_embedder_content_resolver)(command.content_id, command.dst_rect, canvas, m_caret_time_ns.has_value() ? *m_caret_time_ns : MonotonicTime::now().nanoseconds());
++    canvas.restoreToCount(save_count);
++}
++
+ void DisplayListPlayerSkia::play_command(PaintLinearGradient const& command)
+ {
+     auto color_stop_colors = gradient_colors(command.color_stops);
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
+index beae233e84..a872c2babb 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.h
+@@ -17,6 +17,7 @@
+ #include <LibGfx/Forward.h>
+ 
+ class GrDirectContext;
++class SkCanvas;
+ class SkColorFilter;
+ class SkImageFilter;
+ class SkPaint;
+@@ -25,6 +26,12 @@ class sk_sp;
+ 
+ namespace Compositing {
+ 
++// Draws the pixels of a DrawEmbedderContent command: the embedder paints its content `content_id` into `dst_rect`
++// on `canvas`, whose matrix and clip the player has set to the command's (so dst_rect is in the coordinates the
++// command was recorded in), for the frame at `time_ns` (the player's frame time, see set_caret_time_ns). The player
++// saves and restores the canvas around the call.
++using EmbedderContentResolver = Function<void(u64 content_id, Gfx::FloatRect const& dst_rect, SkCanvas& canvas, i64 time_ns)>;
++
+ // The color filter force-dark runs classified images through: the same Oklab lightness inversion the solid colors
+ // take — as a Skia runtime effect. Exposed so a benchmark can time the shipped effect, rather than a copy of it.
+ COMPOSITING_API sk_sp<SkColorFilter> force_dark_image_color_filter();
+@@ -51,8 +58,13 @@ public:
+     // (PaintCaret::blink_cycle_start_time_ns). Unset, it is MonotonicTime::now(); an embedder that drives LibWeb's
+     // clock itself passes that clock's time for the frame, so the caret shows or hides at the frame's time, not at
+     // whenever the frame happened to be played.
++    // DrawEmbedderContent is drawn at the same time.
+     void set_caret_time_ns(Optional<i64> time_ns) { m_caret_time_ns = time_ns; }
+ 
++    // What draws DrawEmbedderContent commands, nested display lists' included; none (the default) paints nothing for
++    // them. Not owned: it must outlive the replays it is set for.
++    void set_embedder_content_resolver(EmbedderContentResolver const* resolver) { m_embedder_content_resolver = resolver; }
++
+     void flush(Gfx::PaintingSurface&) override;
+     void flush_async(Gfx::PaintingSurface&, Function<void()>&&);
+     void paint_scrollbar(Gfx::PaintingSurface&, PaintScrollBar const&);
+@@ -90,6 +102,7 @@ private:
+ 
+     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
+     CompositedContextResolver const* m_composited_context_resolver { nullptr };
++    EmbedderContentResolver const* m_embedder_content_resolver { nullptr };
+     Optional<i64> m_caret_time_ns;
+ 
+     // Layer filters are built from their bytes once per frame node and kept until the visual
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp
+index e9a246f510..04627435b7 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.cpp
+@@ -92,6 +92,7 @@ struct DisplayListCachedNestedRasterResource {
+ 
+     RefPtr<Gfx::SkiaBackendContext> skia_backend_context;
+     Optional<bool> requires_direct_replay;
++    Optional<bool> draws_live_embedder_content;
+     bool was_painted { false };
+ 
+     // The same display list can be painted at several places in one frame (repeated SVG images, atlas-style
+@@ -667,7 +668,7 @@ bool DisplayListResourceStorage::should_cache_nested_display_list_raster(Display
+ // command or a visual context effect, or a backdrop filter carried by a visual context effect) can see canvas
+ // content painted before the display list began, or when the list draws live
+ // content that changes underneath its immutable command stream (video frames are updated in place under a stable
+-// resource id, canvas surfaces and composited child contexts are resolved at replay time). Destination-reading
++// resource id, canvas surfaces, composited child contexts and embedder content are resolved at replay time). Destination-reading
+ // operations enclosed in a save layer recorded within the list only ever read within-list content, so they do
+ // not require direct replay. The verdict is intrinsic to the list and memoized alongside its cached rasters.
+ bool DisplayListResourceStorage::nested_display_list_requires_direct_replay(DisplayListResourceId id, HashTable<u64>& visited_display_lists) const
+@@ -697,7 +698,7 @@ bool DisplayListResourceStorage::nested_display_list_requires_direct_replay(Disp
+                 return;
+             visit_display_list_command(header.command_type, payload, [&](auto const& command) {
+                 using Command = RemoveCVReference<decltype(command)>;
+-                if constexpr (IsSame<Command, DrawVideoFrame> || IsSame<Command, DrawCanvas> || IsSame<Command, DrawCompositedContext>) {
++                if constexpr (IsSame<Command, DrawVideoFrame> || IsSame<Command, DrawCanvas> || IsSame<Command, DrawCompositedContext> || IsSame<Command, DrawEmbedderContent>) {
+                     requires_direct_replay = true;
+                 } else if constexpr (IsSame<Command, PaintNestedDisplayList>) {
+                     // NB: A nested list's live content matters at any depth, and its unisolated destination reads
+@@ -763,6 +764,43 @@ void DisplayListResourceStorage::collect_referenced_resources(
+     });
+ }
+ 
++bool DisplayListResourceStorage::draws_live_embedder_content(DisplayList const& display_list) const
++{
++    HashTable<u64> visited_display_lists;
++    return command_bytes_draw_live_embedder_content(display_list.command_bytes(), visited_display_lists);
++}
++
++bool DisplayListResourceStorage::command_bytes_draw_live_embedder_content(ReadonlyBytes command_bytes, HashTable<u64>& visited_display_lists) const
++{
++    bool draws = false;
++    DisplayList::for_each_command_header(command_bytes, [&](DisplayListCommandHeader const& header, ReadonlyBytes payload) {
++        if (draws)
++            return;
++        visit_display_list_command(header.command_type, payload, [&](auto const& command) {
++            using Command = RemoveCVReference<decltype(command)>;
++            if constexpr (IsSame<Command, DrawEmbedderContent>) {
++                draws = command.is_live;
++            } else if constexpr (IsSame<Command, PaintNestedDisplayList>) {
++                // Nested lists are immutable, so the verdict is kept with the list's cached rasters.
++                if (!has_display_list(command.display_list_id) || visited_display_lists.set(command.display_list_id.value()) != HashSetResult::InsertedNewEntry)
++                    return;
++                auto& resource = *m_display_list_cached_nested_rasters.ensure(command.display_list_id.value(), [&] {
++                    return make<DisplayListCachedNestedRasterResource>(nullptr);
++                });
++                if (!resource.draws_live_embedder_content.has_value())
++                    resource.draws_live_embedder_content = command_bytes_draw_live_embedder_content(display_list(command.display_list_id).command_bytes(), visited_display_lists);
++                draws = *resource.draws_live_embedder_content;
++            }
++            if (draws)
++                return;
++            for_each_command_byte_range_inside(command, payload, [&](ReadonlyBytes nested_records) {
++                draws = draws || command_bytes_draw_live_embedder_content(nested_records, visited_display_lists);
++            });
++        });
++    });
++    return draws;
++}
++
+ void DisplayListResourceStorage::collect_referenced_resources(
+     DisplayList const& display_list,
+     DisplayListResourceSet& referenced_resources) const
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h
+index 12a7683d02..1c3530136a 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h
++++ b/Libraries/LibCompositing/DisplayList/DisplayListResourceStorage.h
+@@ -151,6 +151,9 @@ public:
+     sk_sp<SkImage> cached_nested_display_list_raster(DisplayListResourceId, RefPtr<Gfx::SkiaBackendContext> const&, Gfx::IntRect visible_rect_in_list_space, Gfx::IntRect& raster_rect_in_list_space) const;
+     void add_cached_nested_display_list_raster(DisplayListResourceId, RefPtr<Gfx::SkiaBackendContext> const&, Gfx::IntRect rect_in_list_space, sk_sp<SkImage>) const;
+     bool should_cache_nested_display_list_raster(DisplayListResourceId) const;
++    // Whether the list draws a live DrawEmbedderContent (one whose pixels change with the frame's time), in its own
++    // commands, the records inside them or the nested display lists it paints, at any depth.
++    bool draws_live_embedder_content(DisplayList const&) const;
+     sk_sp<SkTextBlob> text_blob(FontResourceId, float scale, ReadonlySpan<DisplayListGlyph>, u8 font_smoothing, TextRasterizationMode = TextRasterizationMode::Normal) const;
+     RefPtr<Media::VideoSink const> video_sink(VideoSinkResourceId id) const;
+     Optional<Media::VideoSinkHandle> video_sink_handle(VideoSinkResourceId id) const { return m_video_sink_handles.get(id.value()); }
+@@ -165,6 +168,7 @@ private:
+     void collect_referenced_resources(AccumulatedVisualContextTree const&, DisplayListResourceSet&) const;
+     void add_referenced_display_list(DisplayListResourceId, DisplayListResourceSet&) const;
+     bool nested_display_list_requires_direct_replay(DisplayListResourceId, HashTable<u64>& visited_display_lists) const;
++    bool command_bytes_draw_live_embedder_content(ReadonlyBytes, HashTable<u64>& visited_display_lists) const;
+     void remove_text_blobs_without_font();
+ 
+     bool m_has_resources_added_since_last_retain { false };
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/commands.rs b/Libraries/LibCompositing/Rust/src/display_list/commands.rs
+index 4fb748fbf9..eb20782ca0 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/commands.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/commands.rs
+@@ -23,6 +23,7 @@ pub enum DisplayListCommandType {
+     DrawCompositedContext,
+     DrawCanvas,
+     DrawVideoFrame,
++    DrawEmbedderContent,
+     PaintLinearGradient,
+     PaintRadialGradient,
+     PaintConicGradient,
+@@ -90,6 +91,7 @@ impl DisplayListCommandType {
+             Self::DrawCompositedContext => "DrawCompositedContext",
+             Self::DrawCanvas => "DrawCanvas",
+             Self::DrawVideoFrame => "DrawVideoFrame",
++            Self::DrawEmbedderContent => "DrawEmbedderContent",
+             Self::PaintLinearGradient => "PaintLinearGradient",
+             Self::PaintRadialGradient => "PaintRadialGradient",
+             Self::PaintConicGradient => "PaintConicGradient",
+@@ -976,6 +978,31 @@ impl DisplayListCommand for DrawVideoFrame {
+     }
+ }
+ 
++// Pixels the embedder draws at replay: the player hands content_id, the destination rect, its canvas and the frame's
++// time to the embedder's EmbedderContentResolver (DisplayListPlayerSkia::set_embedder_content_resolver), which paints
++// into dst_rect under the command's transform and clip. Nothing is painted without a resolver.
++#[derive(Clone, Copy, Debug, PartialEq)]
++#[repr(C)]
++pub struct DrawEmbedderContent {
++    pub dst_rect: FloatRect,
++    pub content_id: u64,
++    // NB: Live content changes with the frame's time while the command's bytes stay the same, so damage computation
++    //     treats a live command as changed in every frame, and a nested display list holding one is never cached.
++    pub is_live: bool,
++}
++ffi_bytes_fields!(DrawEmbedderContent {
++    dst_rect,
++    content_id,
++    is_live
++});
++
++impl DisplayListCommand for DrawEmbedderContent {
++    const COMMAND_TYPE: DisplayListCommandType = DisplayListCommandType::DrawEmbedderContent;
++    fn bounding_rect(&self) -> Option<IntRect> {
++        Some(enclosing_int_rect(self.dst_rect))
++    }
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ #[repr(C)]
+ pub struct PaintLinearGradient {
+diff --git a/Libraries/LibCompositing/Rust/src/display_list/damage.rs b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+index bb87c29f4f..dd31772cea 100644
+--- a/Libraries/LibCompositing/Rust/src/display_list/damage.rs
++++ b/Libraries/LibCompositing/Rust/src/display_list/damage.rs
+@@ -7,6 +7,7 @@
+ use super::effect_clip_plan::EffectClipPlan;
+ use crate::display_list::builder::{for_each_command, inline_transform_entry_offset, read_command};
+ use crate::display_list::commands::{
++    DrawEmbedderContent,
+     ClipMode, ClipNodeIndex, CompositorScrollbar, ContextRef, DeclareMaskContent, DisplayListCommandHeader,
+     DisplayListCommandRun, DisplayListCommandType, DisplayListDataSpan, DisplayListInlineClip,
+     DisplayListPaintStyleType, DrawGlyphRun, DrawScaledDecodedImageFrame, EffectNodeIndex, FillPath, FillRect,
+@@ -249,6 +250,14 @@ fn display_list_commands_are_equal(a: &CommandReference<'_>, b: &CommandReferenc
+         return false;
+     }
+ 
++    // Live embedder content draws other pixels at every frame's time with the same bytes.
++    if a.header.command_type == DisplayListCommandType::DrawEmbedderContent
++        && (read_command::<DrawEmbedderContent>(a.payload).is_live
++            || read_command::<DrawEmbedderContent>(b.payload).is_live)
++    {
++        return false;
++    }
++
+     // Identical bytes are equal under every field-wise rule below; the rules only add equalities.
+     if a.header.payload_size == b.header.payload_size && a.payload == b.payload {
+         return true;
+@@ -1628,6 +1637,15 @@ mod tests {
+         command_bytes(&command, Some(rect), ContextRef::default())
+     }
+ 
++    fn embedder_content_command_bytes(rect: IntRect, is_live: bool) -> TestDisplayList {
++        let command = DrawEmbedderContent {
++            dst_rect: rect.to_float(),
++            content_id: 1,
++            is_live,
++        };
++        command_bytes(&command, Some(rect), ContextRef::default())
++    }
++
+     fn transform(matrix: FloatMatrix4x4) -> TransformData {
+         TransformData {
+             matrix,
+@@ -2538,6 +2556,26 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn live_embedder_content_damages_its_rect_in_every_frame() {
++        let tree = identity_tree();
++        let display_list = embedder_content_command_bytes(IntRect::new(10, 10, 20, 20), true);
++        assert_eq!(
++            damage(&display_list, &tree, &display_list.clone(), &tree),
++            Some(IntRect::new(9, 9, 22, 22))
++        );
++    }
++
++    #[test]
++    fn static_embedder_content_does_not_damage_an_unchanged_frame() {
++        let tree = identity_tree();
++        let display_list = embedder_content_command_bytes(IntRect::new(10, 10, 20, 20), false);
++        assert_eq!(
++            damage(&display_list, &tree, &display_list.clone(), &tree),
++            Some(IntRect::default())
++        );
++    }
++
+     #[test]
+     fn unchanged_canvas_content_generation_does_not_damage_canvas() {
+         let tree = identity_tree();
+diff --git a/Libraries/LibWeb/Rust/src/painting/display_list/dump.rs b/Libraries/LibWeb/Rust/src/painting/display_list/dump.rs
+index 40bf91bea9..82d2c12851 100644
+--- a/Libraries/LibWeb/Rust/src/painting/display_list/dump.rs
++++ b/Libraries/LibWeb/Rust/src/painting/display_list/dump.rs
+@@ -431,6 +431,11 @@ fn dump_command(output: &mut String, command_type: DisplayListCommandType, paylo
+             let command = read_command::<DrawVideoFrame>(payload);
+             write_field(output, "dst_rect", command.dst_rect);
+         }
++        DisplayListCommandType::DrawEmbedderContent => {
++            let command = read_command::<DrawEmbedderContent>(payload);
++            write_field(output, "dst_rect", command.dst_rect);
++            write!(output, " content_id={} is_live={}", command.content_id, command.is_live).unwrap();
++        }
+         DisplayListCommandType::PaintLinearGradient => {
+             let command = read_command::<PaintLinearGradient>(payload);
+             write_field(output, "rect", command.gradient_rect);
+diff --git a/Libraries/LibWeb/Rust/src/painting/display_list/recorder.rs b/Libraries/LibWeb/Rust/src/painting/display_list/recorder.rs
+index 24f7eec4f1..e247ae9930 100644
+--- a/Libraries/LibWeb/Rust/src/painting/display_list/recorder.rs
++++ b/Libraries/LibWeb/Rust/src/painting/display_list/recorder.rs
+@@ -742,6 +742,23 @@ impl DisplayListRecorder {
+         );
+     }
+ 
++    // Content the embedder draws at replay (DrawEmbedderContent): content_id is the embedder's, and a live content
++    // changes with the frame's time. Nothing in LibWeb paints embedder content yet; karouka's shader() images will.
++    #[allow(dead_code)]
++    pub fn draw_embedder_content(&mut self, dst_rect: FloatRect, content_id: u64, is_live: bool) {
++        if dst_rect.is_empty() {
++            return;
++        }
++        self.append_command(
++            &DrawEmbedderContent {
++                dst_rect,
++                content_id,
++                is_live,
++            },
++            &[],
++        );
++    }
++
+     pub fn draw_video_frame(
+         &mut self,
+         dst_rect: IntRect,

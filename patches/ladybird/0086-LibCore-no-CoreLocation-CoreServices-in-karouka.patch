@@ -1,0 +1,34 @@
+From: Illia Komsa <ik@fungamer.co>
+Subject: [PATCH] LibCore: no CoreLocation or CoreServices in karouka
+
+karouka has no geolocation (patch 0017), so its LibCore compiles
+GeolocationProviderUnimplemented.cpp instead of the CoreLocation provider and links neither
+CoreLocation nor CoreServices. exp2 and log2 resolve from libSystem.
+
+---
+diff --git a/Libraries/LibCore/CMakeLists.txt b/Libraries/LibCore/CMakeLists.txt
+index 650b454a7c..144c95544a 100644
+--- a/Libraries/LibCore/CMakeLists.txt
++++ b/Libraries/LibCore/CMakeLists.txt
+@@ -31,7 +31,7 @@ set(SOURCES
+     Version.cpp
+ )
+ 
+-if (APPLE)
++if (APPLE AND NOT KAROUKA_SOURCE_DIR)
+     list(APPEND SOURCES GeolocationProviderCoreLocation.mm)
+     set_source_files_properties(GeolocationProviderCoreLocation.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+ else()
+@@ -129,8 +129,10 @@ endif()
+ if (APPLE)
+     target_link_libraries(LibCore PUBLIC "-framework CoreFoundation")
+     target_link_libraries(LibCore PUBLIC "-framework CoreGraphics")
+-    target_link_libraries(LibCore PUBLIC "-framework CoreLocation")
+-    target_link_libraries(LibCore PUBLIC "-framework CoreServices")
++    if (NOT KAROUKA_SOURCE_DIR)
++        target_link_libraries(LibCore PUBLIC "-framework CoreLocation")
++        target_link_libraries(LibCore PUBLIC "-framework CoreServices")
++    endif()
+     target_link_libraries(LibCore PUBLIC "-framework Foundation")
+     target_link_libraries(LibCore PUBLIC "-framework IOSurface")
+ endif()

@@ -1,0 +1,17 @@
+# Pin for the vendored WPT reftest subset.
+#
+# See docs/70-adr/ADR-0009-wpt-vendoring-and-the-pass-rate.md for why this tree
+# exists and what "the vendored tree is the subset filter" means: nothing here
+# is filtered again at run time, so this directory listing is the whole of the
+# decision about what the published pass rate is a rate of.
+#
+# Upstream: https://github.com/web-platform-tests/wpt
+repository: https://github.com/web-platform-tests/wpt
+commit:     54f8f933629e7c010ae98a246729af01f8abcda5
+fetched:    2026-08-08
+
+# tools/vendor.py's MANIFEST mechanism pins one tarball per dependency by
+# SHA-256 and is not yet shaped for "a directory of individually-sourced files
+# pinned by an upstream commit" -- this pin is therefore NOT checked by
+# `tools/vendor.py --check` today. That is a stated gap, not a silent one: see
+# third_party/README.md and this ADR's Amendments section.

@@ -1,0 +1,132 @@
+diff --git a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+index dd56affe30..2951f8ee2f 100644
+--- a/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
++++ b/Libraries/LibCompositing/DisplayList/DisplayListPlayerSkia.cpp
+@@ -603,6 +603,43 @@ static u64 repeated_tile_raster_key(ReadonlyBytes tile_records, Gfx::IntSize til
+     return (high << 32) | low;
+ }
+ 
++// Whether records draw live embedder content (a DrawEmbedderContent with is_live, whose pixels change with the frame's
++// time under the same bytes), in themselves, the records inside them or the nested display lists they paint.
++static bool records_draw_live_embedder_content(DisplayListResourceStorage const& resource_storage, ReadonlyBytes records)
++{
++    bool draws = false;
++    DisplayList::for_each_command_header(records, [&](DisplayListCommandHeader const& header, ReadonlyBytes payload) {
++        if (draws)
++            return;
++        visit_display_list_command(header.command_type, payload, [&](auto const& command) {
++            using Command = RemoveCVReference<decltype(command)>;
++            auto inside = [&](DisplayListDataSpan span) {
++                VERIFY(static_cast<size_t>(span.offset) + span.size <= payload.size());
++                draws = draws || records_draw_live_embedder_content(resource_storage, payload.slice(span.offset, span.size));
++            };
++            if constexpr (IsSame<Command, DrawEmbedderContent>) {
++                draws = command.is_live;
++            } else if constexpr (IsSame<Command, PaintNestedDisplayList>) {
++                draws = resource_storage.has_display_list(command.display_list_id)
++                    && resource_storage.draws_live_embedder_content(resource_storage.display_list(command.display_list_id));
++            } else if constexpr (IsSame<Command, DrawIsolatedGroup>) {
++                inside(command.content);
++                if (command.mask.size != 0)
++                    inside(command.mask);
++            } else if constexpr (IsSame<Command, DrawRepeatedTile>) {
++                inside(command.tile);
++            } else if constexpr (IsSame<Command, DeclareMaskContent>) {
++                inside(command.content);
++            } else if constexpr (requires { command.paint_style; command.paint_kind; }) {
++                if (command.paint_kind == decltype(command.paint_kind)::PaintStyle
++                    && command.paint_style.paint_style_type == DisplayListPaintStyleType::Pattern)
++                    inside(command.paint_style.pattern_tile);
++            }
++        });
++    });
++    return draws;
++}
++
+ void DisplayListPlayerSkia::play_command(DrawRepeatedTile const& command)
+ {
+     auto tile_size = command.tile_size;
+@@ -616,7 +653,10 @@ void DisplayListPlayerSkia::play_command(DrawRepeatedTile const& command)
+         image = rasterize_records_into_tile(tile_records, Gfx::IntRect { {}, tile_size });
+         if (!image)
+             return;
+-        resource_storage().add_cached_repeated_tile_raster(raster_key, tile_size, m_skia_backend_context, image);
++        // A tile of live embedder content (an animated shader() background) has other pixels at every frame's time
++        // under the same records, so it is never cached and rasterized again at each replay.
++        if (!records_draw_live_embedder_content(resource_storage(), tile_records))
++            resource_storage().add_cached_repeated_tile_raster(raster_key, tile_size, m_skia_backend_context, image);
+     }
+     paint_repeated_image(surface().canvas(), *image, command.dst_rect, command.tile_step, command.scaling_mode, command.compositing_and_blending_operator, command.repeat.x, command.repeat.y);
+ }
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+index 87fd714775..c58bb5139a 100644
+--- a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.cpp
+@@ -50,8 +50,8 @@ Optional<Compositing::DisplayListResource> record_shader_display_list(StringView
+         return {};
+     if (!(raster_scale > 0))
+         raster_scale = 1;
+-    auto content_id = hook(source, raster_scale, arguments);
+-    if (!content_id.has_value())
++    auto content = hook(source, raster_scale, arguments);
++    if (!content.has_value())
+         return {};
+ 
+     // The list's own pixels, as the painter of a vector image sizes it (vector_image_render_geometry).
+@@ -60,8 +60,8 @@ Optional<Compositing::DisplayListResource> record_shader_display_list(StringView
+         clamp(static_cast<int>(lroundf(css_size.height().to_float() * raster_scale)), 1, maximum_raster_dimension),
+     };
+     Gfx::IntRect bounding_rect { {}, list_size };
+-    // Not live: nothing animates it, so the player may keep the nested list as a raster.
+-    Compositing::DrawEmbedderContent command { bounding_rect.to_type<float>(), *content_id, false };
++    // A live command (an animated shader) draws at each frame's time, so it is damaged every frame.
++    Compositing::DrawEmbedderContent command { bounding_rect.to_type<float>(), content->content_id, content->is_live };
+ 
+     // One record in one run, laid out as the Rust recorder writes it.
+     auto payload = Compositing::display_list_object_bytes(command);
+diff --git a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+index 7afbc3fa74..96ee69aaa9 100644
+--- a/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
++++ b/Libraries/LibWeb/Embedder/ShaderDecodedImageData.h
+@@ -56,15 +56,24 @@ struct ShaderArgument {
+     bool operator==(ShaderArgument const&) const = default;
+ };
+ 
++// The embedder content a shader() image is drawn with: the id its DrawEmbedderContent command names,
++// and whether its pixels change with the frame's time (the shader animates), which makes the command
++// live (DrawEmbedderContent::is_live): drawn at every frame's time and damaged every frame.
++struct ShaderContent {
++    u64 content_id { 0 };
++    bool is_live { false };
++    bool operator==(ShaderContent const&) const = default;
++};
++
+ // A shader() image's pixels come from the embedder: LibWeb records one DrawEmbedderContent command
+ // (LibCompositing) naming a content id the embedder gave it, and the embedder's player resolves the id
+-// to pixels at replay. The hook compiles `source` (the shader's text) and answers the id of content
+-// that paints it into a nested display list recorded at raster_scale device pixels per CSS pixel,
+-// filling the command's destination rectangle; nothing when the source paints nothing (it doesn't
+-// compile, or it declares what the embedder doesn't supply). It is asked again for each recording
+-// the image does not have cached, so it caches by source itself. `arguments` are the image's uniform
+-// arguments; the embedder sets the uniforms they name, and a mismatch paints nothing.
+-using ShaderContentHook = Function<Optional<u64>(StringView source, float raster_scale, ReadonlySpan<ShaderArgument> arguments)>;
++// to pixels at replay. The hook compiles `source` (the shader's text) and answers the content that
++// paints it into a nested display list recorded at raster_scale device pixels per CSS pixel, filling
++// the command's destination rectangle; nothing when the source paints nothing (it doesn't compile, or
++// it declares what the embedder doesn't supply). It is asked again for each recording the image does
++// not have cached, so it caches by source itself. `arguments` are the image's uniform arguments; the
++// embedder sets the uniforms they name, and a mismatch paints nothing.
++using ShaderContentHook = Function<Optional<ShaderContent>(StringView source, float raster_scale, ReadonlySpan<ShaderArgument> arguments)>;
+ WEB_API void set_shader_content_hook(ShaderContentHook);
+ 
+ // The nested display list a shader() image is drawn as: one DrawEmbedderContent over
+@@ -72,7 +81,8 @@ WEB_API void set_shader_content_hook(ShaderContentHook);
+ WEB_API Optional<Compositing::DisplayListResource> record_shader_display_list(StringView source, CSSPixelSize css_size, float raster_scale, ReadonlySpan<ShaderArgument> arguments = {});
+ 
+ // The decoded data of a shader() image: vector content with no natural size, recorded through the
+-// hook above. Its rendering depends only on its source, its arguments, the size and the scale. The
++// hook above. Its recording depends only on its source, its arguments, the size and the scale (a live
++// one's pixels also on the frame's time, which the player supplies). The
+ // shared request decodes one per source, without arguments; an image style value with arguments paints
+ // a copy bound to them (with_arguments), which is vector content of its own identity.
+ class WEB_API ShaderDecodedImageData final : public HTML::DecodedImageData {

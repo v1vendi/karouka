@@ -1,0 +1,454 @@
+diff --git a/Libraries/LibWeb/CMakeLists.txt b/Libraries/LibWeb/CMakeLists.txt
+--- a/Libraries/LibWeb/CMakeLists.txt
++++ b/Libraries/LibWeb/CMakeLists.txt
+@@ -281,6 +281,7 @@
+     DOM/DocumentFragment.cpp
+     DOM/DocumentLoadEventDelayer.cpp
+     DOM/DocumentLoading.cpp
++    Embedder/HostClock.cpp
+     Embedder/InPlaceLoad.cpp
+     Embedder/StageThreads.cpp
+     DOM/DocumentObserver.cpp
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -130,6 +130,7 @@
+ #include <LibWeb/DOMURL/DOMURL.h>
+ #include <LibWeb/Dump.h>
+ #include <LibWeb/Editing/EditingHistory.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/Fetch/Fetching/Checks.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchController.h>
+ #include <LibWeb/Fetch/Infrastructure/FetchRecord.h>
+@@ -441,7 +442,11 @@
+         load_timing_info.navigation_start_time = timing_info->start_time();
+     } else {
+         // AD-HOC: Non-fetch navigations do not have timing info, so use the time at which the response was created.
+-        auto response_creation_time = navigation_params.response->monotonic_response_time().nanoseconds() / 1e6;
++        //         On an embedder's host clock (Embedder/HostClock.h), that is the host's time: the response's own
++        //         timestamp is on the real monotonic clock.
++        auto response_creation_time = Embedder::host_clock_is_installed()
++            ? Embedder::host_clock_time()
++            : navigation_params.response->monotonic_response_time().nanoseconds() / 1e6;
+         load_timing_info.navigation_start_time = HighResolutionTime::coarsen_time(response_creation_time, HTML::relevant_settings_object(*window).cross_origin_isolated_capability());
+         timing_info->set_start_time(load_timing_info.navigation_start_time);
+         timing_info->set_post_redirect_start_time(load_timing_info.navigation_start_time);
+diff --git a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+--- a/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
++++ b/Libraries/LibWeb/HTML/EventLoop/EventLoop.cpp
+@@ -18,6 +18,7 @@
+ #include <LibWeb/CSS/StyleComputer.h>
+ #include <LibWeb/DOM/Document.h>
+ #include <LibWeb/DOM/Element.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/HTML/BrowsingContext.h>
+ #include <LibWeb/HTML/EventLoop/ClockPlan.h>
+ #include <LibWeb/HTML/EventLoop/EventLoop.h>
+@@ -314,8 +315,14 @@
+     // 2. Set eventLoop's last render opportunity time to the unsafe shared current time.
+     // INTEROP: Compositor-provided display timestamps match the shared monotonic clock. Clamp delayed or out-of-order
+     //          IPC delivery so rendering timestamps remain monotonic and never describe a future frame.
+-    auto now = HighResolutionTime::unsafe_shared_current_time();
+-    m_last_render_opportunity_time = max(m_last_render_opportunity_time, min(frame_time, now));
++    //          An embedder's host clock (Embedder/HostClock.h) is the shared clock: its frame time is taken as it is,
++    //          even when the host steps its clock faster than real time.
++    if (Embedder::host_clock_is_installed()) {
++        m_last_render_opportunity_time = max(m_last_render_opportunity_time, frame_time);
++    } else {
++        auto now = HighResolutionTime::unsafe_shared_current_time();
++        m_last_render_opportunity_time = max(m_last_render_opportunity_time, min(frame_time, now));
++    }
+ 
+     // AD-HOC: A nested event loop can deliver a timer while a rendering update is running. Keep the request pending
+     //         so the PageClient can schedule it for the next opportunity instead of queueing a second rendering task.
+diff --git a/Libraries/LibWeb/HTML/Timer.cpp b/Libraries/LibWeb/HTML/Timer.cpp
+--- a/Libraries/LibWeb/HTML/Timer.cpp
++++ b/Libraries/LibWeb/HTML/Timer.cpp
+@@ -6,6 +6,7 @@
+ 
+ #include <LibCore/Timer.h>
+ #include <LibGC/Heap.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/HTML/Timer.h>
+ 
+ namespace Web::HTML {
+@@ -38,22 +39,43 @@
+ void Timer::finalize()
+ {
+     Base::finalize();
+-    VERIFY(!m_timer->is_active());
++    VERIFY(!is_active());
+ }
+ 
++// NB: With an embedder's host clock (Embedder/HostClock.h), the timer runs on the host's time: it is scheduled there
++//     instead of on its Core::Timer, which then only holds its interval, kind and callback and is never started.
+ void Timer::start()
+ {
++    if (Embedder::host_clock_is_installed()) {
++        if (is_active())
++            return;
++        Embedder::schedule_on_host_clock(*this, m_timer->interval(), !m_timer->is_single_shot(), [this] {
++            if (m_timer->on_timeout)
++                m_timer->on_timeout();
++        });
++        return;
++    }
+     m_timer->start();
+ }
+ 
+ void Timer::stop()
+ {
++    if (Embedder::host_clock_is_installed()) {
++        Embedder::cancel_on_host_clock(*this);
++        return;
++    }
+     m_timer->stop();
+ }
+ 
+ void Timer::restart(i32 milliseconds)
+ {
+     m_earliest_firing = MonotonicTime::now() + AK::Duration::from_milliseconds(milliseconds);
++    if (Embedder::host_clock_is_installed()) {
++        stop();
++        m_timer->set_interval(milliseconds);
++        start();
++        return;
++    }
+     m_timer->restart(milliseconds);
+ }
+ 
+@@ -63,7 +85,8 @@
+         return false;
+     // NB: A firing that comes before the restarted schedule allows one was posted before the restart. Only a repeating
+     //     timer drops it: it fires again anyway, while a single-shot timer whose one firing came early must still run.
+-    if (!m_timer->is_single_shot() && MonotonicTime::now() < m_earliest_firing)
++    //     On a host clock, stopping or restarting the timer takes back its scheduled firing, so none comes early.
++    if (!m_timer->is_single_shot() && !Embedder::host_clock_is_installed() && MonotonicTime::now() < m_earliest_firing)
+         return false;
+     m_has_queued_firing = true;
+     return true;
+@@ -71,6 +94,8 @@
+ 
+ bool Timer::is_active() const
+ {
++    if (Embedder::host_clock_is_installed())
++        return Embedder::is_scheduled_on_host_clock(*this);
+     return m_timer->is_active();
+ }
+ 
+diff --git a/Libraries/LibWeb/HighResolutionTime/TimeOrigin.cpp b/Libraries/LibWeb/HighResolutionTime/TimeOrigin.cpp
+index a9c80aa3dc..dc4d0967c1 100644
+--- a/Libraries/LibWeb/HighResolutionTime/TimeOrigin.cpp
++++ b/Libraries/LibWeb/HighResolutionTime/TimeOrigin.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include <AK/Math.h>
+ #include <AK/Time.h>
++#include <LibWeb/Embedder/HostClock.h>
+ #include <LibWeb/HTML/Scripting/Environments.h>
+ #include <LibWeb/HighResolutionTime/TimeOrigin.h>
+ 
+@@ -19,6 +20,12 @@ DOMHighResTimeStamp estimated_monotonic_time_of_the_unix_epoch()
+     // has an estimated monotonic time of the Unix epoch, a moment on the monotonic clock,
+     // whose value is initialized by the following steps:
+ 
++    // NB: On an embedder's host clock (Embedder/HostClock.h) the wall clock is the host clock moved to the Unix time at
++    //     which it was installed, so the estimate is that offset itself. Computing it from both clocks' readings would
++    //     round differently as the clock moves, and could move the time origin timestamp by one coarsening bucket.
++    if (Embedder::host_clock_is_installed())
++        return coarsen_time(-Embedder::host_clock_wall_offset());
++
+     // 1. Let wall time be the wall clock's unsafe current time.
+     auto wall_time = wall_clock_unsafe_current_time();
+ 
+@@ -104,6 +111,9 @@ DOMHighResTimeStamp coarsened_shared_current_time(HTML::CanUseCrossOriginIsolate
+ // https://w3c.github.io/hr-time/#wall-clock-unsafe-current-time
+ DOMHighResTimeStamp wall_clock_unsafe_current_time()
+ {
++    // NB: An embedder's host clock (Embedder/HostClock.h) drives the wall clock too.
++    if (Embedder::host_clock_is_installed())
++        return Embedder::host_clock_wall_time();
+     return UnixDateTime::now().nanoseconds_since_epoch() / 1.0e6;
+ }
+ 
+@@ -112,6 +122,9 @@ DOMHighResTimeStamp unsafe_shared_current_time()
+ {
+     // The unsafe shared current time must return the current value of the shared monotonic clock.
+     // Note: This is in milliseconds (stored as a double).
++    // NB: An embedder that drives the clock itself (Embedder/HostClock.h) is the shared monotonic clock.
++    if (Embedder::host_clock_is_installed())
++        return Embedder::host_clock_time();
+     return MonotonicTime::now().nanoseconds() / 1.0e6;
+ }
+ 
+diff --git a/Libraries/LibWeb/Embedder/HostClock.cpp b/Libraries/LibWeb/Embedder/HostClock.cpp
+new file mode 100644
+index 0000000000..6ea5fe6074
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/HostClock.cpp
+@@ -0,0 +1,202 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/Atomic.h>
++#include <AK/QuickSort.h>
++#include <AK/RefCounted.h>
++#include <AK/Time.h>
++#include <AK/Vector.h>
++#include <LibCore/EventLoop.h>
++#include <LibGC/Cell.h>
++#include <LibGC/Root.h>
++#include <LibJS/Runtime/Temporal/Now.h>
++#include <math.h>
++#include <LibWeb/Embedder/HostClock.h>
++
++namespace Web::Embedder {
++
++namespace {
++
++// Ref-counted so that a firing keeps its own entry alive while the timer it fires cancels or moves it.
++struct ScheduledTimer : public RefCounted<ScheduledTimer> {
++    GC::Cell* cell { nullptr };
++    double due { 0 };
++    i32 interval_ms { 0 };
++    bool repeating { false };
++    u64 sequence { 0 };
++    Function<void()> fire;
++};
++
++struct HostClock {
++    bool installed { false };
++    double now { 0 };
++    u64 next_sequence { 0 };
++    bool pass_queued { false };
++    Vector<NonnullRefPtr<ScheduledTimer>> timers;
++    // The wall clock: the Unix time at which the host clock read zero, taken when it was installed, plus its time.
++    i64 wall_offset_ns { 0 };
++};
++
++// The host clock's wall time in nanoseconds since the Unix epoch, for LibJS's Date, which may read it off the main
++// thread (Temporal::set_host_wall_clock).
++Atomic<i64> s_wall_now_ns { 0 };
++
++i64 wall_now_ns()
++{
++    return s_wall_now_ns.load(AK::MemoryOrder::memory_order_relaxed);
++}
++
++// Never destroyed: a timer finalized during exit()'s static destructors may still cancel itself.
++HostClock& clock()
++{
++    static auto* host_clock = new HostClock;
++    return *host_clock;
++}
++
++Optional<size_t> index_of(GC::Cell const& cell)
++{
++    auto& timers = clock().timers;
++    for (size_t i = 0; i < timers.size(); ++i) {
++        if (timers[i]->cell == &cell)
++            return i;
++    }
++    return {};
++}
++
++// Fires the timers due at the clock's time, earliest deadline first and, at one deadline, in the
++// order they were scheduled. Each fires at most once per pass: a repeating timer that is due again
++// at once (a zero interval, or a host step longer than its interval) fires on the next pass, so a
++// pass always ends.
++void fire_due_timers()
++{
++    auto& host_clock = clock();
++    struct Due {
++        GC::Root<GC::Cell> cell;
++        double due;
++        u64 sequence;
++    };
++    Vector<Due> due;
++    for (auto& timer : host_clock.timers) {
++        if (timer->due <= host_clock.now)
++            due.append({ GC::make_root(timer->cell), timer->due, timer->sequence });
++    }
++    quick_sort(due, [](Due const& a, Due const& b) {
++        return a.due < b.due || (a.due == b.due && a.sequence < b.sequence);
++    });
++
++    for (auto& firing : due) {
++        // A timer an earlier firing of this pass stopped or moved is not due any more (moving it
++        // gives it a new sequence).
++        auto index = host_clock.timers.find_first_index_if([&](auto& timer) { return timer->sequence == firing.sequence; });
++        if (!index.has_value())
++            continue;
++        NonnullRefPtr<ScheduledTimer> timer = host_clock.timers[*index];
++        if (timer->repeating) {
++            // Keeps to its schedule; one that fell behind skips the firings it missed, as a
++            // repeating Core::Timer does.
++            timer->due += max(timer->interval_ms, 0);
++            if (timer->due <= host_clock.now)
++                timer->due = host_clock.now + max(timer->interval_ms, 0);
++        } else {
++            host_clock.timers.remove(*index);
++        }
++        timer->fire();
++    }
++}
++
++}
++
++void install_host_clock(double now_ms)
++{
++    auto& host_clock = clock();
++    if (host_clock.installed) {
++        set_host_clock_time(now_ms);
++        return;
++    }
++    host_clock.installed = true;
++    host_clock.now = now_ms;
++    host_clock.wall_offset_ns = UnixDateTime::now().nanoseconds_since_epoch() - static_cast<i64>(llround(now_ms * 1e6));
++    s_wall_now_ns.store(host_clock.wall_offset_ns + static_cast<i64>(llround(now_ms * 1e6)));
++    JS::Temporal::set_host_wall_clock(wall_now_ns);
++}
++
++void set_host_clock_time(double now_ms)
++{
++    auto& host_clock = clock();
++    if (!host_clock.installed)
++        return;
++    host_clock.now = max(host_clock.now, now_ms);
++    s_wall_now_ns.store(host_clock.wall_offset_ns + static_cast<i64>(llround(host_clock.now * 1e6)));
++    fire_due_timers();
++}
++
++Optional<double> next_host_clock_deadline()
++{
++    auto& host_clock = clock();
++    Optional<double> next;
++    for (auto& timer : host_clock.timers) {
++        if (timer->due > host_clock.now && (!next.has_value() || timer->due < *next))
++            next = timer->due;
++    }
++    return next;
++}
++
++bool host_clock_is_installed()
++{
++    return clock().installed;
++}
++
++double host_clock_time()
++{
++    return clock().now;
++}
++
++double host_clock_wall_offset()
++{
++    return static_cast<double>(clock().wall_offset_ns) / 1e6;
++}
++
++double host_clock_wall_time()
++{
++    return static_cast<double>(wall_now_ns()) / 1e6;
++}
++
++void schedule_on_host_clock(GC::Cell& cell, i32 interval_ms, bool repeating, Function<void()> fire)
++{
++    auto& host_clock = clock();
++    cancel_on_host_clock(cell);
++    auto timer = adopt_ref(*new ScheduledTimer);
++    timer->cell = &cell;
++    timer->due = host_clock.now + max(interval_ms, 0);
++    timer->interval_ms = interval_ms;
++    timer->repeating = repeating;
++    timer->sequence = host_clock.next_sequence++;
++    timer->fire = move(fire);
++    host_clock.timers.append(move(timer));
++
++    // A timer due now fires on the event loop's next turn, as a zero-delay Core::Timer would; one due
++    // later waits for the host to move the clock.
++    if (interval_ms <= 0 && !host_clock.pass_queued) {
++        host_clock.pass_queued = true;
++        Core::deferred_invoke([] {
++            clock().pass_queued = false;
++            fire_due_timers();
++        });
++    }
++}
++
++void cancel_on_host_clock(GC::Cell const& cell)
++{
++    if (auto index = index_of(cell); index.has_value())
++        clock().timers.remove(*index);
++}
++
++bool is_scheduled_on_host_clock(GC::Cell const& cell)
++{
++    return index_of(cell).has_value();
++}
++
++}
+diff --git a/Libraries/LibWeb/Embedder/HostClock.h b/Libraries/LibWeb/Embedder/HostClock.h
+new file mode 100644
+index 0000000000..ed578fe77a
+--- /dev/null
++++ b/Libraries/LibWeb/Embedder/HostClock.h
+@@ -0,0 +1,57 @@
++/*
++ * Copyright (c) 2026, the karouka authors
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Function.h>
++#include <AK/Optional.h>
++#include <AK/Types.h>
++#include <LibGC/Forward.h>
++#include <LibWeb/Export.h>
++
++namespace Web::Embedder {
++
++// A clock the embedder drives, in place of the shared monotonic clock. Once installed, LibWeb's
++// unsafe shared current time (HighResolutionTime::unsafe_shared_current_time, which performance.now(),
++// time origins, timer deadlines and the animation timeline read) is the host's time, and it moves
++// only when the host sets it: it stands still between two calls. EventLoop::rendering_opportunity
++// takes the host's frame time as it is, without clamping it to the real clock, and HTML::Timer runs
++// on this clock instead of a Core::Timer: a timer fires when the host's time reaches its deadline,
++// not when real time does. So a host that steps its time by a fixed amount per frame gets the same
++// frames whatever the frames cost. It is for the main thread's event loop; nothing else may read it.
++//
++// The wall clock moves with it: once installed, Date (Date.now(), new Date(); through
++// JS::Temporal::set_host_wall_clock), Temporal.Now and the wall clock's unsafe current time read the
++// Unix time at which the clock was installed plus the host time since, so Date.now() moves by what
++// performance.now() moves by, and performance.timeOrigin holds still.
++//
++// Installs the clock at now_ms (milliseconds on the host's monotonic clock). Installing it again only
++// sets its time. There is no uninstall: time origins and deadlines taken on one clock mean nothing on
++// the other.
++WEB_API void install_host_clock(double now_ms);
++
++// Moves the host clock to now_ms (never back: an earlier time is ignored), then fires every timer
++// due by then, in deadline order. Firing a timer queues its task; the event loop runs it.
++WEB_API void set_host_clock_time(double now_ms);
++
++// The earliest deadline after the clock's time of a timer scheduled on it, if any: the host moves the
++// clock there (set_host_clock_time) for the timer to fire at its own time, not at the host's next
++// step after it. A timer due at the clock's time fires on the event loop's next turn and is not one.
++WEB_API Optional<double> next_host_clock_deadline();
++
++bool host_clock_is_installed();
++double host_clock_time();
++// The Unix time, in milliseconds, at which the host clock reads zero, and the Unix time it reads now.
++double host_clock_wall_offset();
++double host_clock_wall_time();
++
++// For HTML::Timer. A timer is scheduled at most once; scheduling it again moves it. `cell` is kept
++// rooted while a firing is under way, so that the firing of another timer can't collect it.
++void schedule_on_host_clock(GC::Cell& cell, i32 interval_ms, bool repeating, Function<void()> fire);
++void cancel_on_host_clock(GC::Cell const& cell);
++bool is_scheduled_on_host_clock(GC::Cell const& cell);
++
++}

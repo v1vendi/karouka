@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+<meta name="karouka-check-title" content="^ok before:block hidden:none popover:none,fixed dir:isolate,rtl until-found:hidden link:rgb\(0, 0, 238\),underline,pointer anchor:rgb\(0, 0, 0\),none$">
+<title>pending</title>
+<style>
+  /* karouka's own page. A document publishes a user-agent
+     rule whose selectors all require an attribute in their subject only once an element with that
+     attribute arrives or the attribute appears on one, and a :link rule only once an a or area
+     arrives (patch 0072). This page starts with no attribute the user-agent sheet tests and no
+     link, then after the first frames sets those attributes on elements that are already styled,
+     on one that is detached, and through the parser, inserts a link, and reads the computed values
+     at once, before any frame. The title lists what was read, which the build that publishes every
+     rule at once reads too. */
+  body { margin: 0; font: 16px sans-serif; }
+</style>
+</head>
+<body>
+<div id="hidden-later">hidden later</div>
+<div id="popover-later">popover later</div>
+<div id="rtl-later">rtl later</div>
+<p id="para">para</p>
+<script>
+  const detached = document.createElement("span");
+  detached.textContent = "hidden while detached";
+  const reads = [];
+  const read = (label, element, properties) => {
+    const style = getComputedStyle(element);
+    reads.push(label + ":" + properties.map(property => style.getPropertyValue(property)).join(","));
+  };
+  const setLate = () => {
+    const hidden = document.getElementById("hidden-later");
+    read("before", hidden, ["display"]);
+    hidden.setAttribute("hidden", "");
+    read("hidden", hidden, ["display"]);
+    const popover = document.getElementById("popover-later");
+    popover.setAttribute("popover", "");
+    read("popover", popover, ["display", "position"]);
+    const rtl = document.getElementById("rtl-later");
+    rtl.setAttribute("dir", "rtl");
+    read("dir", rtl, ["unicode-bidi", "direction"]);
+    detached.setAttribute("hidden", "until-found");
+    document.body.appendChild(detached);
+    read("until-found", detached, ["content-visibility"]);
+    const para = document.getElementById("para");
+    para.insertAdjacentHTML("beforeend", " <a href='#x'>link</a> <a>anchor</a>");
+    read("link", para.querySelector("a[href]"), ["color", "text-decoration-line", "cursor"]);
+    read("anchor", para.querySelector("a:not([href])"), ["color", "text-decoration-line"]);
+  };
+  let frame = 0;
+  const step = () => {
+    if (++frame === 3) {
+      setLate();
+      document.title = "ok " + reads.join(" ");
+      return;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>

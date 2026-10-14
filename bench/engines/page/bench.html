@@ -1,0 +1,154 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>engine bench</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body { font: 13px/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; color: #e6e9f0;
+         background: linear-gradient(160deg, #141821 0%, #0d1016 100%); display: flex; }
+  nav { width: 200px; padding: 16px 12px; background: rgba(255,255,255,.03); border-right: 1px solid #2a3040; }
+  nav h1 { font-size: 15px; letter-spacing: .06em; color: #8ec0ff; margin-bottom: 14px; }
+  nav a { display: block; padding: 6px 10px; border-radius: 6px; color: #99a1b3; text-decoration: none; }
+  nav a.on { background: rgba(142,192,255,.14); color: #e6e9f0; }
+  main { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  header { display: flex; align-items: center; gap: 12px; }
+  header .title { font-size: 18px; font-weight: 600; flex: 1; }
+  .spin { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #2b3140; border-top-color: #8ec0ff;
+          animation: spin 1s linear infinite; }
+  .spin.b { animation-duration: 1.7s; border-top-color: #f0a35e; }
+  .spin.c { animation-duration: .8s; border-top-color: #7ed492; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
+  .card { background: #191d24; border: 1px solid #2a3040; border-radius: 10px; padding: 10px;
+          box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+  .card .k { color: #99a1b3; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .card .v { font-size: 20px; font-weight: 600; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; border-radius: 3px; background: #2b3140; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: linear-gradient(90deg, #4f8de0, #8ec0ff); }
+  .row2 { display: flex; gap: 14px; min-height: 0; flex: 1; }
+  table { border-collapse: collapse; flex: 2; background: #151920; border-radius: 10px; overflow: hidden; }
+  th, td { padding: 4px 8px; text-align: left; border-bottom: 1px solid #222837; white-space: nowrap; }
+  th { color: #8ec0ff; font-weight: 600; background: #191d24; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+  .text { flex: 1; overflow: hidden; color: #b8bfcc; }
+  .text p { margin-bottom: 8px; }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 9px; background: rgba(126,212,146,.15); color: #7ed492; font-size: 11px; }
+  .chip.bad { background: rgba(240,120,110,.15); color: #f0786e; }
+</style>
+</head>
+<body>
+<nav id="nav"><h1>BENCH</h1></nav>
+<main>
+  <header><div class="title">Telemetry overview</div><div class="spin"></div><div class="spin b"></div><div class="spin c"></div></header>
+  <div class="grid" id="grid"></div>
+  <div class="row2">
+    <table id="table"></table>
+    <div class="text" id="text"></div>
+  </div>
+</main>
+<script>
+// One protocol for every engine. Lines go out through report(): Tauri gets a fetch to its custom
+// scheme, TinyJS a backend call, everything else console.log (the host forwards it to stdio).
+//   BENCH first_frame t=<ms since navigation start>   after load + two animation frames
+//   BENCH work js_ms=<> dom_ms=<>                       a fixed synchronous workload
+//   BENCH steady_start                                  then STEADY_MS of rAF-driven DOM updates
+//   BENCH done frames=<> updates=<> fps=<> int_p50=<> int_p95=<> script_p50=<> script_p95=<>
+var STEADY_MS = 10000;
+function report(s) {
+  var line = 'BENCH ' + s;
+  if (location.protocol === 'bench:') { fetch('/__mark?msg=' + encodeURIComponent(line)).catch(function () {}); return; }
+  if (window.tiny && tiny.api) { tiny.api.call('mark', { line: line }); return; }
+  console.log(line);
+}
+
+// --- build the page (part of startup) ---
+var nav = document.getElementById('nav');
+for (var i = 0; i < 18; i++) { var a = document.createElement('a'); a.href = '#'; a.textContent = 'Section ' + (i + 1); if (i === 2) a.className = 'on'; nav.appendChild(a); }
+var grid = document.getElementById('grid'), cards = [];
+for (var i = 0; i < 48; i++) {
+  var c = document.createElement('div'); c.className = 'card';
+  c.innerHTML = '<div class="k">metric ' + (i + 1) + '</div><div class="v">0</div><div class="bar"><i style="width:0%"></i></div>';
+  grid.appendChild(c);
+  cards.push({ v: c.querySelector('.v'), b: c.querySelector('.bar i') });
+}
+var seed = 12345;
+function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+function tableHTML(rows) {
+  var h = '<tr><th>id</th><th>name</th><th>region</th><th>status</th><th>load</th><th>latency</th></tr>';
+  for (var r = 0; r < rows; r++) {
+    var ok = rnd() > .2;
+    h += '<tr><td class="n">' + (1000 + r) + '</td><td>node-' + r.toString(36) + '</td><td>' + ['eu-west', 'us-east', 'ap-south', 'sa-east'][r & 3] +
+         '</td><td><span class="chip' + (ok ? '' : ' bad') + '">' + (ok ? 'ok' : 'degraded') + '</span></td><td class="n">' +
+         (rnd() * 100).toFixed(1) + '%</td><td class="n">' + (rnd() * 300).toFixed(0) + ' ms</td></tr>';
+  }
+  return h;
+}
+var table = document.getElementById('table');
+table.innerHTML = tableHTML(24);
+var lorem = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. ';
+var text = document.getElementById('text');
+for (var i = 0; i < 8; i++) { var p = document.createElement('p'); p.textContent = lorem + lorem.slice(0, 40 + i * 13); text.appendChild(p); }
+
+// --- probe ---
+function pct(a, q) { if (!a.length) return 0; var s = a.slice().sort(function (x, y) { return x - y; }); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; }
+
+function work() {
+  // Pure JS: object churn, sorting, string building, JSON.
+  var t0 = performance.now(), acc = 0;
+  for (var k = 0; k < 40; k++) {
+    var arr = [];
+    for (var j = 0; j < 5000; j++) arr.push({ id: j, v: (j * 7919) % 10007, s: 'x' + j });
+    arr.sort(function (x, y) { return x.v - y.v; });
+    acc += JSON.parse(JSON.stringify(arr.slice(0, 500))).length + arr[k].v;
+  }
+  var js = performance.now() - t0;
+  // DOM: rebuild the table and force style + layout, 40 times.
+  var t1 = performance.now();
+  for (var k = 0; k < 40; k++) { table.innerHTML = tableHTML(24); acc += table.offsetHeight; }
+  var dom = performance.now() - t1;
+  window.__acc = acc;
+  report('work js_ms=' + js.toFixed(2) + ' dom_ms=' + dom.toFixed(2));
+}
+
+function steady() {
+  report('steady_start');
+  // DOM updates are capped at 60 a second, so a 120 Hz display (Electron here) doesn't do twice the work.
+  var start = performance.now(), last = start, lastUpdate = -1e9, frames = 0, updates = 0, intervals = [], script = [];
+  function frame(now) {
+    var s0 = performance.now();
+    if (frames > 0) intervals.push(now - last);
+    last = now; frames++;
+    if (now - start >= STEADY_MS) { finish(now); return; }
+    if (now - lastUpdate < 15) { requestAnimationFrame(frame); return; }
+    lastUpdate = now; updates++;
+    for (var i = 0; i < cards.length; i++) {
+      var x = 50 + 50 * Math.sin(now / 600 + i * .7);
+      cards[i].v.textContent = x.toFixed(1);
+      cards[i].b.style.width = x.toFixed(1) + '%';
+    }
+    var row = table.rows[1 + (updates % 24)];
+    if (row) row.cells[4].textContent = (rnd() * 100).toFixed(1) + '%';
+    script.push(performance.now() - s0);
+    requestAnimationFrame(frame);
+  }
+  function finish(now) {
+    var secs = (now - start) / 1000;
+    report('done frames=' + frames + ' updates=' + updates + ' fps=' + (frames / secs).toFixed(1) + ' int_p50=' + pct(intervals, .5).toFixed(2) +
+           ' int_p95=' + pct(intervals, .95).toFixed(2) + ' script_p50=' + pct(script, .5).toFixed(3) + ' script_p95=' + pct(script, .95).toFixed(3));
+  }
+  requestAnimationFrame(frame);
+}
+
+function begin() {
+  requestAnimationFrame(function () { requestAnimationFrame(function () {
+    report('first_frame t=' + performance.now().toFixed(1));
+    setTimeout(function () { work(); setTimeout(steady, 500); }, 100);
+  }); });
+}
+if (document.readyState === 'complete') begin(); else window.addEventListener('load', begin);
+</script>
+</body>
+</html>

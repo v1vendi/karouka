@@ -1,0 +1,19 @@
+// Polar-coordinate tunnel with a procedural brick texture and depth fog.
+uniform float2 uSize;
+uniform float uTime;
+
+half4 main(float2 coord) {
+    float2 p = (coord - 0.5 * uSize) / uSize.y;
+    p += 0.08 * float2(sin(uTime * 0.7), cos(uTime * 0.5));
+    float r = length(p);
+    float a = atan(p.y, p.x);
+    float2 uv = float2(0.4 / r + uTime * 0.8, a / 3.14159 * 4.0 + uTime * 0.15);
+    float row = floor(uv.x * 4.0);
+    float2 b = fract(float2(uv.x * 4.0, uv.y * 3.0 + 0.5 * mod(row, 2.0)));
+    float mortar = smoothstep(0.0, 0.08, b.x) * smoothstep(0.0, 0.08, b.y)
+                 * smoothstep(1.0, 0.92, b.x) * smoothstep(1.0, 0.92, b.y);
+    float3 brick = mix(float3(0.15, 0.1, 0.12), 0.6 + 0.4 * cos(float3(0.2, 1.4, 2.6) + row * 0.7), mortar);
+    float3 col = brick * clamp(r * 2.2, 0.0, 1.0);
+    col += float3(0.9, 0.6, 1.0) * 0.015 / (r + 0.01);
+    return half4(half3(col), 1);
+}

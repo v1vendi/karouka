@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta content='^ok pushed=yes ' name="karouka-check-title">
+<title>pending</title>
+<style>
+  /* karouka's own page. It exercises what goes through the page's
+     history executor and navigable ids: pushState and a fragment navigation. With several views
+     in one process every page must get its own ids; when two pages share them, one page's history
+     steps land on the other's navigable and pushState throws. The title reports the outcome, so
+     `KR_DEBUG=1 karouka_viewer a.html --second history_state.html ...` shows it per view.
+     (karouka has no iframes: iframe_inert.html.) */
+  body { margin: 0; background: rgb(28, 32, 40); color: rgb(220, 220, 220); font: 20px sans-serif; }
+  #result { margin: 20px; padding: 16px; border-radius: 8px; background: rgb(120, 40, 40); }
+  #result.ok { background: rgb(40, 110, 60); }
+</style>
+</head>
+<body>
+<div id="result">running</div>
+<script>
+  let pushed = "threw";
+  try {
+    history.pushState({ step: 1 }, "", "#pushed");
+    pushed = history.state && history.state.step === 1 ? "yes" : "no";
+    location.hash = "#hash";
+  } catch (error) {
+    pushed = "threw " + error;
+  }
+  // Report after ten animation frames, by when the history steps have been applied.
+  let frames = 0;
+  const report = () => {
+    if (++frames < 10) {
+      requestAnimationFrame(report);
+      return;
+    }
+    const ok = pushed === "yes" && location.hash === "#hash" && history.length >= 2;
+    const text = `${ok ? "ok" : "FAIL"} pushed=${pushed} hash=${location.hash} length=${history.length}`;
+    const result = document.getElementById("result");
+    result.textContent = text;
+    result.className = ok ? "ok" : "";
+    document.title = text;
+  };
+  requestAnimationFrame(report);
+</script>
+</body>
+</html>

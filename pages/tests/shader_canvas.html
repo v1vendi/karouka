@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="karouka-check-animated" content="#clean-bg ripples its canvas at each frame's uTime">
+<meta name="karouka-check-title" content="^ready origin-clean$">
+<meta name="karouka-check-pixels" content="310,60=#00aaff~2 520,60=#00c000~2 110,170=#222222 400,200=#222222 530,170=#222222 110,280=#222222">
+<title>shader canvas pending</title>
+<style>
+  body { margin: 0; background: #fff; font: 16px sans-serif; }
+  canvas, .box { position: absolute; display: block; }
+  .box { width: 200px; height: 100px; background-color: #222; }
+  #clean-canvas { left: 10px; top: 10px; }
+  #clean-bg { left: 220px; top: 10px; background-image: shader(url(canvas-ripple.sksl), --tex element(#clean-canvas), --amp 12.0); }
+  #hidden-canvas { display: none; }
+  #still-bg { left: 430px; top: 10px; background-image: shader("uniform shader tex; half4 main(float2 coord) { return tex.eval(coord); }", --tex element(#hidden-canvas)); }
+  #tainted-canvas { left: 640px; top: 10px; width: 100px; height: 50px; }
+  #tainted-bg { left: 10px; top: 120px; }
+  #self-bg { left: 220px; top: 120px; background-image: shader(url(canvas-ripple.sksl), --tex element(#nested-canvas), --amp 12.0); }
+  #nested-canvas { position: static; }
+  #missing { left: 430px; top: 120px; background-image: shader(url(canvas-ripple.sksl), --tex element(#does-not-exist), --amp 12.0); }
+  #wrong { left: 10px; top: 230px; background-image: shader(url(canvas-ripple.sksl), --tex element(#status), --amp 12.0); }
+  #status { position: absolute; left: 220px; top: 230px; margin: 0; }
+</style>
+</head>
+<body>
+<!-- Ported from css-shader-image's tests/m4-canvas.html: `--tex element(#id)` binds a <canvas> as the shader's
+     `uniform shader tex`. #clean-bg ripples #clean-canvas (canvas-ripple.sksl declares uTime), and follows it when
+     script fills it blue at the 5th frame. #still-bg samples #hidden-canvas (display: none) with a shader that has no
+     uTime: it is drawn again only when the canvas presents, red at load and green at the 10th frame. The rest must
+     stay flat #222, each with one console line: #self-bg's canvas is inside it, #missing names no element and #wrong a
+     <p>. #tainted-bg is M4's origin-clean gate, bound only once getImageData() throws on its canvas. karouka can't
+     taint a canvas from a page: file: URLs have a tuple origin, so a file: image is same-origin, and nothing else
+     loads (docs/ENGINE.md). So the canvas stays origin-clean, the shader is never bound, and the title says so; were
+     it ever tainted, the title would read "ready tainted" and the box must still stay #222 with one console line.
+     karouka_embedder_content_test covers the refusal itself. Pointer drags draw into #clean-canvas, as in M4. -->
+<canvas id="clean-canvas" width="200" height="100"></canvas>
+<div class="box" id="clean-bg"></div>
+<canvas id="hidden-canvas" width="200" height="100"></canvas>
+<div class="box" id="still-bg"></div>
+<canvas id="tainted-canvas" width="100" height="50"></canvas>
+<div class="box" id="tainted-bg"></div>
+<div class="box" id="self-bg"><canvas id="nested-canvas" width="100" height="50"></canvas></div>
+<div class="box" id="missing"></div>
+<div class="box" id="wrong"></div>
+<p id="status">waiting for the tainting image</p>
+<script>
+const clean = document.getElementById('clean-canvas');
+const cctx = clean.getContext('2d');
+cctx.fillStyle = '#123'; cctx.fillRect(0, 0, clean.width, clean.height);
+cctx.fillStyle = '#fff'; cctx.font = '16px sans-serif';
+cctx.fillText('drag here', 12, 28);
+clean.addEventListener('pointermove', e => {
+  if (!e.buttons) return;
+  const r = clean.getBoundingClientRect();
+  cctx.fillStyle = '#0af';
+  cctx.beginPath();
+  cctx.arc(e.clientX - r.left, e.clientY - r.top, 14, 0, Math.PI * 2);
+  cctx.fill();
+});
+
+const hidden = document.getElementById('hidden-canvas').getContext('2d');
+hidden.fillStyle = '#c00000'; hidden.fillRect(0, 0, 200, 100);
+
+const nested = document.getElementById('nested-canvas').getContext('2d');
+nested.fillStyle = '#4a4'; nested.fillRect(0, 0, 100, 50);
+
+// In a browser a cross-origin image taints the canvas; in karouka a file: image is same-origin and doesn't.
+const status = document.getElementById('status');
+const tainted = document.getElementById('tainted-canvas');
+const tctx = tainted.getContext('2d');
+tctx.fillStyle = '#321'; tctx.fillRect(0, 0, tainted.width, tainted.height);
+let taint = 'pending';
+const img = new Image();
+img.onload = () => {
+  tctx.drawImage(img, 0, 0, tainted.width, tainted.height);
+  try { tctx.getImageData(0, 0, 1, 1); taint = 'origin-clean'; } catch (e) { taint = 'tainted'; }
+  status.textContent = taint === 'tainted' ? 'canvas tainted, shader bound' : 'canvas origin-clean, shader not bound';
+  if (taint === 'tainted')
+    document.getElementById('tainted-bg').style.backgroundImage = 'shader(url(canvas-ripple.sksl), --tex element(#tainted-canvas), --amp 12.0)';
+};
+img.onerror = () => { taint = 'image failed'; };
+img.src = 'swatch.png';
+
+let frame = 0;
+function step() {
+  ++frame;
+  if (frame === 5) { cctx.fillStyle = '#0af'; cctx.fillRect(0, 0, clean.width, clean.height); }
+  if (frame === 10) { hidden.fillStyle = '#00c000'; hidden.fillRect(0, 0, 200, 100); }
+  if (frame >= 10 && taint !== 'pending') { document.title = 'ready ' + taint; return; }
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>
+</body>
+</html>
