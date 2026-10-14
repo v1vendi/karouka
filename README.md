@@ -23,8 +23,9 @@ Apple silicon.
   a virtual file system), karouka's own timing clock and the log, which carries the pages'
   `console.*` output.
 - **C API** in `include/karouka/karouka.h`. Its frame loop: inject input, advance time, render.
-- **Python**: `_karouka`, the engine as a CPython extension module, `<script type="text/python">`
-  in pages, and a pip-installable wheel (see Python).
+- **Embedder script types** (`kr_view_set_script_type_callback`): the host runs `<script>` types
+  other than JavaScript itself, on HTML's classic-script path, so pages can carry scripts in
+  another language.
 
 ## Layout
 
@@ -35,19 +36,12 @@ Apple silicon.
 | `include/karouka/karouka.h` | The public C API |
 | `src/engine/` | The embedder: page client, loading, frame loop, rendering |
 | `src/viewer/main.mm` | `karouka_viewer`, the macOS demo viewer |
-| `src/viewer/EventInput.h` | NSEvent to `kr_input_event`, shared by the viewer and the Python app shell |
-| `src/python/module.cpp` | `_karouka`, the engine as a CPython extension module (see Python) |
-| `src/python/dom.cpp` | `<script type="text/python">` in a per-document subinterpreter, and the DOM proxies it and `View.document` use |
-| `src/python/js.cpp` | JS values in Python (`JSValue`, `js`), Python callables and awaitables as JS functions and Promises, and each document's asyncio loop on the host clock |
-| `src/python/app.mm` | `karouka.App`: native windows (NSApplication, CAMetalLayer, display link) for Python apps |
-| `src/python/karouka/` | The `karouka` package (copied next to `_karouka` by the build) and `python -m karouka page.html` |
-| `tools/wheel.py` | The karouka wheel from the build's `_karouka` (`tools/dev.sh wheel`) |
+| `src/viewer/EventInput.h` | NSEvent to `kr_input_event`, for the viewer and other AppKit hosts |
 | `pages/` | Demo and test pages (`pages/README.md`) |
-| `examples/python_viewer/` | `viewer.py`: opens a static page in a window and opens a page whose `<script type="text/python">` runs in the page; `page.html` is a todo app written that way |
 | `tests/` | The test executables `tools/dev.sh check` runs; `tests/wpt/` holds the WPT corpus pin and ratchet lists |
 | `bench/` | `compare.py`, the timing harness behind `tools/dev.sh bench` (karouka alone, or two builds A/B) |
 | `bench/engines/` | The same page in karouka, Ladybird, Electron, Tauri and TinyJS: startup, CPU, memory (`perfcmp.py`, `setup.sh`) |
-| `docs/` | `BUILDING.md` (build layout, Ladybird patch workflow), `ENGINE.md`, `PYTHON.md`, `MEMORY.md`, `STARTUP.md`, `COMMAND-LIST.md` |
+| `docs/` | `BUILDING.md` (build layout, Ladybird patch workflow), `ENGINE.md`, `MEMORY.md`, `STARTUP.md`, `COMMAND-LIST.md` |
 
 ## Quickstart
 
@@ -76,7 +70,6 @@ tools/dev.sh bootstrap   # CMake 3.30+, Ladybird's pinned Rust and sccache into 
 tools/dev.sh ladybird    # patch, configure and compile only the Ladybird libraries karouka links
 tools/dev.sh build       # patch, configure, build the Ladybird libraries, karouka, the viewer and tests
 tools/dev.sh run [page]  # build, then open the page, or the demo picker (pages/index.html)
-tools/dev.sh python      # build, then tests/python/*.py against the _karouka Python module
 tools/dev.sh check       # build, then unit tests, a WPT subset, every test and demo page, startup gate
 tools/dev.sh startup     # build, then only check's kr_system_create2 startup gate
 tools/dev.sh mem [page]  # build, then peak RSS + footprint, 5 headless 600-frame runs (default: empty)
@@ -88,7 +81,6 @@ tools/dev.sh libweb      # build, then Ladybird's own Tests/LibWeb image tests, 
 tools/dev.sh census      # build, then docs/COMMAND-LIST.md's display-list census over the check pages
 tools/dev.sh orderfile   # build, then re-record libkarouka's link order file (src/libkarouka.order)
 tools/dev.sh package [DIR]   # build, then the stripped dylib, its dSYM and the headers a host ships
-tools/dev.sh wheel [DIR]     # build, then the karouka wheel (pip install), tested from a fresh venv
 tools/dev.sh patches [--reset]   # apply this checkout's patches/ladybird/ series to the shared tree
 tools/dev.sh own         # take the shared Ladybird tree before editing it (docs/BUILDING.md)
 tools/dev.sh release     # give the tree back once its patches are saved
@@ -203,7 +195,7 @@ layout), which also describes how to change Ladybird through the patch series.
 | `0095` | A style group reclamation is also due once the live computed font groups reach twice what the last one left (at least 32), so the groups holding unused cascades go and patch 0091's trim can forget them |
 | `0096` | A typeface keeps at most 32 sized fonts (was 129), and when full it evicts one only the cache holds before falling back to any |
 | `0098` | `LocalCanvas2DHost::create_canvas_2d_transport` and `allocate_placeholder_canvas` take the page the canvas belongs to, so the host can drop a page's canvases even when their backing storage was made with no script running |
-| `0099` | `Web::Embedder::set_script_type_handler`: `<script>` types the embedder accepts per document (`text/python`) run on the classic-script path (parser-blocking, `defer`/`async` order, `src=` fetched, `currentScript`, `load`/`error`) through the embedder's handler; karouka's `kr_view_set_script_type_callback` |
+| `0099` | `Web::Embedder::set_script_type_handler`: `<script>` types the embedder accepts per document (`text/x-example`, say) run on the classic-script path (parser-blocking, `defer`/`async` order, `src=` fetched, `currentScript`, `load`/`error`) through the embedder's handler; karouka's `kr_view_set_script_type_callback` |
 | `0100` | `Web::Embedder::set_child_navigables_enabled`: with child navigables off, an iframe, frame or object never gets a content navigable, so it loads no document, `contentDocument` and `contentWindow` are null and it paints as an empty box; an object whose resource is a document shows its fallback content. karouka turns them off: a view has one document |
 | `0101` | `DrawEmbedderContent { dst_rect, content_id, is_live }`: a display-list command whose pixels the embedder draws at replay through `DisplayListPlayerSkia::set_embedder_content_resolver` (content id, rect, canvas, frame time); live content never diffs as unchanged and keeps a nested display list from being cached as a raster; `DisplayListResourceStorage::draws_live_embedder_content` finds it at any depth (for shader() images) |
 | `0102` | `DecodedImageData` answers vector content itself (`is_vector_content`, `vector_content_identity`, `has_active_view_box`, `record_display_list_at_scale`; the SVG image overrides them, and paint facts and the Rust bridge no longer cast to it); `Web::Embedder::ShaderDecodedImageData`, a shader() image recorded as one `DrawEmbedderContent` whose content id the embedder's `set_shader_content_hook` gives |
@@ -213,53 +205,9 @@ layout), which also describes how to change Ladybird through the patch series.
 | `0109` | Animated shader() images: the shader content hook answers whether the content is live (`ShaderContent`), recorded as `DrawEmbedderContent::is_live`, and the player never keeps a repeated tile that draws live embedder content in its tile cache |
 | `0110` | shader() canvas inputs: `--name element(#id)` parsed (a `Function` named `element` around the id) and serialized back; `ImageStyleValue`'s client resolves it on each ask to the `<canvas>`'s surface id (`ShaderArgument::Type::Canvas`) or a refusal (no element, not a canvas, no context, not origin-clean, inside the element the image paints, which `Layout::Node`'s image observers name); a 2D context that loses origin-clean tells its transport (`RemoteCanvas2DTransport::did_become_not_origin_clean`) |
 | `0111` | Vector images without a viewBox in CSS pixels: the background recorder (`PaintRecorder::paint_vector_image` and the repeated-tile path) divides the device-pixel destination by the device pixel ratio and multiplies the ratio into the raster scale, so a shader()'s coord and `uSize` and an SVG's layout are CSS pixels at any backing scale, and a canvas input samples one canvas pixel per CSS pixel |
-| `0112` | A build that prunes Web APIs (`LIBWEB_PRUNE_WEB_APIS`) compiles LibWeb's generated bindings, exposed-interface and StructuredSerialize sources with `-Os`: libkarouka's `__text` 2.06 MB smaller, the wheel 0.5 MB |
+| `0112` | A build that prunes Web APIs (`LIBWEB_PRUNE_WEB_APIS`) compiles LibWeb's generated bindings, exposed-interface and StructuredSerialize sources with `-Os`: libkarouka's `__text` 2.06 MB smaller |
 | `0114` | libxml2 overlay port with only the push parser, tree building, entities and XPath (no HTML, C14N, catalog, debug, modules, output, pattern, reader, regexps, SAX1, schemas, validation, writer, XInclude, XPointer, iconv or zlib): LibXML feeds it UTF-8 from memory. libxml2 1.22 MB to 0.48 MB, linking only libSystem |
 | `0115` | `text-transform: full-width`, `String::to_fullwidth` and `Utf16String::to_fullwidth` map through a table in LibUnicode (`FullwidthMapping.cpp`: 224 code units and 28 katakana + sound-mark compositions, what ICU's Halfwidth-Fullwidth transliterator does), so libicudata keeps no transliterator data (5.68 MB to 4.56 MB) |
-
-## Python
-
-`_karouka` is karouka's engine as a CPython extension module, built by `tools/dev.sh build` into
-`third_party/ladybird/Build/release/karouka/lib/_karouka.cpython-314-darwin.so` against Homebrew's
-python@3.14, or the CPython 3.14 that `KR_PYTHON` names (`KR_PYTHON=/path/to/python3.14
-tools/dev.sh python`). It is linked from the same objects as `libkarouka.dylib` (it can't go through the dylib,
-which keeps LibWeb local) and exports only `PyInit__karouka`. It wraps the C API and runs page
-Python:
-
-```python
-import _karouka
-system = _karouka.System(backend="software")   # one per process; "metal" is the default
-view = system.view(800, 600)
-view.load_file("pages/tests/external_module.html")
-for frame in range(1, 31):
-    view.advance_time(frame * 16.0)
-    view.render()
-view.capture_png("out.png")
-print(view.title, view.document.body.textContent)   # DOM proxies, by their IDL names
-```
-
-A Python app opens pages in native windows with `karouka.App` (`src/python/app.mm`), or from the
-shell with `python -m karouka page.html` (the build's `karouka/lib` on `PYTHONPATH`):
-
-```python
-import karouka
-app = karouka.App()                              # backend="metal"; headless=True for tests
-window = app.open("ui/index.html", title="Demo", size=(900, 600))
-app.run()                                        # returns when the last window closes
-```
-
-It imports in subinterpreters with their own GIL; the engine runs on the main thread only. A page
-loaded from under `View.app_root` (by default the directory `load_file` loaded from) runs its
-`<script type="text/python">` in its own subinterpreter, with `window`, `document` and `console`.
-`tools/dev.sh python` (and `check`) run `tests/python/`. `docs/PYTHON.md` is the design: Python
-scripts in pages, bound straight to LibWeb's DOM.
-
-`tools/dev.sh wheel` packages it (`tools/wheel.py`) as
-`karouka-0.1.0-cp314-cp314-macosx_14_0_arm64.whl` (about 26 MB) for the interpreter the module was
-built for: the stripped module, the `karouka` package, Ladybird's resources and the dylibs the module
-loads, on `@loader_path` rpaths, so `pip install karouka-*.whl` into any venv of that CPython 3.14
-runs `python -m karouka page.html` without the build tree. The wheel links no libpython: the
-interpreter that imports it supplies Python.
 
 ## Viewer
 

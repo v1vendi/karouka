@@ -186,7 +186,7 @@ index 0000000000..1d2f230d76
 +    size_t m_line { 1 };
 +};
 +
-+// Script types the embedder runs itself, such as <script type="text/python">. A script whose type
++// Script types the embedder runs itself, such as <script type="text/x-example">. A script whose type
 +// is not a JavaScript MIME type, "module" or "importmap", and whose type's MIME essence the handler
 +// accepts for the element's document, follows the classic-script path of "prepare the script
 +// element": parser-blocking, or async or defer ordered, src= fetched as a no-cors "script" request
@@ -198,7 +198,7 @@ index 0000000000..1d2f230d76
 +public:
 +    virtual ~ScriptTypeHandler();
 +
-+    // `mime_essence` is the type's MIME essence, lowercase ("text/python" for "Text/Python;v=3").
++    // `mime_essence` is the type's MIME essence, lowercase ("text/x-example" for "Text/X-Example;v=3").
 +    virtual bool handles_script_type(DOM::Document const&, StringView mime_essence) = 0;
 +
 +    // Runs inside the document's realm, between "prepare to run script" and "clean up after running

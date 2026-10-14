@@ -37,136 +37,6 @@ set_target_properties(karouka_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(karouka SHARED $<TARGET_OBJECTS:karouka_engine>)
 target_include_directories(karouka PUBLIC "${KAROUKA_SOURCE_DIR}/include")
 
-# _karouka, the CPython extension module (src/python/module.cpp, docs/PYTHON.md). LibWeb is
-# local to libkarouka, so the module can't reach it through the dylib: it is a second image linked
-# from the same objects (karouka_engine and the Lagom object file list below), exporting only
-# PyInit__karouka. It is built against KAROUKA_PYTHON's headers and named with its EXT_SUFFIX, and
-# its Python symbols are left to the interpreter that loads it (-undefined dynamic_lookup).
-# KAROUKA_PYTHON's path goes next to the module (_karouka.python), for tools/dev.sh python. It is a
-# cache variable, so another CPython 3.14 can build the module: tools/dev.sh sets it from KR_PYTHON
-# on every configure, as this build dir is shared by every checkout.
-set(KAROUKA_PYTHON "/opt/homebrew/bin/python3" CACHE FILEPATH "The CPython 3.14 interpreter the _karouka module is built for")
-execute_process(
-    COMMAND "${KAROUKA_PYTHON}" -c "import sys, sysconfig; print(sysconfig.get_path('include')); print(sysconfig.get_config_var('EXT_SUFFIX')); print(sys.implementation.name, '%d.%d' % sys.version_info[:2], 'free-threaded' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'gil')"
-    OUTPUT_VARIABLE karouka_python_config OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE karouka_python_status
-)
-if (NOT karouka_python_status EQUAL 0)
-    message(FATAL_ERROR "karouka: the _karouka module needs a CPython 3.14 interpreter; ${KAROUKA_PYTHON} doesn't run (KR_PYTHON for tools/dev.sh, KAROUKA_PYTHON for CMake)")
-endif()
-string(REPLACE "\n" ";" karouka_python_config "${karouka_python_config}")
-list(GET karouka_python_config 0 KAROUKA_PYTHON_INCLUDE)
-list(GET karouka_python_config 1 KAROUKA_PYTHON_EXT_SUFFIX)
-list(GET karouka_python_config 2 karouka_python_kind)
-if (NOT karouka_python_kind STREQUAL "cpython 3.14 gil")
-    message(FATAL_ERROR "karouka: the _karouka module needs a CPython 3.14 interpreter with the GIL; ${KAROUKA_PYTHON} is ${karouka_python_kind}")
-endif()
-message(STATUS "karouka: _karouka for ${KAROUKA_PYTHON} (${karouka_python_kind}, ${KAROUKA_PYTHON_EXT_SUFFIX})")
-# The DOM bindings are generated from LibWeb's IDL (src/python/gen/generate_python_bindings.py),
-# reading the same IDL files with the same pruning as LibWeb's JS bindings: idl_files.cmake's
-# libweb_js_bindings() lines, less LibWeb's LIBWEB_PRUNED_FAMILIES and LIBWEB_PRUNED_IDL (as
-# generate_js_bindings in Meta/CMake/libweb_generators.cmake decides), the generated IDL
-# (LIBWEB_ALL_GENERATED_IDL) from LibWeb's build directory.
-set(karouka_libweb_dir "${LADYBIRD_SOURCE_DIR}/Libraries/LibWeb")
-get_directory_property(karouka_pruned_families DIRECTORY "${karouka_libweb_dir}" DEFINITION LIBWEB_PRUNED_FAMILIES)
-get_directory_property(karouka_pruned_idl DIRECTORY "${karouka_libweb_dir}" DEFINITION LIBWEB_PRUNED_IDL)
-get_directory_property(karouka_generated_idl DIRECTORY "${karouka_libweb_dir}" DEFINITION LIBWEB_ALL_GENERATED_IDL)
-get_directory_property(karouka_libweb_binary_dir DIRECTORY "${karouka_libweb_dir}" DEFINITION CMAKE_CURRENT_BINARY_DIR)
-file(STRINGS "${karouka_libweb_dir}/idl_files.cmake" karouka_idl_lines REGEX "^libweb_js_bindings\\(")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${karouka_libweb_dir}/idl_files.cmake")
-set(karouka_idl_files)
-set(karouka_pruned_idl_files)
-foreach (line IN LISTS karouka_idl_lines)
-    string(REGEX REPLACE "^libweb_js_bindings\\(([^ )]+).*$" "\\1" class "${line}")
-    set(idl_pruned FALSE)
-    foreach (family IN LISTS karouka_pruned_families)
-        if ("${class}" MATCHES "^${family}/")
-            set(idl_pruned TRUE)
-        endif()
-    endforeach()
-    if ("${class}" IN_LIST karouka_pruned_idl)
-        set(idl_pruned TRUE)
-    endif()
-    get_filename_component(basename "${class}" NAME)
-    if (idl_pruned)
-        list(APPEND karouka_pruned_idl_files "${karouka_libweb_dir}/${class}.idl")
-    elseif ("${basename}.idl" IN_LIST karouka_generated_idl)
-        list(APPEND karouka_idl_files "${karouka_libweb_binary_dir}/${class}.idl")
-    else()
-        list(APPEND karouka_idl_files "${karouka_libweb_dir}/${class}.idl")
-    endif()
-endforeach()
-list(REMOVE_DUPLICATES karouka_idl_files)
-set(karouka_python_bindings_dir "${CMAKE_CURRENT_BINARY_DIR}/python_bindings")
-set(karouka_python_bindings_chunks 8)
-set(karouka_python_bindings
-    "${karouka_python_bindings_dir}/PythonBindings.h"
-    "${karouka_python_bindings_dir}/PythonBindingsTable.cpp")
-foreach (chunk RANGE 0 7)
-    list(APPEND karouka_python_bindings "${karouka_python_bindings_dir}/PythonBindings${chunk}.cpp")
-endforeach()
-list(JOIN karouka_idl_files "\n" karouka_idl_file_list)
-file(GENERATE OUTPUT "${karouka_python_bindings_dir}/idl_files.txt" CONTENT "${karouka_idl_file_list}")
-set(karouka_pruned_idl_arguments ${karouka_pruned_idl_files})
-list(TRANSFORM karouka_pruned_idl_arguments PREPEND "--pruned-idl-file=")
-file(GLOB karouka_bindings_generator_sources "${LADYBIRD_SOURCE_DIR}/Meta/Generators/libweb_bindings/*.py")
-add_custom_command(
-    OUTPUT ${karouka_python_bindings}
-    COMMAND "${Python3_EXECUTABLE}" "${KAROUKA_SOURCE_DIR}/src/python/gen/generate_python_bindings.py"
-            --ladybird-meta "${LADYBIRD_SOURCE_DIR}/Meta" -o "${karouka_python_bindings_dir}"
-            --chunks ${karouka_python_bindings_chunks}
-            ${karouka_pruned_idl_arguments} "@${karouka_python_bindings_dir}/idl_files.txt"
-    DEPENDS "${KAROUKA_SOURCE_DIR}/src/python/gen/generate_python_bindings.py" ${karouka_bindings_generator_sources}
-            "${LADYBIRD_SOURCE_DIR}/Meta/Utils/webidl_parser.py" ${karouka_idl_files} ${karouka_pruned_idl_files}
-            "${karouka_python_bindings_dir}/idl_files.txt"
-    COMMENT "Generating karouka's Python bindings"
-    VERBATIM
-)
-add_custom_target(karouka_python_bindings DEPENDS ${karouka_python_bindings})
-add_dependencies(karouka_python_bindings generate_bindings)
-add_library(_karouka MODULE python/module.cpp python/dom.cpp python/js.cpp python/app.mm ${karouka_python_bindings} $<TARGET_OBJECTS:karouka_engine>)
-add_dependencies(_karouka karouka_python_bindings)
-target_include_directories(_karouka PRIVATE "${karouka_python_bindings_dir}" "${KAROUKA_SOURCE_DIR}/src/python")
-# The app shell (App, Window: NSApplication, NSWindow + CAMetalLayer), ARC as the viewer.
-set_source_files_properties(python/app.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xobjective-c++;-fobjc-arc")
-target_include_directories(_karouka PRIVATE "${KAROUKA_SOURCE_DIR}/include")
-target_include_directories(_karouka SYSTEM PRIVATE "${KAROUKA_PYTHON_INCLUDE}")
-set_target_properties(_karouka PROPERTIES
-    PREFIX ""
-    SUFFIX "${KAROUKA_PYTHON_EXT_SUFFIX}"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/karouka/lib"
-    BUILD_RPATH "${CMAKE_BINARY_DIR}/lib"
-)
-target_link_options(_karouka PRIVATE
-    "LINKER:-undefined,dynamic_lookup"
-    "LINKER:-exported_symbol,_PyInit__karouka"
-)
-# objc_msgSend is called through the stubs ld synthesizes for HostMetal.mm's selectors, resolved after
-# its other symbols: under dynamic_lookup it would be left for dyld to find. -u binds it to libobjc.
-target_link_libraries(_karouka PRIVATE objc "-framework Cocoa" "-framework QuartzCore" "-framework IOSurface")
-target_link_options(_karouka PRIVATE "LINKER:-u,_objc_msgSend")
-file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/karouka/lib/_karouka.python" CONTENT "${KAROUKA_PYTHON}\n")
-# The karouka package (src/python/karouka: the API over _karouka, and python -m karouka) next
-# to the module, so the one lib dir on PYTHONPATH has both. Built with the module.
-file(GLOB karouka_python_package CONFIGURE_DEPENDS "${KAROUKA_SOURCE_DIR}/src/python/karouka/*.py")
-add_custom_command(
-    OUTPUT "${CMAKE_BINARY_DIR}/karouka/lib/karouka/.stamp"
-    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${CMAKE_BINARY_DIR}/karouka/lib/karouka"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/karouka/lib/karouka"
-    COMMAND "${CMAKE_COMMAND}" -E copy ${karouka_python_package} "${CMAKE_BINARY_DIR}/karouka/lib/karouka/"
-    COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/karouka/lib/karouka/.stamp"
-    DEPENDS ${karouka_python_package}
-    VERBATIM
-)
-add_custom_target(karouka_python_package DEPENDS "${CMAKE_BINARY_DIR}/karouka/lib/karouka/.stamp")
-add_dependencies(_karouka karouka_python_package)
-# Only PyInit__karouka exported, and nothing but Python's own symbols left for the interpreter to
-# bind (and AK's weak _ak_assertion_handler, -U as in libkarouka): dynamic_lookup would otherwise
-# turn a missing engine symbol into an import-time error.
-add_custom_command(TARGET _karouka POST_BUILD
-    COMMAND sh -c "exports=$(nm -gU \"$1\" | awk '{ print $NF }'); if [ \"$exports\" != _PyInit__karouka ]; then echo \"karouka: $1 exports $exports, not only _PyInit__karouka\" >&2; exit 1; fi; if nm -m -u \"$1\" | grep 'dynamically looked up' | grep -v ' external __*Py' | grep -v ' weak external _ak_assertion_handler '; then echo \"karouka: $1 leaves the symbols above for the interpreter to bind\" >&2; exit 1; fi" sh $<TARGET_FILE:_karouka>
-    VERBATIM
-)
-
 # DrawEmbedderContent replayed by LibCompositing's player on the Metal and software backends.
 # It reaches Lagom internals, which no image exports, so it is linked from the Lagom objects as the
 # images are (below), with ShaderImage.cpp compiled in.
@@ -178,9 +48,9 @@ set_target_properties(karouka_embedder_content_test PROPERTIES
     BUILD_RPATH "${CMAKE_BINARY_DIR}/karouka/lib;${CMAKE_BINARY_DIR}/lib"
 )
 
-# libkarouka and _karouka (and the test above): the images linked from karouka_engine's or their own
-# objects and the Lagom objects.
-set(karouka_images karouka _karouka karouka_embedder_content_test)
+# libkarouka (and the test above): the images linked from karouka_engine's or their own objects and
+# the Lagom objects.
+set(karouka_images karouka karouka_embedder_content_test)
 set(karouka_image_link_options "")
 set(karouka_image_link_depends "")
 set(karouka_image_dependencies "")
@@ -227,8 +97,6 @@ foreach(lib IN LISTS KAROUKA_LAGOM_LIBS)
     target_link_libraries(karouka_engine PRIVATE $<COMPILE_ONLY:${lib}>)
     target_link_libraries(karouka_embedder_content_test PRIVATE $<COMPILE_ONLY:${lib}>)
     add_dependencies(karouka_engine ${lib})
-    # The module's DOM proxies (python/dom.cpp) call LibWeb's C++ too.
-    target_link_libraries(_karouka PRIVATE $<COMPILE_ONLY:${lib}>)
     # AK's -U,_ak_assertion_handler (a weak hook an embedder may define), for one.
     get_target_property(opts ${lib} LINK_OPTIONS)
     if (opts)
@@ -271,9 +139,9 @@ foreach(dep IN LISTS karouka_lagom_deps ITEMS skia)
         target_link_libraries(karouka_engine PRIVATE $<COMPILE_ONLY:${dep}>)
     endif()
 endforeach()
-# Each image exports only its entry points (libkarouka the C API, _karouka PyInit__karouka), so the
-# merged Lagom code is local to the image: the linker resolves it internally, dead-strips what the
-# image never reaches, and dyld has no weak C++ symbols to coalesce.
+# Each image exports only its entry points (libkarouka the C API), so the merged Lagom code is local
+# to the image: the linker resolves it internally, dead-strips what the image never reaches, and
+# dyld has no weak C++ symbols to coalesce.
 target_link_options(karouka PRIVATE "LINKER:-exported_symbol,_kr_*")
 # Lay out first the functions an empty page runs, in the order it first runs them, so the
 # __text pages a page touches are few and adjacent instead of ~1000 scattered over 37 MB. The order
@@ -287,13 +155,8 @@ target_link_options(karouka PRIVATE
 )
 set_property(TARGET karouka APPEND PROPERTY LINK_DEPENDS "${KAROUKA_ORDER_FILE}")
 foreach(image IN LISTS karouka_images)
-    set(options ${karouka_image_link_options})
-    if (image STREQUAL "_karouka")
-        # dynamic_lookup leaves AK's weak hook undefined already; a -U there only makes ld warn.
-        list(FILTER options EXCLUDE REGEX "^LINKER:-U,")
-    endif()
     target_link_options(${image} PRIVATE
-        ${options}
+        ${karouka_image_link_options}
         "LINKER:-filelist,${KAROUKA_LAGOM_OBJECTS_FILE}"
         "LINKER:-dead_strip"
         "LINKER:-dead_strip_dylibs"

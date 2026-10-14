@@ -1,15 +1,15 @@
 /*
- * Embedder script types: <script type="text/python"> and any other type a view registers
- * (docs/PYTHON.md § Scripts). Ladybird patch 0099 (LibWeb/Embedder/ScriptTypes.h) runs such a
+ * Embedder script types: <script type="text/x-example"> or any other non-JavaScript type a view
+ * registers, the hook for running pages' scripts in other languages. Ladybird patch 0099 (LibWeb/Embedder/ScriptTypes.h) runs such a
  * script on the classic-script path (parser-blocking, defer and async ordering, src= fetched as a
  * file: subresource, currentScript, load and error) and hands it to one process-wide handler;
  * Engine.cpp's handler finds the view whose page holds the script's document and calls the view's
  * handler for the type's MIME essence. A view with no handler for a type leaves it ignored.
  *
- * C hosts register through kr_view_set_script_type_callback; the Python module calls
- * set_script_type_handler directly, with the element and the script. The module also follows the
- * view's documents (set_active_document_handler, active_document): a document's Python
- * interpreter ends when another document replaces it.
+ * C hosts register through kr_view_set_script_type_callback. An embedder built against the engine
+ * itself (C++, linked from karouka_engine's objects) calls set_script_type_handler directly, with the
+ * element and the script, and can follow the view's documents (set_active_document_handler,
+ * active_document), for example to end a document's interpreter when another document replaces it.
  */
 #pragma once
 
@@ -54,7 +54,7 @@ private:
     HashMap<String, NonnullRefPtr<Entry>> m_entries;
 };
 
-// The MIME essence of `mime` ("Text/Python; x=y" -> "text/python"), or nothing for a string that
+// The MIME essence of `mime` ("Text/X-Example; x=y" -> "text/x-example"), or nothing for a string that
 // is not a MIME type or names JavaScript, which always runs as JavaScript.
 Optional<String> script_type_essence(StringView mime);
 

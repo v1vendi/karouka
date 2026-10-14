@@ -55,8 +55,8 @@ tree. karouka's `src/` builds inside Ladybird's CMake tree (patch 0003) into
   Patch 0088 drops an extra `--emit=dep-info` that made sccache skip each top crate. `dev.sh` starts
   the sccache server with no inherited descriptors, or the server would keep the build lock's flock
   for its 10 min idle timeout.
-- **Locks and snapshots.** `check`, `run`, `python`, `bench`, `mem`, `wpt`, `libweb`, `orderfile`,
-  `census` and `startup` hold the build lock only to build and snapshot the build
+- **Locks and snapshots.** `check`, `run`, `bench`, `mem`, `wpt`, `libweb`, `orderfile`, `census`
+  and `startup` hold the build lock only to build and snapshot the build
   (`tools/snapshot_build.py`: bin, lib, the dylibs they load, Base/res, every Mach-O repointed at the
   snapshot's lib), then run from the snapshot while other checkouts build. `check` snapshots into its
   check dir and prints `build lock: waited X s, held Y s`; a second `check` in the same checkout
@@ -91,7 +91,6 @@ discards hand edits too).
 
 - `docs/ENGINE.md`: the engine map, partial raster, clocks and timers, fonts, and the LibWeb
   pitfalls already found (each fails silently).
-- `docs/PYTHON.md`: the Python integration's design and decisions.
 - `docs/STARTUP.md`, `docs/MEMORY.md`: startup and memory breakdowns and baselines.
 - `docs/COMMAND-LIST.md`: the display-list command census.
 - `README.md`: the C API, the build commands, the patch table, the viewer's flags and keys.

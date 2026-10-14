@@ -372,8 +372,8 @@ KR_API kr_result kr_view_load_html(kr_view* view, char const* html, size_t lengt
 typedef bool (*kr_navigate_callback)(kr_view* view, char const* path, void* user_data);
 KR_API void kr_view_set_navigate_callback(kr_view* view, kr_navigate_callback callback, void* user_data);
 
-/* Embedder script types: the view runs <script type="mime"> through `callback` (docs/PYTHON.md,
- * where the Python module registers text/python this way from C++).
+/* Embedder script types: the view runs <script type="mime"> through `callback`, the hook through
+ * which a host runs pages' scripts in a language other than JavaScript.
  *
  * Such a script follows HTML's classic-script processing as a JavaScript one would: an inline or
  * src= script without async or defer blocks the parser and runs in document order; defer scripts
@@ -387,7 +387,7 @@ KR_API void kr_view_set_navigate_callback(kr_view* view, kr_navigate_callback ca
  * instead of `load`. A src= that fails to load fires `error` and never calls it.
  *
  * `mime` is matched by its MIME essence, case-insensitively and without parameters
- * ("text/python" matches type="Text/Python; version=3"). One callback per type and view; a NULL
+ * ("text/x-example" matches type="Text/X-Example; version=3"). One callback per type and view; a NULL
  * callback removes the type, after which its scripts are ignored, as are those of any type no
  * callback was set for. Applies to scripts prepared from the call on, and lasts across loads.
  * The callback runs synchronously on the thread driving the view (inside kr_view_advance_time or a

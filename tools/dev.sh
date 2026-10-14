@@ -96,15 +96,6 @@
 #                            and its slowest jobs ("time" lines)
 #   tools/dev.sh run [page]  build, then launch the viewer from a snapshot of the build, without the
 #                            build lock
-#   tools/dev.sh python [TEST.py...]
-#                            build, then (from a snapshot of the build, without the build lock) run
-#                            tests/python/*.py, or the given ones, against the built _karouka module
-#                            (src/python/module.cpp): the interpreter the module was built for
-#                            (lib/_karouka.python), the snapshot's lib on PYTHONPATH and KR_SOURCE_DIR
-#                            set to this checkout. Logs: $KR_BUILD/python/<checkout>/. check runs
-#                            every tests/python/*.py the same way, as jobs beside the test executables.
-#                            The module is built for $KR_PYTHON (default /opt/homebrew/bin/python3,
-#                            any CPython 3.14 with the GIL; set on every configure)
 #   tools/dev.sh startup     build, then only check's kr_system_create2 budget, logged to
 #                            Build/release/karouka/startup/<checkout>/startup.log, from a snapshot of
 #                            the build, holding the measure lock, not the build lock
@@ -215,17 +206,6 @@
 #                            packaged dylib. The build's own dylib keeps its symbols: miprof's atos,
 #                            ordertrace's dladdr and assertion backtraces read them. The vcpkg dylibs
 #                            it loads are not packaged
-#   tools/dev.sh wheel [DIR]
-#                            build, then the karouka wheel into DIR (default: this checkout's
-#                            Build/release/karouka/wheel/<checkout>/, replaced; tools/wheel.py):
-#                            _karouka*.so stripped (strip -x), the karouka package, Ladybird's
-#                            Base/res as karouka/res and the dylibs the module loads in
-#                            karouka/.dylibs, all on @loader_path rpaths, tagged
-#                            cp3XX-macosx_*_arm64 for the interpreter the module was built for
-#                            (KR_PYTHON). Fails unless that interpreter's fresh venv, with the wheel
-#                            pip-installed and the checkout and Ladybird tree unreadable
-#                            (sandbox-exec), runs python -m karouka on demo_page.html with the same
-#                            pixels as the build's module, and on a page whose text/python runs
 #   tools/dev.sh mem --list | orderfile --list
 #                            print the demo pages (demo/NAME and path) without building: orderfile's
 #                            default pages, and the names mem and orderfile take in place of a path
@@ -240,7 +220,7 @@
 #                            from this checkout's series (unsaved edits), or when another checkout
 #                            owns it; --force overrides both.
 # check and mem first kill stopped viewers left held by hand (--hold, KR_MEM_HOLD).
-# check, run, python, bench, mem, wpt, libweb, orderfile, census and startup hold the build lock only to build and snapshot
+# check, run, bench, mem, wpt, libweb, orderfile, census and startup hold the build lock only to build and snapshot
 # the build (tools/snapshot_build.py), then run from the snapshot without it, so other checkouts
 # build meanwhile. check prints "build lock: waited X s, held Y s"; a second check of the
 # same checkout waits for the first, and a second wpt the first's renders. bench, mem and startup
@@ -421,9 +401,8 @@ configure() {
     export VCPKG_ROOT="$KR_LADYBIRD/Build/vcpkg-release"
     export PATH="$VCPKG_ROOT:$PATH"
     link_source
-    local overlay_hash had_ninja=0 python
+    local overlay_hash had_ninja=0
     overlay_hash="$(overlay_ports_hash)"
-    python="$(karouka_python)" || return
     [[ -f "$KR_LADYBIRD_BUILD/build.ninja" ]] && had_ninja=1
     if [[ ! -f "$KR_LADYBIRD_BUILD/build.ninja" ]]; then
         nice -n 10 cmake --preset Release -S "$KR_LADYBIRD" -B "$KR_LADYBIRD_BUILD" \
@@ -431,7 +410,7 @@ configure() {
             -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
             -DBUILD_TESTING=OFF -DENABLE_CRANELIFT_JIT=OFF \
             -DRUST_CARGO="$KR_RUST_BIN/cargo" -DRUST_RUSTC="$KR_RUST_BIN/rustc" \
-            -DKAROUKA_SOURCE_DIR="$KR_SRC_LINK" -DKAROUKA_PYTHON="$python"
+            -DKAROUKA_SOURCE_DIR="$KR_SRC_LINK"
     elif [[ "$(sed -n 's/^KAROUKA_SOURCE_DIR:[A-Z]*=//p' "$KR_LADYBIRD_BUILD/CMakeCache.txt")" != "$KR_SRC_LINK" ]]; then
         # The checkout built last used older tools, which configured its own path, not the link.
         nice -n 10 cmake -S "$KR_LADYBIRD" -B "$KR_LADYBIRD_BUILD" -DKAROUKA_SOURCE_DIR="$KR_SRC_LINK" >/dev/null
@@ -443,13 +422,6 @@ configure() {
         echo "dev.sh: building the Rust crates through sccache"
         nice -n 10 cmake -S "$KR_LADYBIRD" -B "$KR_LADYBIRD_BUILD" -DRUSTC_WRAPPER="$KR_SCCACHE" >/dev/null
     fi
-    # The build dir is shared, so the interpreter is set on every configure: a build with KR_PYTHON
-    # doesn't leave the next checkout's build on it.
-    if ((had_ninja)) &&
-        [[ "$(sed -n 's/^KAROUKA_PYTHON:[A-Z]*=//p' "$KR_LADYBIRD_BUILD/CMakeCache.txt")" != "$python" ]]; then
-        echo "dev.sh: building the _karouka module for $python"
-        nice -n 10 cmake -S "$KR_LADYBIRD" -B "$KR_LADYBIRD_BUILD" -DKAROUKA_PYTHON="$python" >/dev/null
-    fi
     # vcpkg installs the manifest while CMake configures, and CMake doesn't know the overlay ports'
     # files: rerun it when one changed since the last configure (vcpkg then rebuilds just that port).
     if ((had_ninja)) && [[ "$(cat "$KR_OVERLAY_STAMP" 2>/dev/null)" != "$overlay_hash" ]]; then
@@ -460,17 +432,6 @@ configure() {
     # Regenerates build.ninja now if src/CMakeLists.txt changed, then records what it was made from.
     nice -n 10 ninja -C "$KR_LADYBIRD_BUILD" build.ninja >/dev/null
     cp "$KR_ROOT/src/CMakeLists.txt" "$KR_SRC_LINK.cmakelists"
-}
-
-# The CPython 3.14 interpreter the _karouka module is built for: $KR_PYTHON (a path, or a command
-# on PATH), default Homebrew's python3, printed as an absolute path for KAROUKA_PYTHON.
-karouka_python() {
-    local python="${KR_PYTHON:-/opt/homebrew/bin/python3}" path
-    if ! path="$(command -v "$python")" || [[ "$path" != /* ]]; then
-        echo "dev.sh: KR_PYTHON=$python is not an interpreter" >&2
-        return 1
-    fi
-    echo "$path"
 }
 
 # Points KR_SRC_LINK at this checkout. The compile commands don't change with the checkout, so
@@ -515,7 +476,7 @@ build() {
     # LibCompositing's and LibWeb's WebGL sources include this generated header without an ordering
     # dependency on its generator, so a clean build can compile them before it exists. Make it first.
     nice -n 10 ninja -C "$KR_LADYBIRD_BUILD" Libraries/LibCompositing/WebGL/GLFunctions.h || return
-    nice -n 10 ninja -C "$KR_LADYBIRD_BUILD" -j "$KR_JOBS" ${KR_NINJA_ARGS:-} karouka _karouka karouka_viewer karouka_miprof karouka_ordertrace "${KAROUKA_TESTS[@]}" || return
+    nice -n 10 ninja -C "$KR_LADYBIRD_BUILD" -j "$KR_JOBS" ${KR_NINJA_ARGS:-} karouka karouka_viewer karouka_miprof karouka_ordertrace "${KAROUKA_TESTS[@]}" || return
 }
 
 # Frames per check render; the multi-view runs close the second view halfway through.
@@ -1141,7 +1102,7 @@ use_snapshot() {
 # measurements at once would skew), though a build can run beside them. build_info is taken under the build lock, so it names the tree the snapshot was
 # built from. Each invocation has its own snapshot, $KR_BUILD/snapshots/<checkout_key>.<pid>,
 # removed when it exits; one whose process is gone (SIGKILL) is removed by the next.
-#   from_snapshot run|python|bench|mem|wpt|libweb|orderfile|census|startup ARGS...
+#   from_snapshot run|bench|mem|wpt|libweb|orderfile|census|startup ARGS...
 from_snapshot() {
     local cmd="$1" base="$KR_BUILD/snapshots" dir pid snap
     shift
@@ -1298,10 +1259,6 @@ check() {
     for test in "${KAROUKA_TESTS[@]}"; do
         pool_job check_test "$out" "$test"
     done
-    # The _karouka module's tests (tests/python/), as dev.sh python runs them.
-    for test in "$KR_ROOT"/tests/python/*.py; do
-        pool_job python_test "$out" "$test"
-    done
     local view=(--headless --size 800x600 --frames "$CHECK_FRAMES" --check-title)
     local page passed=() pages=() demos=() first_page first_demo
     first_page=$pool_count
@@ -1418,36 +1375,6 @@ check_test() {
         echo "FAIL $2 (see $1/$2.log)"
         return 1
     fi
-}
-
-# Runs one tests/python/ script against the _karouka module in $KR_LIB (a snapshot's), with the
-# interpreter it was built for, logged to DIR/python_NAME.log.
-#   python_test DIR TEST.py
-python_test() {
-    local name python
-    name="$(basename "$2" .py)"
-    if ! python="$(cat "$KR_LIB/_karouka.python" 2>/dev/null)" || [[ ! -x "$python" ]]; then
-        echo "FAIL python $name: no interpreter for the _karouka module ($KR_LIB/_karouka.python)"
-        return 1
-    fi
-    if PYTHONPATH="$KR_LIB" KR_SOURCE_DIR="$KR_ROOT" "$python" -s "$2" >"$1/python_$name.log" 2>&1; then
-        echo "ok   python $name"
-    else
-        echo "FAIL python $name (see $1/python_$name.log)"
-        return 1
-    fi
-}
-
-# dev.sh python: the given tests/python/ scripts, or all of them, one after another.
-#   python_tests [TEST.py...]
-python_tests() {
-    local out="$KR_BUILD/python/$(basename "$KR_ROOT")" test failed=0 tests=("$@")
-    ((${#tests[@]})) || tests=("$KR_ROOT"/tests/python/*.py)
-    mkdir -p "$out"
-    for test in "${tests[@]}"; do
-        python_test "$out" "$(cd "$(dirname "$test")" && pwd)/$(basename "$test")" || failed=1
-    done
-    return $failed
 }
 
 # One of check's layout-count gates: ENTRY is PAGE:LIMIT[:FLAGS] (check's list explains them).
@@ -2150,82 +2077,6 @@ package() {
     echo "dev.sh package: $dir"
 }
 
-# wheel [DIR]: the karouka wheel (tools/wheel.py), then its smoke test (wheel_smoke).
-wheel() {
-    local dir="${1:-$KR_BUILD/wheel/$(basename "$KR_ROOT")}" python whl
-    [[ "$dir" == /* ]] || dir="$PWD/$dir"
-    # Replace an earlier wheel dir, never some other directory DIR happens to name.
-    if [[ -e "$dir" ]] && ls -A "$dir" | grep -qv -e '^stage$' -e '^smoke$' -e '^karouka-.*\.whl$'; then
-        echo "dev.sh wheel: $dir holds more than an earlier wheel; give an empty or new DIR" >&2
-        return 2
-    fi
-    python="$(cat "$KR_LIB/_karouka.python")"
-    python3 "$KR_ROOT/tools/wheel.py" --build "$KR_BUILD" --resources "$KR_LADYBIRD/Base/res" --out "$dir" \
-        --forbid "$KR_ROOT" --forbid "$KR_MAIN_ROOT" --forbid "$KR_LADYBIRD" || return
-    whl="$(ls "$dir"/karouka-*.whl)"
-    wheel_smoke "$whl" "$python" "$dir/smoke" || return
-    echo "dev.sh wheel: $whl"
-}
-
-# Installs WHEEL into a fresh venv of PYTHON (outside the checkout) and runs python -m karouka
-# from it with the checkout, the main checkout and the Ladybird tree (the build in it) unreadable
-# (sandbox-exec), on a copy of pages/demo/demo_page.html (whose capture must match the build's
-# module's, pixel for pixel: the packaged resources and fonts are the build's) and on a page whose
-# text/python writes a file. Logs and captures in OUT.
-#   wheel_smoke WHEEL PYTHON OUT
-wheel_smoke() {
-    local whl="$1" python="$2" out="$3" tmp rc=0 deny
-    rm -rf "$out" && mkdir -p "$out"
-    tmp="$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/karouka-wheel.XXXXXX")")"
-    mkdir -p "$tmp/pages/demo" "$tmp/app"
-    cp "$KR_ROOT/pages/demo/demo_page.html" "$tmp/pages/demo/" && cp -R "$KR_ROOT/pages/fonts" "$tmp/pages/"
-    cat >"$tmp/app/index.html" <<'HTML'
-<!doctype html><html><head><title>wheel</title></head><body><p id="out"></p>
-<script type="text/python">
-import importlib.machinery, pathlib, sys
-document.getElementById("out").textContent = f"{window.innerWidth}"
-module = importlib.machinery.PathFinder.find_spec("_karouka").origin
-pathlib.Path(document.URL.removeprefix("file://")).with_name("ran.txt").write_text(
-    f"{document.getElementById('out').textContent} {module} {sys.prefix}\n")
-</script></body></html>
-HTML
-    deny="(version 1)(allow default)(deny file-read* (subpath \"$KR_ROOT\") (subpath \"$KR_MAIN_ROOT\") (subpath \"$KR_LADYBIRD\"))"
-    if ! "$python" -m venv "$tmp/venv" >"$out/venv.log" 2>&1 ||
-        ! "$tmp/venv/bin/python" -m pip install --no-index --no-deps --disable-pip-version-check "$whl" >>"$out/venv.log" 2>&1; then
-        echo "dev.sh wheel: pip install into a fresh venv failed ($out/venv.log)" >&2
-        rc=1
-    elif ! (cd "$tmp" && env -u KR_RESOURCE_ROOT -u PYTHONPATH -u PYTHONHOME \
-            sandbox-exec -p "$deny" env DYLD_PRINT_LIBRARIES=1 "$tmp/venv/bin/python" -I -m karouka --software --headless --frames 60 \
-            --capture "$tmp/demo.png" --size 800x600 "$tmp/pages/demo/demo_page.html") >"$out/demo.log" 2>&1 ||
-        ! (cd "$tmp" && env -u KR_RESOURCE_ROOT -u PYTHONPATH -u PYTHONHOME \
-            sandbox-exec -p "$deny" "$tmp/venv/bin/python" -I -m karouka --software --headless --frames 10 --size 800x600 \
-            "$tmp/app/index.html") >"$out/app.log" 2>&1; then
-        echo "dev.sh wheel: python -m karouka failed from the wheel's venv ($out/demo.log, $out/app.log)" >&2
-        rc=1
-    elif ! grep -q "^800 $tmp/venv/.*/_karouka.cpython-[0-9]*-darwin.so $tmp/venv\$" "$tmp/app/ran.txt" 2>/dev/null; then
-        echo "dev.sh wheel: the page's text/python didn't run from the venv's module (ran.txt: $(cat "$tmp/app/ran.txt" 2>/dev/null))" >&2
-        rc=1
-    elif ! sed -n 's/^dyld\[[0-9]*\]: <[^>]*> //p' "$out/demo.log" >"$out/images.log" ||
-        grep -e "^$KR_ROOT/" -e "^$KR_MAIN_ROOT/" -e "^$KR_LADYBIRD/" "$out/images.log" ||
-        ! grep -q "^$tmp/venv/.*/karouka/.dylibs/libskia.dylib$" "$out/images.log"; then
-        echo "dev.sh wheel: the demo run loaded an image from the build tree, or not the venv's dylibs ($out/images.log)" >&2
-        rc=1
-    elif ! (cd "$tmp" && env -u KR_RESOURCE_ROOT PYTHONPATH="$KR_LIB" "$python" -s -m karouka --software --headless \
-            --frames 60 --capture "$out/demo.build.png" --size 800x600 "$tmp/pages/demo/demo_page.html") \
-            >"$out/demo.build.log" 2>&1; then
-        echo "dev.sh wheel: the build's module failed on the demo page ($out/demo.build.log)" >&2
-        rc=1
-    elif ! python3 "$KR_ROOT/tools/pngdiff.py" "$out/demo.build.png" "$tmp/demo.png" >"$out/pngdiff.log" 2>&1; then
-        echo "dev.sh wheel: the wheel's demo capture differs from the build's ($out/pngdiff.log)" >&2
-        rc=1
-    fi
-    cp "$tmp/demo.png" "$out/" 2>/dev/null || true
-    cp "$tmp/app/ran.txt" "$out/" 2>/dev/null || true
-    rm -rf "$tmp"
-    ((rc == 0)) && echo "wheel smoke: ok (venv install, demo page = build's pixels, text/python ran; $out)"
-    return "$rc"
-}
-
 # The empty page as mem writes it, then the given pages (default: demo_pages, pages/demo/*.html and
 # pages/demo/*/index.html), then with --tests every pages/tests page with a
 # karouka-check-input, from the snapshot (from_snapshot). --input, --fresh and the --stats
@@ -2277,7 +2128,6 @@ case "$cmd" in
     # run, bench and mem: the build lock only for the build and its snapshot (from_snapshot).
     # bench --save only copies the build, under the build lock.
     run) from_snapshot run "$@" ;;
-    python) from_snapshot python "$@" ;;
     bench) if [[ "${1:-}" == --save ]]; then locked _bench_save "${2:-}"; else from_snapshot bench "$@"; fi ;;
     # wpt, orderfile and startup too; startup measures holding the measure lock, as bench
     # and mem do. package holds the build lock throughout: dsymutil reads the build's object files.
@@ -2298,7 +2148,6 @@ case "$cmd" in
         python3 "$KR_ROOT/tools/libweb_tests.py" --preflight --saved-dir "$KR_BUILD/libweb/saved" "$@" || exit
         from_snapshot libweb "$@" ;;
     package) locked _package "$@" ;;
-    wheel) locked _wheel "$@" ;;
     startup) from_snapshot startup ;;
     # --list prints the demo pages they take by name (orderfile's default set), without building.
     mem|orderfile) if [[ "${1:-}" == --list ]]; then list_demo_pages; exit 0; fi
@@ -2362,7 +2211,6 @@ case "$cmd" in
         exec nice -n 10 python3 "$KR_ROOT/tools/libweb_tests.py" --viewer "$KR_BIN/karouka_viewer" \
             --out "$KR_BUILD/libweb/$(basename "$KR_ROOT")" --saved-dir "$KR_BUILD/libweb/saved" "$@" ;;
     _orderfile) use_snapshot "$KR_SNAP" && orderfile "$@" ;;
-    _python) use_snapshot "$KR_SNAP" && python_tests "$@" ;;
     # census's own lock for this checkout's output directory, as wpt's; each page its own shader cache.
     _census) with_lock_at "$KR_BUILD/census/$(basename "$KR_ROOT").lock" "this checkout's other census" "$0" _census_run "$@" ;;
     _census_run) use_snapshot "$KR_SNAP" &&
@@ -2371,6 +2219,5 @@ case "$cmd" in
             --commands-header "$KR_LADYBIRD/Libraries/LibCompositing/DisplayList/DisplayListCommand.h" "$@" ;;
     _startup) use_snapshot "$KR_SNAP" && startup_check "$KR_BUILD/startup/$(basename "$KR_ROOT")" ;;
     _package) "$0" _build && package "$@" ;;
-    _wheel) "$0" _build && wheel "$@" ;;
     *) echo "unknown command: $cmd" >&2; exit 2 ;;
 esac

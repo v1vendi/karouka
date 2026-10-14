@@ -1,6 +1,6 @@
 /*
- * NSEvent → kr_input_event, shared by the viewer's panes (src/viewer/main.mm) and the Python app
- * shell's windows (src/python/app.mm). Objective-C++ only. Positions are in the view's coordinates
+ * NSEvent → kr_input_event, for the viewer's panes (src/viewer/main.mm) and any other AppKit host
+ * that drives a kr_view from its own windows. Objective-C++ only. Positions are in the view's coordinates
  * (a flipped view: top-left origin) times its scale, i.e. the kr_view's device pixels.
  */
 #pragma once

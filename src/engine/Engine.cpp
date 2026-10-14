@@ -553,9 +553,9 @@ struct kr_view {
     unsigned mouse_buttons { 0 };
     kr_navigate_callback navigate_callback { nullptr };
     void* navigate_user_data { nullptr };
-    // Embedder script types (<script type="text/python">) and what runs them; kept across loads.
+    // Embedder script types (non-JavaScript <script type>s) and what runs them; kept across loads.
     Karouka::ViewScriptTypes script_types;
-    // Told of each new active top-level document (the Python module, ScriptTypes.h).
+    // Told of each new active top-level document (an embedder's, ScriptTypes.h).
     Karouka::ActiveDocumentHandler active_document_handler;
     // kr_view_title's answer, and the document state it was read from.
     ByteString title_utf8;
